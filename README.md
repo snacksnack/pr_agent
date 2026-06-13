@@ -28,13 +28,40 @@ skeleton. The review logic is built out across the stories below.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then fill in values when you reach RC1-113
+cp .env.example .env          # then fill in ANTHROPIC_API_KEY + GITHUB_TOKEN
 python -m app                 # config sanity check — no credentials required
 pytest -q                     # run the test suite
 ```
 
 `python -m app` prints which credentials are set (never their values) and the
 active review settings, then confirms the config loads.
+
+## Dry-run a review (RC1-113)
+
+Run the full review against a real PR and print the would-be review to your
+terminal — nothing is posted to GitHub. This is the tool used to tune review
+quality before the App and hosting exist. It needs `ANTHROPIC_API_KEY` (the
+review loop) and `GITHUB_TOKEN` (a PAT with read access to the repo).
+
+```bash
+python -m app.review --pr owner/repo#123
+python -m app.review --pr owner/repo#123 --repo-path /path/to/local/clone
+```
+
+The pipeline is ingest → agentic review loop + rubric → n8n execution-cost
+check → formatted output. Pass `--repo-path` pointing at a local checkout so the
+agent can explore the repo's files for context; without it the review runs from
+the diff alone. Use `--model` to override the review model for a run.
+
+Output leads with the overall summary, then one block per finding — severity,
+`file:line`, category, message, and a suggested fix — followed by totals and
+run metadata. The exit code is CI-friendly:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Review ran; no blocking finding (advisory) |
+| `1` | Review ran; a `block_on` finding was present |
+| `2` | The review could not be produced (e.g. bad PR spec, ingestion error) |
 
 ## Layout
 
