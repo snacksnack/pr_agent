@@ -11,12 +11,15 @@ gets a structured :class:`ReviewResult`.
 
 The model client is injectable: pass any object exposing
 ``messages.create(...)`` (the real ``anthropic.Anthropic`` client, or a scripted
-fake in tests). The full review rubric/system prompt is fleshed out in RC1-111.
+fake in tests). The review rubric, system prompt, procedural instructions, and
+the ``submit_review`` output schema live in :mod:`app.agent.prompts` (RC1-111);
+this module composes them into the loop.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from app.agent.prompts import INSTRUCTIONS, SUBMIT_TOOL, SYSTEM_PROMPT
 from app.agent.tools import TOOL_SCHEMAS, RepoTools
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult
@@ -25,57 +28,6 @@ from app.models import Finding, PullRequest, ReviewResult
 # full files via tools if it needs more than this.
 MAX_DIFF_CHARS = 50_000
 DEFAULT_MAX_TOKENS = 4096
-
-SYSTEM_PROMPT = (
-    "You are a meticulous senior code reviewer. You review a single GitHub pull "
-    "request and report concrete, actionable findings. (The full review rubric "
-    "is provided in RC1-111.)"
-)
-
-INSTRUCTIONS = (
-    "Investigate the changes using the read_file, list_dir, and grep tools as "
-    "needed to understand the code in its existing context, then call "
-    "submit_review exactly once with your findings.\n"
-    "- Anchor each finding to a file and line when possible.\n"
-    "- Use severity 'blocker' only for objective, serious problems (e.g. a "
-    "committed secret); 'warning' for real issues worth fixing; 'nit' for minor "
-    "suggestions.\n"
-    "- If there are no issues, submit an empty findings list with a short summary."
-)
-
-# The tool the model calls to end the review with structured output.
-SUBMIT_TOOL = {
-    "name": "submit_review",
-    "description": "Submit the final code review. Call this exactly once when done.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "Overall summary of the review, leading with the most serious point.",
-            },
-            "findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "severity": {"type": "string", "enum": ["blocker", "warning", "nit"]},
-                        "category": {
-                            "type": "string",
-                            "description": "e.g. security, convention, pythonic, tests, dependencies, n8n, docs.",
-                        },
-                        "message": {"type": "string", "description": "What the issue is and why it matters."},
-                        "file": {"type": "string", "description": "Path of the file the finding refers to."},
-                        "line": {"type": "integer", "description": "Line number in the file, if applicable."},
-                        "suggestion": {"type": "string", "description": "Concrete suggested fix, if any."},
-                    },
-                    "required": ["severity", "category", "message"],
-                },
-            },
-        },
-        "required": ["summary", "findings"],
-    },
-}
 
 ALL_TOOLS = [*TOOL_SCHEMAS, SUBMIT_TOOL]
 
