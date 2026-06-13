@@ -67,3 +67,53 @@ class PullRequest:
     @property
     def slug(self) -> str:
         return self.ref.slug
+
+
+# Severity ordering for sorting/triage: blocker is most serious.
+SEVERITY_ORDER = {"blocker": 0, "warning": 1, "nit": 2}
+
+
+@dataclass
+class Finding:
+    """A single review observation produced by the agent (RC1-110)."""
+
+    severity: str  # blocker | warning | nit
+    category: str  # e.g. security, convention, pythonic, tests, n8n, ...
+    message: str
+    file: str | None = None
+    line: int | None = None
+    suggestion: str | None = None
+
+    @property
+    def severity_rank(self) -> int:
+        return SEVERITY_ORDER.get(self.severity, 99)
+
+
+@dataclass
+class ReviewResult:
+    """The structured outcome of a review, ready for downstream formatting."""
+
+    summary: str = ""
+    findings: list[Finding] = field(default_factory=list)
+    # Run metadata.
+    model: str = ""
+    tool_turns: int = 0
+    files_read: int = 0
+    # True if the run hit a guardrail (turn or file-read cap) before finishing.
+    truncated: bool = False
+
+    @property
+    def sorted_findings(self) -> list[Finding]:
+        """Findings ordered by severity, then file, then line."""
+        return sorted(
+            self.findings,
+            key=lambda f: (f.severity_rank, f.file or "", f.line or 0),
+        )
+
+    @property
+    def blockers(self) -> list[Finding]:
+        return [f for f in self.findings if f.severity == "blocker"]
+
+    @property
+    def has_blocking(self) -> bool:
+        return any(f.severity == "blocker" for f in self.findings)
