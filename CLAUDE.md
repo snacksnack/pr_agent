@@ -28,7 +28,7 @@ Milestone 1 — validate locally (no infra):
 - [x] RC1-108 GitHub PR ingestion (`app/github.py`, `app/models.py`)
 - [x] RC1-109 repo-exploration tools (`app/agent/tools.py`)
 - [x] RC1-110 agentic review loop (`app/agent/reviewer.py`)
-- [ ] RC1-111 review rubric & prompts (`app/agent/prompts.py`)
+- [x] RC1-111 review rubric & prompts (`app/agent/prompts.py`)
 - [ ] RC1-112 n8n execution-cost check (`app/agent/checks/n8n.py`)
 - [ ] RC1-113 local dry-run CLI (`app/review.py`)
 - [ ] RC1-114 review-quality tuning (gate)
