@@ -117,9 +117,9 @@ def test_nits_only_do_not_block():
 
 # --- n8n hook is stub-tolerant --------------------------------------------
 
-def test_n8n_hook_skips_while_stub(tmp_path):
-    # A real n8n workflow file on disk, but RC1-112 still raises
-    # NotImplementedError -> the hook must add nothing and not crash.
+def test_n8n_hook_skips_benign_workflow(tmp_path):
+    # A real but benign n8n workflow file on disk (no costly patterns) -> the
+    # hook runs the RC1-112 check and adds nothing, without crashing.
     wf = {"nodes": [], "connections": {}}
     (tmp_path / "flow.json").write_text(json.dumps(wf))
     pr = _pr([ChangedFile(filename="flow.json", status="added")])
