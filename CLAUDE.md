@@ -30,7 +30,7 @@ Milestone 1 — validate locally (no infra):
 - [x] RC1-110 agentic review loop (`app/agent/reviewer.py`)
 - [x] RC1-111 review rubric & prompts (`app/agent/prompts.py`)
 - [ ] RC1-112 n8n execution-cost check (`app/agent/checks/n8n.py`)
-- [ ] RC1-113 local dry-run CLI (`app/review.py`)
+- [x] RC1-113 local dry-run CLI (`app/review.py`)
 - [ ] RC1-114 review-quality tuning (gate)
 
 Milestone 2 — App + webhook: RC1-115 App auth · RC1-116 webhook receiver ·
