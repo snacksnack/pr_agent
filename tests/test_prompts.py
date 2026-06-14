@@ -9,13 +9,29 @@ from __future__ import annotations
 
 from app.agent import prompts
 from app.agent.reviewer import ALL_TOOLS
-from app.models import SEVERITY_ORDER
+from app.models import Finding, SEVERITY_ORDER
 
 
 # --- finding schema contract ---------------------------------------------
 
 def _finding_schema() -> dict:
     return prompts.SUBMIT_TOOL["input_schema"]["properties"]["findings"]["items"]
+
+
+def test_format_precomputed_findings_empty_is_blank():
+    assert prompts.format_precomputed_findings(None) == ""
+    assert prompts.format_precomputed_findings([]) == ""
+
+
+def test_format_precomputed_findings_lists_each_with_no_duplicate_instruction():
+    out = prompts.format_precomputed_findings([
+        Finding("warning", "n8n", "cron every minute", file="flow.json", line=8),
+        Finding("nit", "docs", "a PR-level note"),
+    ])
+    assert "already recorded by automated checks" in out
+    assert "do NOT repeat" in out
+    assert "flow.json:8" in out and "[warning/n8n]" in out
+    assert "(PR-level)" in out  # finding with no file falls back cleanly
 
 
 def test_submit_tool_top_level_schema():

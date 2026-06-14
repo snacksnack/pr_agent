@@ -45,7 +45,9 @@ EXIT_BLOCKED = 1     # review ran; a block_on finding was present
 EXIT_ERROR = 2       # the review could not be produced (ingestion/loop failure)
 
 FetchFn = Callable[[PRRef], PullRequest]
-ReviewFn = Callable[[PullRequest, RepoTools], ReviewResult]
+# The review callable receives the PR, repo tools, and any precomputed findings
+# from deterministic checks (shown to the model as already-recorded context).
+ReviewFn = Callable[[PullRequest, RepoTools, "list[Finding]"], ReviewResult]
 
 _SEVERITY_LABEL = {"blocker": "BLOCKER", "warning": "WARNING", "nit": "NIT"}
 
@@ -256,8 +258,12 @@ def main(
                 "(file exploration disabled).",
                 file=sys.stderr,
             )
-        result = review(pr, repo_tools)
-        result.findings.extend(run_n8n_checks(pr, repo_root))
+        # Deterministic checks run first; their findings are handed to the
+        # review loop as already-recorded context (so the model builds on them
+        # instead of duplicating them), then merged into the final result here.
+        precomputed = run_n8n_checks(pr, repo_root)
+        result = review(pr, repo_tools, precomputed)
+        result.findings.extend(precomputed)
     except (GitHubError, ToolError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -286,9 +292,13 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 
 def _default_review(*, model: str | None) -> ReviewFn:
-    def _review(pr: PullRequest, repo_tools: RepoTools) -> ReviewResult:
+    def _review(
+        pr: PullRequest, repo_tools: RepoTools, precomputed: list[Finding]
+    ) -> ReviewResult:
         # client=None -> reviewer lazily builds the Anthropic SDK from settings.
-        return review_pull_request(pr, repo_tools, client=None, model=model)
+        return review_pull_request(
+            pr, repo_tools, client=None, model=model, precomputed_findings=precomputed
+        )
 
     return _review
 

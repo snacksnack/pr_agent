@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.reviewer import ReviewError, review_pull_request
+from app.agent.reviewer import ReviewError, format_pr_for_review, review_pull_request
 from app.agent.tools import RepoTools
-from app.models import PRRef, PullRequest
+from app.models import Finding, PRRef, PullRequest
 
 
 # --- scripted fake Anthropic client --------------------------------------
@@ -170,6 +170,25 @@ def test_forced_submit_failure_raises(repo, pr):
     client = FakeClient(scripted)
     with pytest.raises(ReviewError):
         review_pull_request(pr, repo, client=client, max_tool_turns=10)
+
+
+# --- precomputed (deterministic) findings as context ---------------------
+
+def test_precomputed_findings_rendered_in_seed_prompt(repo, pr):
+    pre = [Finding("warning", "n8n", "cron fires every minute", file="flow.json", line=8)]
+    scripted = [[_submit("t1", "done", [])]]
+    client = FakeClient(scripted)
+
+    review_pull_request(pr, repo, client=client, max_tool_turns=5, precomputed_findings=pre)
+
+    seed = client.messages.calls[0]["messages"][0]["content"]
+    assert "already recorded by automated checks" in seed
+    assert "do NOT repeat" in seed
+    assert "cron fires every minute" in seed and "flow.json:8" in seed
+
+
+def test_seed_prompt_has_no_precomputed_section_when_none(pr):
+    assert "already recorded by automated checks" not in format_pr_for_review(pr)
 
 
 # --- malformed findings are skipped, not fatal ---------------------------
