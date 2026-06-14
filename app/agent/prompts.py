@@ -13,6 +13,11 @@ the loop / config (``settings.block_on``), not here.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:  # import-only-for-typing keeps this module runtime-dependency-free
+    from app.models import Finding
+
 # --- finding taxonomy -----------------------------------------------------
 
 # Closed set of categories, one per review dimension in the acceptance
@@ -106,11 +111,15 @@ REVIEW_RUBRIC = (
     "   per-request work that should be cached/batched, and obvious cost cliffs.\n"
     "\n"
     "10. n8n execution cost (category: n8n)\n"
-    "    If the PR touches n8n workflow JSON, watch for patterns that explode "
-    "    execution counts: aggressive polling/cron intervals, unbounded loops, "
-    "    and sub-workflow fan-out. (A deterministic static check (RC1-112) also "
-    "    runs over changed workflow JSON and contributes its own findings; use "
-    "    the diff to add context and catch anything it can't see.)\n"
+    "    A deterministic static check (RC1-112) already flags the mechanical "
+    "    execution-cost patterns — aggressive polling/cron intervals, unbounded "
+    "    loops, and sub-workflow fan-out — and its findings are handed to you as "
+    "    already-recorded (see 'already recorded by automated checks' in the seed "
+    "    message). Do NOT restate those. Instead add only n8n issues the static "
+    "    check cannot see: incorrect or missing dedup logic, missing error "
+    "    handling on workflow steps, wrong/placeholder sub-workflow references, "
+    "    hardcoded endpoints, and mismatches with this repo's workflow "
+    "    conventions.\n"
     "\n"
     "Cross-cutting: ensure changed code is covered by tests and that any infra "
     "it introduces will scale. Documentation/docstring gaps on public surfaces "
@@ -229,3 +238,34 @@ SUBMIT_TOOL = {
         "required": ["summary", "findings"],
     },
 }
+
+
+# --- already-recorded (deterministic) findings ----------------------------
+
+def format_precomputed_findings(findings: "Iterable[Finding] | None") -> str:
+    """Render findings from deterministic static checks for the seed prompt.
+
+    Deterministic checks (e.g. the n8n execution-cost check, RC1-112) run
+    *before* the agent and their findings are merged into the final review
+    automatically. We surface them to the model so it builds on them instead of
+    re-deriving and duplicating them. Returns ``""`` when there are none, so the
+    caller can append unconditionally.
+    """
+    items = list(findings or [])
+    if not items:
+        return ""
+    lines = [
+        "",
+        "Findings already recorded by automated checks (these ARE included in "
+        "the final review automatically — do NOT repeat or rephrase them; only "
+        "add NEW findings they don't already cover):",
+    ]
+    for f in items:
+        if f.file and f.line:
+            loc = f"{f.file}:{f.line}"
+        elif f.file:
+            loc = f.file
+        else:
+            loc = "(PR-level)"
+        lines.append(f"- [{f.severity}/{f.category}] {loc}: {f.message}")
+    return "\n".join(lines)

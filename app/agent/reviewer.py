@@ -19,7 +19,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent.prompts import INSTRUCTIONS, SUBMIT_TOOL, SYSTEM_PROMPT
+from app.agent.prompts import (
+    INSTRUCTIONS,
+    SUBMIT_TOOL,
+    SYSTEM_PROMPT,
+    format_precomputed_findings,
+)
 from app.agent.tools import TOOL_SCHEMAS, RepoTools
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult
@@ -62,8 +67,15 @@ def _normalize_blocks(content: Any) -> list[dict]:
     return blocks
 
 
-def format_pr_for_review(pr: PullRequest) -> str:
-    """Render the PR metadata + diff into the seed user message."""
+def format_pr_for_review(
+    pr: PullRequest, precomputed_findings: list[Finding] | None = None
+) -> str:
+    """Render the PR metadata + diff into the seed user message.
+
+    When ``precomputed_findings`` are supplied (e.g. from deterministic static
+    checks that ran first), they are listed as already-recorded so the model
+    builds on them rather than duplicating them.
+    """
     parts = [
         f"Pull request: {pr.slug}",
         f"Title: {pr.title}",
@@ -95,6 +107,10 @@ def format_pr_for_review(pr: PullRequest) -> str:
         if budget <= 0:
             parts.append("\n... [remaining diffs omitted; use the tools to inspect them]")
             break
+
+    precomputed = format_precomputed_findings(precomputed_findings)
+    if precomputed:
+        parts.append(precomputed)
 
     parts.extend(["", INSTRUCTIONS])
     return "\n".join(parts)
@@ -154,8 +170,15 @@ def review_pull_request(
     max_tool_turns: int | None = None,
     max_files_read: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    precomputed_findings: list[Finding] | None = None,
 ) -> ReviewResult:
-    """Run the agentic review loop over a PR and return structured findings."""
+    """Run the agentic review loop over a PR and return structured findings.
+
+    ``precomputed_findings`` are findings from deterministic static checks that
+    ran before the loop; they are shown to the model as already-recorded (so it
+    doesn't duplicate them) but are NOT merged here — the caller owns merging
+    them into the final result, keeping this function's output the model's own.
+    """
     model = model or settings.review_model
     max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
@@ -166,7 +189,7 @@ def review_pull_request(
         client = Anthropic(api_key=settings.anthropic_api_key)
 
     messages: list[dict] = [
-        {"role": "user", "content": format_pr_for_review(pull_request)}
+        {"role": "user", "content": format_pr_for_review(pull_request, precomputed_findings)}
     ]
     files_read = 0
     turns = 0

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.tools import TOOL_SCHEMAS, RepoTools, ToolError
+from app.agent.tools import TOOL_SCHEMAS, RepoTools, ToolError, is_secret_file
 
 
 @pytest.fixture()
@@ -19,6 +19,9 @@ def repo(tmp_path):
     (root / "src" / "util.py").write_text("VALUE = 42\n")
     (root / ".git" / "config").write_text("TODO secret in git\n")
     (root / "image.png").write_bytes(b"\x89PNG\x00\x01\x02\xff\xfe")
+    # A local, gitignored secret file plus a safe template lookalike.
+    (root / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-SHOULD-NOT-LEAK\n")
+    (root / ".env.example").write_text("ANTHROPIC_API_KEY=\n")
     (tmp_path / "secret.txt").write_text("API_KEY=should-not-be-readable\n")
     return RepoTools(root)
 
@@ -104,6 +107,63 @@ def test_grep_fixed_string(repo):
 def test_grep_invalid_regex_errors(repo):
     with pytest.raises(ToolError):
         repo.grep("(unclosed")
+
+
+# --- secret-file guard (RC1-114 hardening) --------------------------------
+
+@pytest.mark.parametrize(
+    "name,secret",
+    [
+        (".env", True),
+        (".env.local", True),
+        (".env.production", True),
+        ("id_rsa", True),
+        ("server.pem", True),
+        ("tls.key", True),
+        ("credentials", True),
+        (".npmrc", True),
+        (".env.example", False),   # template lookalike stays readable
+        (".env.sample", False),
+        ("id_rsa.pub", False),     # public key is fine
+        ("app.py", False),
+        ("README.md", False),
+    ],
+)
+def test_is_secret_file_classification(name, secret):
+    assert is_secret_file(name) is secret
+
+
+def test_read_file_refuses_secret(repo):
+    with pytest.raises(ToolError) as exc:
+        repo.read_file(".env")
+    assert "secrets" in str(exc.value).lower()
+
+
+def test_read_file_allows_env_example(repo):
+    # The safe template must remain readable for convention context.
+    assert "ANTHROPIC_API_KEY" in repo.read_file(".env.example")
+
+
+def test_grep_never_surfaces_secret_contents(repo):
+    # The secret value lives only in .env; grep must not return it.
+    assert repo.grep("SHOULD-NOT-LEAK") == "(no matches)"
+    # Sanity: grep still works on normal files.
+    assert "src/app.py:2:" in repo.grep("TODO")
+
+
+def test_grep_directly_on_secret_file_yields_nothing(repo):
+    assert repo.grep("SHOULD-NOT-LEAK", ".env") == "(no matches)"
+
+
+def test_list_dir_hides_secret_but_shows_template(repo):
+    out = repo.list_dir(".")
+    assert ".env.example" in out
+    assert "  .env (" not in out  # the real .env entry (name + size) is hidden
+
+
+def test_dispatch_read_secret_returns_error_string(repo):
+    out = repo.dispatch("read_file", {"path": ".env"})
+    assert out.startswith("Error:") and "secrets" in out.lower()
 
 
 # --- dispatch + schemas ---------------------------------------------------

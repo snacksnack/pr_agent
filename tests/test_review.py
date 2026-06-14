@@ -47,7 +47,7 @@ def _run(argv, *, pr=None, result=None, captured=None):
     code = cli.main(
         argv,
         fetch=lambda ref: pr,
-        review=lambda p, tools: result,
+        review=lambda p, tools, pre: result,
         out=out,
     )
     return code, out.getvalue()
@@ -61,7 +61,7 @@ def test_pr_flag_is_required():
 
 
 def test_bad_pr_spec_returns_error_exit(capsys):
-    code = cli.main(["--pr", "not-a-spec"], fetch=lambda ref: _pr(), review=lambda p, t: _result())
+    code = cli.main(["--pr", "not-a-spec"], fetch=lambda ref: _pr(), review=lambda p, t, pre: _result())
     assert code == cli.EXIT_ERROR
     assert "error" in capsys.readouterr().err.lower()
 
@@ -128,7 +128,7 @@ def test_n8n_hook_skips_benign_workflow(tmp_path):
     code = cli.main(
         ["--pr", "octocat/hello#42", "--repo-path", str(tmp_path)],
         fetch=lambda ref: pr,
-        review=lambda p, tools: _result(),
+        review=lambda p, tools, pre: _result(),
         out=out,
     )
     assert code == cli.EXIT_OK
@@ -149,7 +149,7 @@ def test_n8n_hook_merges_findings(monkeypatch, tmp_path):
     code = cli.main(
         ["--pr", "octocat/hello#42", "--repo-path", str(tmp_path)],
         fetch=lambda ref: pr,
-        review=lambda p, tools: _result(),
+        review=lambda p, tools, pre: _result(),
         out=out,
     )
     text = out.getvalue()
@@ -159,11 +159,38 @@ def test_n8n_hook_merges_findings(monkeypatch, tmp_path):
     assert code == cli.EXIT_OK
 
 
+def test_n8n_findings_passed_to_review_as_context(monkeypatch, tmp_path):
+    # The deterministic n8n findings must be handed to the review loop (so the
+    # model can avoid duplicating them) AND merged into the final result once.
+    n8n_finding = Finding("warning", "n8n", "cron fires every minute", file="flow.json")
+    monkeypatch.setattr(cli, "run_n8n_checks", lambda pr, root: [n8n_finding])
+    pr = _pr([ChangedFile(filename="flow.json", status="modified")])
+
+    seen = {}
+
+    def fake_review(p, tools, precomputed):
+        seen["precomputed"] = precomputed
+        return _result()
+
+    out = io.StringIO()
+    code = cli.main(
+        ["--pr", "octocat/hello#42", "--repo-path", str(tmp_path)],
+        fetch=lambda ref: pr,
+        review=fake_review,
+        out=out,
+    )
+    # The loop received the deterministic finding as context...
+    assert seen["precomputed"] == [n8n_finding]
+    # ...and it appears exactly once in the final output (merged, not doubled).
+    assert out.getvalue().count("cron fires every minute") == 1
+    assert code == cli.EXIT_OK
+
+
 def test_repo_path_must_be_a_directory(capsys):
     code = cli.main(
         ["--pr", "octocat/hello#42", "--repo-path", "/no/such/dir"],
         fetch=lambda ref: _pr(),
-        review=lambda p, tools: _result(),
+        review=lambda p, tools, pre: _result(),
     )
     assert code == cli.EXIT_ERROR
     assert "directory" in capsys.readouterr().err.lower()
