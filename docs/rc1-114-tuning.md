@@ -29,8 +29,8 @@ Aiming for 3–5 representative PRs across repo types.
 
 | # | PR | Type | Why it's in the set | Status |
 |---|----|------|---------------------|--------|
-| 1 | `snacksnack/ai-incident-summarizer#12` | pure-Python | Real Python change; baseline for Python rubric dimensions | ☐ not run |
-| 2 | `snacksnack/n8n-stakeholder-status-email#1` | n8n workflow | Exercises the RC1-112 check; planted 3 costly patterns + 2 benign nodes | ✅ run — 1 blocker / 9 warn / 2 nit |
+| 1 | `snacksnack/ai-incident-summarizer#12` | pure-Python | Real Python change; baseline for Python rubric dimensions | ✅ run — advisory, 4 warn / 3 nit |
+| 2 | `snacksnack/n8n-stakeholder-status-email#1` | n8n workflow | Exercises the RC1-112 check; planted 3 costly patterns + 2 benign nodes | ✅ run x2 — fixes validated (Run 2) |
 | 3 | _TBD_ | _TBD_ | dependency/config or larger refactor — TBD | ☐ |
 | 4 | _TBD_ | _TBD_ | optional | ☐ |
 | 5 | _TBD_ | _TBD_ | optional | ☐ |
@@ -92,6 +92,55 @@ Key outcomes (full key redacted from this doc):
 
 <!-- copy this block per run -->
 
+### Run 2 — `snacksnack/n8n-stakeholder-status-email#1` — 2026-06-13 (after fixes)
+
+Re-run after the dedup refactor + secret-file guard. turns=11, files_read=6.
+**Totals: 1 blocker, 9 warnings, 1 nit.**
+
+Both fixes confirmed on the live model:
+
+- **No false-positive secret blocker.** The local untracked `.env` is absent from
+  the review entirely — the secret-file guard worked. ✅
+- **No n8n duplication.** The 3 deterministic findings (every-minute schedule,
+  `batchSize:0`, fan-out) each appear exactly once; the model deferred to the
+  static check instead of restating (was 2 dups in Run 1). ✅
+- **Model still adds genuine value.** Placeholder URL, missing dedup logic,
+  `workflowId`-as-name, native-Slack-vs-webhook convention, no error handling,
+  file location, README — all real, none mechanical-cost duplicates. ✅
+
+**New finding — verdict policy (not a review-quality issue):** the BLOCK verdict
+now comes from a model-assigned `blocker` *severity* on a non-secret correctness
+issue (placeholder URL, `:22`), not a committed secret. `blocking_findings()`
+gates on `category in block_on OR severity == 'blocker'`, and `block_on`
+(`leaked_secret`) matches no real category — so in practice ANY blocker-severity
+finding gates, contradicting the "advisory by default; block only on a committed
+secret" design (CLAUDE.md/README). The model's severity is defensible per the
+rubric (a workflow that fails every run is a real correctness defect); the
+mismatch is in the *verdict policy*. This is RC1-117's remit ("review posting +
+verdict") — see Open questions; flag as a hard prerequisite before going live.
+
+### Run 3 — `snacksnack/ai-incident-summarizer#12` (pure-Python) — 2026-06-13
+
+DynamoDB seed-script PR. turns=20 (hit cap), files_read=15.
+**Totals: 0 blocker, 4 warnings, 3 nits. Verdict: advisory (exit 0).** ✅
+
+Strong on regular Python:
+
+- **Correct advisory verdict** — no secret, nothing raised to blocker, no false
+  gate. Confirms the Run 2 over-block is specific to non-secret blocker-severity
+  findings, not general.
+- **Accurate, specific, grounded findings:** README pip-install drift,
+  module-level `sys.exit()` running at import, unconditional `requests` import,
+  and a genuine TTL-from-`created_at`-vs-now logic bug (deep reasoning).
+  Severities feel right.
+- **Minor notes:** (1) slight redundancy — the top-level `requests` import is
+  raised both as a `dependencies` warning and a `convention` nit (same line, two
+  angles). (2) Review **truncated** at the 20-turn cap (15 files) for a 2-file
+  PR — solid review anyway, but worth watching whether budgets are tight / the
+  agent over-explores. Neither is a quality blocker.
+
+No false positives. This is the pure-Python coverage the gate requires.
+
 ## Tuning changes
 
 Log every prompt / rubric / threshold change made during the pass, with the
@@ -108,14 +157,36 @@ before/after behaviour that motivated it (so the gate is auditable).
 
 ## Open questions / known gaps
 
-- `REVIEW_BLOCK_ON` default is `leaked_secret`, but the rubric's category set
-  uses `security` (not `leaked_secret`) — so blocking currently keys off the
-  `blocker` *severity*, not that category. Confirm the intended verdict policy
-  (formalized later in RC1-117) lines up before sign-off.
+- **Verdict policy mismatch (demonstrated in Run 2).** `REVIEW_BLOCK_ON` default
+  is `leaked_secret`, but the rubric's category set uses `security` (not
+  `leaked_secret`) — so `block_on` matches no real category and blocking keys off
+  `blocker` *severity* alone. Effect: any blocker-severity finding gates the
+  merge (Run 2 blocked on a placeholder-URL correctness issue, not a secret),
+  contradicting "advisory by default; block only on a committed secret".
+  Fix direction for **RC1-117**: give committed secrets a distinct category
+  (e.g. `leaked_secret`), set `block_on` to it, and gate on `block_on` category
+  only (drop the bare `severity == 'blocker'` clause) — so non-secret blockers
+  are surfaced prominently but don't force "Request changes". Treat as a hard
+  prerequisite before wiring to GitHub.
 
 ## Sign-off
 
-> _Pending._ Quality is good enough to wire to the GitHub App (Milestone 2)
-> when: false-positive rate is acceptable across the PR set, severities feel
-> right, and the n8n ground-truth above matches. Record the explicit decision
-> (who / date) here.
+**Signed off — 2026-06-13, Reid Collins (snacksnack).** Review quality is good
+enough to wire to the GitHub App (Milestone 2).
+
+Basis:
+
+- Exercised on 2 representative PRs (n8n workflow ×2, pure-Python), Runs 1–3.
+  Judged sufficient coverage given the breadth of rubric dimensions hit (n8n
+  execution-cost, security, convention, error-handling, dependencies, pr-drift,
+  docs, and a real logic bug).
+- The two issues Run 1 surfaced are fixed and validated live: n8n finding
+  duplication (Run 2) and the false-positive secret blocker + secret leak
+  (Run 2). The pure-Python review (Run 3) is accurate, grounded, and
+  well-calibrated, with a correct advisory verdict.
+- Remaining nits are minor (slight finding redundancy; turn-budget truncation on
+  a small PR); none block the gate.
+
+**Carried to RC1-117 as a hard prerequisite (verdict policy):** the BLOCK verdict
+currently gates on any `blocker`-severity finding, not just committed secrets
+(demonstrated in Run 2). Must be fixed before going live — see Open questions.

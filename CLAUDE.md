@@ -31,7 +31,8 @@ Milestone 1 — validate locally (no infra):
 - [x] RC1-111 review rubric & prompts (`app/agent/prompts.py`)
 - [x] RC1-112 n8n execution-cost check (`app/agent/checks/n8n.py`)
 - [x] RC1-113 local dry-run CLI (`app/review.py`)
-- [ ] RC1-114 review-quality tuning (gate)
+- [x] RC1-114 review-quality tuning (gate) — signed off; verdict-policy fix
+      carried to RC1-117 as a go-live prerequisite (see docs/rc1-114-tuning.md)
 
 Milestone 2 — App + webhook: RC1-115 App auth · RC1-116 webhook receiver ·
 RC1-117 review posting + verdict · RC1-118 re-push dedup.
