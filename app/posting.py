@@ -1,25 +1,37 @@
-"""Post a review to GitHub (RC1-117).
+"""Post a review to GitHub (RC1-117) with re-push dedup/supersede (RC1-118).
 
-Turns a :class:`~app.models.ReviewResult` into a single GitHub review: a
-top-level summary plus inline comments anchored to changed-hunk lines, with the
-verdict (Comment vs. Request changes) from :mod:`app.verdict`.
+One review per push, kept tidy across pushes and webhook redeliveries:
 
-Anchoring rule (the load-bearing bit): GitHub rejects the *entire* review with a
-422 if any inline comment points at a line that isn't part of the diff. So we
-parse each file's patch to learn exactly which lines are commentable and only
-anchor findings there. Anything that can't anchor — PR-level findings, or a line
-outside the diff — folds into the summary instead (acceptance criterion 3). As a
-belt-and-braces guard, :func:`post_review` retries summary-only if GitHub still
-422s, so a single bad anchor never costs the whole review.
+- **Summary** — a single issue comment tagged with a hidden marker. On every
+  push we find it by marker and *edit it in place* rather than stacking a new
+  one (RC1-118 AC3: refresh/supersede rather than pile up). This is why the
+  summary moved out of the review body since RC1-117.
+- **Inline comments** — anchored to changed-hunk lines via the Reviews API, but
+  only the ones we haven't already posted: identical comments on unchanged lines
+  are skipped (AC2).
+- **Verdict** — lives on a review object (Comment vs. Request changes, from
+  :mod:`app.verdict`). Our prior *Request changes* reviews are dismissed before
+  we (re-)assert the verdict, so a stale gate never lingers and they don't pile
+  up. We only dismiss reviews carrying our own marker — never a human's.
+
+Anchoring still only targets lines the diff actually contains (GitHub 422s the
+whole review otherwise); :func:`commentable_lines` computes that set, and
+:func:`post_review` retries the review without inline comments if GitHub still
+rejects them, so the verdict and summary always land.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from typing import Any
 
 from app.github import GitHubClient, GitHubError
 from app.models import Finding, PullRequest, ReviewResult
 from app.verdict import EVENT_REQUEST_CHANGES, decide_event, gating_findings
+
+# Hidden markers let us recognize our own artifacts on later pushes without
+# needing the bot's identity: HTML comments render invisibly on GitHub.
+SUMMARY_MARKER = "<!-- pr-review-agent:summary -->"
+REVIEW_MARKER = "<!-- pr-review-agent:review -->"
 
 _SEVERITY_LABEL = {"blocker": "🛑 blocker", "warning": "⚠️ warning", "nit": "💡 nit"}
 
@@ -58,14 +70,7 @@ def commentable_lines(patch: str | None) -> set[int]:
     return lines
 
 
-@dataclass
-class ReviewPayload:
-    """The pieces of a single GitHub review, ready to POST."""
-
-    body: str
-    event: str
-    comments: list[dict] = field(default_factory=list)
-
+# --- finding -> markdown --------------------------------------------------
 
 def _comment_body(finding: Finding) -> str:
     """Markdown for one inline comment: severity tag, message, optional fix."""
@@ -100,6 +105,23 @@ def _verdict_note(findings: list[Finding], block_on: list[str], event: str) -> s
     return "**Verdict: advisory** — no blocking findings; nothing here gates the merge."
 
 
+# --- payload pieces -------------------------------------------------------
+
+def split_findings(pr: PullRequest, result: ReviewResult) -> tuple[list[dict], list[Finding]]:
+    """Split findings into inline comments (anchorable) and summary overflow."""
+    anchors = {f.filename: commentable_lines(f.patch) for f in pr.files}
+    comments: list[dict] = []
+    overflow: list[Finding] = []
+    for f in result.sorted_findings:  # most serious first
+        if f.file and f.line and f.line in anchors.get(f.file, set()):
+            comments.append(
+                {"path": f.file, "line": f.line, "side": "RIGHT", "body": _comment_body(f)}
+            )
+        else:
+            overflow.append(f)
+    return comments, overflow
+
+
 def build_summary_body(
     summary: str,
     overflow: list[Finding],
@@ -107,12 +129,11 @@ def build_summary_body(
     block_on: list[str],
     event: str,
 ) -> str:
-    """Compose the review's top-level body.
-
-    Leads with the model's summary (already ordered most-serious-first), then
-    lists any findings that couldn't anchor inline, then the verdict.
-    """
-    parts: list[str] = [summary.strip() or "_No summary provided._"]
+    """Compose the upserted summary comment (leads with the model's summary)."""
+    parts: list[str] = [
+        SUMMARY_MARKER,
+        summary.strip() or "_No summary provided._",
+    ]
     if overflow:
         parts.append(
             "### Findings not tied to a specific line\n"
@@ -123,39 +144,66 @@ def build_summary_body(
     return "\n\n".join(parts)
 
 
-def build_review_payload(
-    pr: PullRequest, result: ReviewResult, block_on: list[str]
-) -> ReviewPayload:
-    """Split findings into inline comments vs. summary, and pick the verdict."""
-    anchors = {f.filename: commentable_lines(f.patch) for f in pr.files}
-    comments: list[dict] = []
-    overflow: list[Finding] = []
-    for f in result.sorted_findings:  # most serious first
-        if f.file and f.line and f.line in anchors.get(f.file, set()):
-            comments.append(
-                {
-                    "path": f.file,
-                    "line": f.line,
-                    "side": "RIGHT",
-                    "body": _comment_body(f),
-                }
-            )
-        else:
-            overflow.append(f)
-    event = decide_event(result.findings, block_on)
-    body = build_summary_body(result.summary, overflow, result.findings, block_on, event)
-    return ReviewPayload(body=body, event=event, comments=comments)
-
-
-def _fold_comments_into_body(payload: ReviewPayload, result: ReviewResult) -> str:
-    """Fallback body when inline comments are rejected: list every finding."""
-    listed = "\n".join(_summary_line(f) for f in result.sorted_findings)
-    extra = (
-        "### All findings\n" + listed
-        if listed
-        else "_No findings._"
+def _review_body(event: str) -> str:
+    """Short body for the review object (the prose lives in the summary comment)."""
+    note = (
+        "A blocking finding is present — see the review summary comment for details."
+        if event == EVENT_REQUEST_CHANGES
+        else "See the review summary comment for the full write-up."
     )
-    return f"{payload.body}\n\n{extra}"
+    return f"{REVIEW_MARKER}\n{note}"
+
+
+def find_marked(comments: list[dict], marker: str) -> dict | None:
+    """Return the first comment whose body carries ``marker`` (ours), if any."""
+    for c in comments:
+        if marker in (c.get("body") or ""):
+            return c
+    return None
+
+
+def filter_new_comments(comments: list[dict], existing: list[dict]) -> list[dict]:
+    """Drop inline comments already present (same path + line + body)."""
+    seen = {(c.get("path"), c.get("line"), c.get("body")) for c in existing}
+    return [c for c in comments if (c["path"], c["line"], c["body"]) not in seen]
+
+
+# --- orchestration --------------------------------------------------------
+
+def _upsert_summary(client: GitHubClient, pr: PullRequest, body: str) -> str:
+    existing = find_marked(client.list_issue_comments(pr.ref), SUMMARY_MARKER)
+    if existing:
+        client.update_issue_comment(pr.ref, existing["id"], body)
+        return "updated"
+    client.create_issue_comment(pr.ref, body)
+    return "created"
+
+
+def _dismiss_prior_change_requests(client: GitHubClient, pr: PullRequest) -> int:
+    """Dismiss our own still-active 'Request changes' reviews (marker-scoped)."""
+    dismissed = 0
+    for rv in client.list_reviews(pr.ref):
+        if rv.get("state") == "CHANGES_REQUESTED" and REVIEW_MARKER in (rv.get("body") or ""):
+            client.dismiss_review(pr.ref, rv["id"], "Superseded by a newer review.")
+            dismissed += 1
+    return dismissed
+
+
+def _create_review(
+    client: GitHubClient, pr: PullRequest, event: str, comments: list[dict], commit_id: str | None
+) -> dict:
+    """Create the review, retrying without inline comments on a 422 anchor reject."""
+    try:
+        return client.create_review(
+            pr.ref, body=_review_body(event), event=event,
+            comments=comments or None, commit_id=commit_id,
+        )
+    except GitHubError as exc:
+        if not comments or exc.status != 422:
+            raise
+        return client.create_review(
+            pr.ref, body=_review_body(event), event=event, comments=None, commit_id=commit_id,
+        )
 
 
 def post_review(
@@ -165,31 +213,33 @@ def post_review(
     *,
     block_on: list[str],
     commit_id: str | None = None,
-) -> dict:
-    """Post the review for ``pr`` and return GitHub's review object.
+) -> dict[str, Any]:
+    """Post/refresh the review for ``pr``; return a summary of what changed.
 
-    Pins the review to the head SHA so inline anchors resolve against the
-    reviewed commit. If GitHub still rejects the inline comments (422 — e.g. an
-    anchor edge case the patch parser missed), retry once summary-only with every
-    finding folded into the body, so the review always lands.
+    Upserts the single summary comment, posts only inline comments we haven't
+    posted before, supersedes our prior Request-changes reviews, and creates a
+    new review only when there's something new to say or a gate to (re-)assert.
     """
-    payload = build_review_payload(pr, result, block_on)
+    comments, overflow = split_findings(pr, result)
+    event = decide_event(result.findings, block_on)
     commit_id = commit_id or pr.head_sha or None
-    try:
-        return client.create_review(
-            pr.ref,
-            body=payload.body,
-            event=payload.event,
-            comments=payload.comments,
-            commit_id=commit_id,
-        )
-    except GitHubError as exc:
-        if not payload.comments or exc.status != 422:
-            raise
-        return client.create_review(
-            pr.ref,
-            body=_fold_comments_into_body(payload, result),
-            event=payload.event,
-            comments=None,
-            commit_id=commit_id,
-        )
+
+    summary_action = _upsert_summary(
+        client, pr, build_summary_body(result.summary, overflow, result.findings, block_on, event)
+    )
+    new_comments = filter_new_comments(comments, client.list_review_comments(pr.ref))
+    dismissed = _dismiss_prior_change_requests(client, pr)
+
+    # A review is only worth posting when it carries new inline comments or a
+    # blocking verdict to assert; otherwise the refreshed summary comment is it.
+    review_id = None
+    if new_comments or event == EVENT_REQUEST_CHANGES:
+        review_id = _create_review(client, pr, event, new_comments, commit_id).get("id")
+
+    return {
+        "summary_action": summary_action,
+        "new_comments": len(new_comments),
+        "dismissed": dismissed,
+        "review_id": review_id,
+        "event": event,
+    }

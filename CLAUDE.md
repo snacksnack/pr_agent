@@ -39,7 +39,7 @@ Milestone 2 — App + webhook:
 - [x] RC1-116 webhook receiver (`app/webhook.py`)
 - [x] RC1-117 review posting + verdict (`app/posting.py`, `app/verdict.py`;
       resolves the RC1-114 verdict-policy carryover)
-- [ ] RC1-118 re-push dedup
+- [x] RC1-118 re-push dedup (`app/dedup.py` + upsert/supersede in `app/posting.py`)
 Milestone 3 — deploy: RC1-119 Dockerize + Fly.io · RC1-120 register/install + e2e.
 
 ## Layout
@@ -52,8 +52,9 @@ app/
   github.py     PR ingestion (httpx)
   auth.py       GitHub App auth: JWT -> installation tokens (RC1-115)
   webhook.py    FastAPI receiver: HMAC verify, ack-fast, background review (RC1-116)
-  posting.py    post one review (summary + inline comments) via Reviews API (RC1-117)
+  posting.py    post/refresh review: upsert summary comment + inline comments (RC1-117/118)
   verdict.py    verdict policy: gate on block_on category only (RC1-117)
+  dedup.py      re-push/redelivery dedup store (RC1-118)
   review.py     dry-run CLI (RC1-113)
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()

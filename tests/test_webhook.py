@@ -200,18 +200,15 @@ def test_healthz_ok():
 
 # --- default processor wires ingest -> review -> post ---------------------
 
-def test_process_event_ingests_reviews_and_posts(monkeypatch):
+def _wire_fakes(monkeypatch, pr, posted):
+    """Stub the lazily-imported deps of process_event; return nothing."""
     import app.auth
     import app.agent.reviewer
     import app.posting
-    from app.models import PRRef, PullRequest, ReviewResult
-
-    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
-    posted: dict = {}
+    from app.models import ReviewResult
 
     class FakeClient:
         def fetch_pull_request(self, ref):
-            assert (ref.owner, ref.repo, ref.number) == ("octo", "hello", 42)
             return pr
 
     class FakeAuth:
@@ -225,23 +222,70 @@ def test_process_event_ingests_reviews_and_posts(monkeypatch):
             return FakeClient()
 
     def fake_review(pull_request, repo_tools, client=None):
-        assert pull_request is pr
+        posted["reviewed"] = posted.get("reviewed", 0) + 1
         return ReviewResult(summary="ok", model="m")
 
     def fake_post(client, pull_request, result, *, block_on, commit_id=None):
         posted.update(pr=pull_request, block_on=block_on, commit_id=commit_id)
-        return {"id": 5, "state": "COMMENTED"}
+        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
+                "review_id": 5, "event": "COMMENT"}
 
     monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
     monkeypatch.setattr(app.agent.reviewer, "review_pull_request", fake_review)
     monkeypatch.setattr(app.posting, "post_review", fake_post)
 
+
+def test_process_event_ingests_reviews_and_posts(monkeypatch):
+    from app.dedup import DedupStore
+    from app.models import PRRef, PullRequest
+
+    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
+    posted: dict = {}
+    _wire_fakes(monkeypatch, pr, posted)
+
     event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999)
-    process_event(event)  # should not raise
+    process_event(event, store=DedupStore())
 
     assert posted["pr"] is pr
     assert posted["commit_id"] == "abc123def4567890"
     assert "leaked_secret" in posted["block_on"]
+
+
+def test_process_event_skips_duplicate_delivery_and_reviewed_sha(monkeypatch):
+    from app.dedup import DedupStore
+    from app.models import PRRef, PullRequest
+
+    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="sha-head")
+    posted: dict = {}
+    _wire_fakes(monkeypatch, pr, posted)
+    store = DedupStore()
+
+    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "sha-head", 1)
+    process_event(event, store=store)
+    assert posted.get("reviewed") == 1
+
+    # Same delivery id again -> skipped before any work.
+    process_event(event, store=store)
+    assert posted.get("reviewed") == 1
+
+    # New delivery, but the same head SHA was already reviewed -> skipped.
+    again = WebhookEvent("d-2", "synchronize", "octo", "hello", 42, "sha-head", 1)
+    process_event(again, store=store)
+    assert posted.get("reviewed") == 1
+
+
+def test_process_event_skips_stale_head(monkeypatch):
+    from app.dedup import DedupStore
+    from app.models import PRRef, PullRequest
+
+    # The PR's current head has moved past the event's SHA -> stale, skip.
+    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="newer-sha")
+    posted: dict = {}
+    _wire_fakes(monkeypatch, pr, posted)
+
+    event = WebhookEvent("d-1", "synchronize", "octo", "hello", 42, "older-sha", 1)
+    process_event(event, store=DedupStore())
+    assert "reviewed" not in posted  # never ran the review
 
 
 # --- logging never leaks secrets ------------------------------------------
