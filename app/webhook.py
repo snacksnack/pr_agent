@@ -117,40 +117,42 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
 # --- default background processor ----------------------------------------
 
 def process_event(event: WebhookEvent) -> None:
-    """Run the review for a delivered PR (default background worker).
+    """Run the review for a delivered PR and post it back (default worker).
 
-    Mints an installation token, ingests the PR, and runs the agentic review
-    loop from the diff alone (the live service has no local checkout, so the
-    agent's file tools point at an empty dir and it reviews the patch).
+    Mints an installation token, ingests the PR, runs the agentic review loop
+    from the diff alone (the live service has no local checkout, so the agent's
+    file tools point at an empty dir and it reviews the patch), then posts a
+    single review with the verdict via :func:`app.posting.post_review`.
 
-    Posting the result back to GitHub is RC1-117; for now we log the outcome so
-    the async path is observable end-to-end. Exceptions are swallowed and logged
-    — a background task has no client to return an error to, and one bad delivery
-    must not take the worker down.
+    Exceptions are swallowed and logged — a background task has no client to
+    return an error to, and one bad delivery must not take the worker down.
     """
     from app.auth import GitHubAppAuth
     from app.agent.reviewer import review_pull_request
     from app.agent.tools import RepoTools
     from app.models import PRRef
+    from app.posting import post_review
 
     log = _event_logger(event)
     try:
         with GitHubAppAuth() as auth:
             gh = auth.client_for_repo(event.owner, event.repo)
             pr = gh.fetch_pull_request(PRRef(event.owner, event.repo, event.number))
-        with tempfile.TemporaryDirectory(prefix="pr-review-") as empty:
-            result = review_pull_request(pr, RepoTools(empty), client=None)
+            with tempfile.TemporaryDirectory(prefix="pr-review-") as empty:
+                result = review_pull_request(pr, RepoTools(empty), client=None)
+            review = post_review(
+                gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha
+            )
     except Exception:  # noqa: BLE001 — background worker is the last line of defense
         log.exception("review_failed")
         return
 
     log.info(
-        "review_complete summary_len=%d findings=%d blockers=%d",
-        len(result.summary),
+        "review_posted findings=%d event=%s review_id=%s",
         len(result.findings),
-        len(result.blockers),
+        review.get("state") or review.get("id", "?"),
+        review.get("id", "?"),
     )
-    # TODO(RC1-117): post the structured review + verdict back to the PR.
 
 
 # --- structured logging ---------------------------------------------------

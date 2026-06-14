@@ -92,19 +92,28 @@ def test_findings_render_severity_location_message_and_fix():
 
 # --- exit code reflects block_on ------------------------------------------
 
-def test_blocker_severity_blocks(monkeypatch):
-    findings = [Finding("blocker", "security", "AWS key committed", file="cfg.py", line=3)]
+def test_leaked_secret_category_blocks(monkeypatch):
+    # The committed-secret category is the canonical gate.
+    findings = [Finding("blocker", "leaked_secret", "AWS key committed", file="cfg.py", line=3)]
+    assert "leaked_secret" in cli.settings.block_on  # default block_on
     code, text = _run(["--pr", "octocat/hello#42"], result=_result(findings))
     assert code == cli.EXIT_BLOCKED
     assert "Verdict: BLOCK" in text
 
 
-def test_block_on_category_blocks(monkeypatch):
-    # A non-blocker finding whose category is in block_on still gates.
-    monkeypatch.setattr(cli.settings, "review_block_on", "leaked_secret", raising=False)
-    findings = [Finding("warning", "leaked_secret", "token in fixture", file="t.py", line=1)]
-    # settings.block_on parses the CSV; confirm our finding category matches it.
-    assert "leaked_secret" in cli.settings.block_on
+def test_non_secret_blocker_is_advisory(monkeypatch):
+    # RC1-114 carryover: a blocker-severity finding that ISN'T a block_on
+    # category (e.g. a correctness defect) is surfaced but does NOT gate.
+    findings = [Finding("blocker", "security", "missing authz check", file="a.py", line=3)]
+    code, _ = _run(["--pr", "octocat/hello#42"], result=_result(findings))
+    assert code == cli.EXIT_OK
+
+
+def test_block_on_is_configurable(monkeypatch):
+    # A non-blocker finding whose category is in a configured block_on gates.
+    monkeypatch.setattr(cli.settings, "review_block_on", "security", raising=False)
+    findings = [Finding("warning", "security", "weak crypto", file="t.py", line=1)]
+    assert "security" in cli.settings.block_on  # parsed from the CSV
     code, _ = _run(["--pr", "octocat/hello#42"], result=_result(findings))
     assert code == cli.EXIT_BLOCKED
 

@@ -26,7 +26,8 @@ if TYPE_CHECKING:  # import-only-for-typing keeps this module runtime-dependency
 CATEGORIES: tuple[str, ...] = (
     "convention",       # consistency with the repo's own existing style/patterns
     "pythonic",         # idiomatic, readable Python
-    "security",         # secrets, injection, unsafe deserialization, authz, etc.
+    "leaked_secret",    # a committed secret/credential/key — the blocking case
+    "security",         # other security: injection, unsafe deserialization, authz, etc.
     "tests",            # coverage of the changed paths / missing tests
     "dependencies",     # supply-chain / new or bumped dependency risk
     "error_handling",   # error handling, logging, observability
@@ -73,11 +74,14 @@ REVIEW_RUBRIC = (
     "   args, broad bare excepts, reinventing stdlib, dataclass/abstraction "
     "   misuse.\n"
     "\n"
-    "3. Security & secrets (category: security)\n"
-    "   Highest priority. A committed secret, credential, token, or private key "
-    "   is a blocker. Also flag injection (SQL/command/path), unsafe "
-    "   deserialization (pickle/yaml.load), shelling out with untrusted input, "
-    "   missing authz checks, and logging of sensitive data.\n"
+    "3. Security & secrets (categories: leaked_secret, security)\n"
+    "   Highest priority. A committed secret, credential, API token, or private "
+    "   key present in the diff is THE canonical blocker — tag it category "
+    "   'leaked_secret', severity 'blocker' (this is the only category that gates "
+    "   a merge). Use category 'security' for other security issues — injection "
+    "   (SQL/command/path), unsafe deserialization (pickle/yaml.load), shelling "
+    "   out with untrusted input, missing authz checks, and logging of sensitive "
+    "   data — at whatever severity fits their impact.\n"
     "\n"
     "4. Test coverage of changed paths (category: tests)\n"
     "   Verify the changed/added code paths have corresponding tests. Flag new "
@@ -136,8 +140,8 @@ SYSTEM_PROMPT = (
     "sake.\n"
     "\n"
     "Reviews are advisory by default. You report findings; a committed "
-    "secret is the canonical case that should block a merge. Everything else "
-    "informs the author rather than gating them.\n"
+    "secret (category 'leaked_secret') is the canonical case that should block a "
+    "merge. Everything else informs the author rather than gating them.\n"
     "\n"
     "Ground every finding in evidence. Use the repo-exploration tools to read "
     "the surrounding code before judging — especially for convention "
@@ -204,9 +208,10 @@ SUBMIT_TOOL = {
                             "type": "string",
                             "enum": ["blocker", "warning", "nit"],
                             "description": (
-                                "blocker = stop the merge (e.g. committed "
-                                "secret); warning = real issue worth fixing; "
-                                "nit = minor/optional."
+                                "blocker = stop the merge (e.g. a committed "
+                                "secret, which goes under category "
+                                "'leaked_secret'); warning = real issue worth "
+                                "fixing; nit = minor/optional."
                             ),
                         },
                         "category": {

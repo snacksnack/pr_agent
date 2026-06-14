@@ -20,6 +20,7 @@ from app.webhook import (
     WebhookParseError,
     create_app,
     parse_pull_request_event,
+    process_event,
     verify_signature,
 )
 
@@ -195,6 +196,52 @@ def test_pull_request_missing_fields_returns_400():
 
 def test_healthz_ok():
     assert _client().get("/healthz").json() == {"status": "ok"}
+
+
+# --- default processor wires ingest -> review -> post ---------------------
+
+def test_process_event_ingests_reviews_and_posts(monkeypatch):
+    import app.auth
+    import app.agent.reviewer
+    import app.posting
+    from app.models import PRRef, PullRequest, ReviewResult
+
+    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
+    posted: dict = {}
+
+    class FakeClient:
+        def fetch_pull_request(self, ref):
+            assert (ref.owner, ref.repo, ref.number) == ("octo", "hello", 42)
+            return pr
+
+    class FakeAuth:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def client_for_repo(self, owner, repo):
+            return FakeClient()
+
+    def fake_review(pull_request, repo_tools, client=None):
+        assert pull_request is pr
+        return ReviewResult(summary="ok", model="m")
+
+    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
+        posted.update(pr=pull_request, block_on=block_on, commit_id=commit_id)
+        return {"id": 5, "state": "COMMENTED"}
+
+    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
+    monkeypatch.setattr(app.agent.reviewer, "review_pull_request", fake_review)
+    monkeypatch.setattr(app.posting, "post_review", fake_post)
+
+    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999)
+    process_event(event)  # should not raise
+
+    assert posted["pr"] is pr
+    assert posted["commit_id"] == "abc123def4567890"
+    assert "leaked_secret" in posted["block_on"]
 
 
 # --- logging never leaks secrets ------------------------------------------

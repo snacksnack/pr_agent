@@ -28,7 +28,16 @@ _SPEC_RE = re.compile(r"^(?P<owner>[^/\s]+)/(?P<repo>[^/#\s]+)#(?P<number>\d+)$"
 
 
 class GitHubError(RuntimeError):
-    """Raised for GitHub API failures with an actionable message."""
+    """Raised for GitHub API failures with an actionable message.
+
+    ``status`` carries the HTTP status code when the failure is an API response
+    (vs. a transport error), so callers can react to specific codes — e.g. the
+    review poster retries summary-only on a 422 from a bad inline anchor.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def parse_pr_spec(spec: str) -> PRRef:
@@ -106,6 +115,32 @@ class GitHubClient:
             raise GitHubError(f"GitHub returned {resp.status_code} for {url}")
         return resp
 
+    def _post(self, path: str, json: dict) -> httpx.Response:
+        url = path if path.startswith("http") else f"{self._base_url}{path}"
+        try:
+            resp = self._client.post(url, headers=self._headers(), json=json)
+        except httpx.HTTPError as exc:  # network/timeout
+            raise GitHubError(f"Request to {url} failed: {exc}") from exc
+
+        if resp.status_code in (401, 403):
+            raise GitHubError(
+                f"Authentication or permission error ({resp.status_code}) for "
+                f"{url}. The token needs pull-request write access.",
+                status=resp.status_code,
+            )
+        if resp.status_code >= 400:
+            # Surface GitHub's message (e.g. why a review/comment was rejected).
+            detail = ""
+            try:
+                detail = f": {resp.json().get('message', '')}"
+            except ValueError:
+                pass
+            raise GitHubError(
+                f"GitHub returned {resp.status_code} for {url}{detail}",
+                status=resp.status_code,
+            )
+        return resp
+
     def _fetch_files(
         self, ref: PRRef, *, max_files: int
     ) -> tuple[list[ChangedFile], bool]:
@@ -161,6 +196,33 @@ class GitHubClient:
             truncated_files=truncated,
             html_url=data.get("html_url"),
         )
+
+    def create_review(
+        self,
+        ref: PRRef,
+        *,
+        body: str,
+        event: str,
+        comments: list[dict] | None = None,
+        commit_id: str | None = None,
+    ) -> dict:
+        """Create a single PR review (summary + optional inline comments).
+
+        Posts to the Reviews API so all comments land as one review object
+        rather than a scatter of standalone comments. ``event`` is ``COMMENT``
+        or ``REQUEST_CHANGES`` (see :mod:`app.verdict`); ``comments`` are inline
+        anchors (``path``/``line``/``side``/``body``); ``commit_id`` pins the
+        review to the head SHA so anchors resolve against the reviewed commit.
+        """
+        payload: dict[str, object] = {"body": body, "event": event}
+        if commit_id:
+            payload["commit_id"] = commit_id
+        if comments:
+            payload["comments"] = comments
+        resp = self._post(
+            f"/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews", payload
+        )
+        return resp.json()
 
 
 def _parse_file(item: dict) -> ChangedFile:
