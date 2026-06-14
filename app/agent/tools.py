@@ -39,6 +39,52 @@ IGNORED_DIRS = {
     ".ruff_cache",
 }
 
+# Secret/credential files the exploration tools must never read, grep, or list.
+# These are typically gitignored and only present incidentally in a local
+# checkout, so surfacing them caused a false "committed secret" blocker and
+# leaked real local secrets into the model context (RC1-114 tuning finding).
+# Genuine *committed* secrets are still caught from the PR diff at ingestion;
+# the exploration tools just shouldn't be the vector. Filename globs, matched
+# case-insensitively.
+SECRET_FILE_GLOBS = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "credentials",
+    "credentials.*",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+)
+# Lookalikes that are safe and useful context (templates, public keys): allowed
+# even though they match a secret glob above. Checked first.
+SECRET_ALLOW_GLOBS = (
+    "*.example",
+    "*.sample",
+    "*.template",
+    "*.dist",
+    "*.pub",
+)
+
+
+def is_secret_file(name: str) -> bool:
+    """True if a filename looks like a secret/credential file to be withheld.
+
+    Allow-list (templates, ``*.pub``) wins over the secret globs so that, e.g.,
+    ``.env.example`` stays readable while ``.env`` / ``.env.local`` do not.
+    """
+    lowered = name.lower()
+    if any(fnmatch.fnmatch(lowered, pat) for pat in SECRET_ALLOW_GLOBS):
+        return False
+    return any(fnmatch.fnmatch(lowered, pat) for pat in SECRET_FILE_GLOBS)
+
 
 class ToolError(Exception):
     """A recoverable tool failure (bad path, binary file, etc.).
@@ -74,11 +120,14 @@ class RepoTools:
 
     def _walk_files(self, base: Path):
         if base.is_file():
-            yield base
+            if not is_secret_file(base.name):
+                yield base
             return
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
             for name in sorted(filenames):
+                if is_secret_file(name):
+                    continue  # never grep secret/credential files
                 yield Path(dirpath) / name
 
     # -- tools -----------------------------------------------------------
@@ -91,6 +140,12 @@ class RepoTools:
     ) -> str:
         """Return a file's contents with line numbers, optionally a line range."""
         p = self._resolve(path)
+        if is_secret_file(p.name):
+            raise ToolError(
+                f"refused: {path!r} looks like a secrets/credentials file; the "
+                "reviewer does not read these (they're typically gitignored and "
+                "not part of the PR). Review committed changes from the diff."
+            )
         if not p.exists():
             raise ToolError(f"no such file: {path!r}")
         if p.is_dir():
@@ -142,6 +197,8 @@ class RepoTools:
         for child in children:
             if child.name in IGNORED_DIRS:
                 continue
+            if child.is_file() and is_secret_file(child.name):
+                continue  # hide secret/credential files from listings
             if child.is_dir():
                 entries.append(f"{child.name}/")
             else:
@@ -243,7 +300,8 @@ TOOL_SCHEMAS = [
             "Read a UTF-8 text file from the repository, returned with line "
             "numbers. Paths are relative to the repo root. Optionally pass "
             "start_line/end_line to read a slice. Output is truncated for very "
-            "large files."
+            "large files. Secret/credential files (e.g. .env, private keys) are "
+            "not readable and won't appear in listings."
         ),
         "input_schema": {
             "type": "object",
