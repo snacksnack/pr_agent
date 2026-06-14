@@ -70,6 +70,7 @@ app/
   __main__.py          # `python -m app` config sanity check (RC1-107)
   config.py            # typed settings via pydantic-settings (RC1-107)
   github.py            # PR ingestion: diff + metadata (RC1-108)
+  auth.py              # GitHub App auth: JWT -> installation tokens (RC1-115)
   review.py            # local dry-run CLI: `python -m app.review` (RC1-113)
   agent/
     tools.py           # repo-exploration tools: read / list / grep (RC1-109)
@@ -92,6 +93,7 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_MODEL` | Workhorse review model | `claude-sonnet-4-6` |
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 
 ## Build plan (RC1-106)
 

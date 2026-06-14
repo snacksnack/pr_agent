@@ -34,8 +34,11 @@ Milestone 1 — validate locally (no infra):
 - [x] RC1-114 review-quality tuning (gate) — signed off; verdict-policy fix
       carried to RC1-117 as a go-live prerequisite (see docs/rc1-114-tuning.md)
 
-Milestone 2 — App + webhook: RC1-115 App auth · RC1-116 webhook receiver ·
-RC1-117 review posting + verdict · RC1-118 re-push dedup.
+Milestone 2 — App + webhook:
+- [x] RC1-115 App auth (`app/auth.py`)
+- [ ] RC1-116 webhook receiver
+- [ ] RC1-117 review posting + verdict
+- [ ] RC1-118 re-push dedup
 Milestone 3 — deploy: RC1-119 Dockerize + Fly.io · RC1-120 register/install + e2e.
 
 ## Layout
@@ -46,6 +49,7 @@ app/
   config.py     typed settings (pydantic-settings); import `settings`
   models.py     normalized data: PRRef, ChangedFile, PullRequest, Finding, ReviewResult
   github.py     PR ingestion (httpx)
+  auth.py       GitHub App auth: JWT -> installation tokens (RC1-115)
   review.py     dry-run CLI (RC1-113)
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
