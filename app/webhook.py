@@ -17,8 +17,8 @@ the parsed JSON would change the bytes and break the HMAC). Anything unsigned or
 forged is rejected with 401 before we parse or schedule anything.
 
 The background *processor* is injectable so tests run offline; the default
-(:func:`process_event`) mints an installation token, ingests the PR, and runs the
-review loop. Posting the review to GitHub is RC1-117 — see the TODO there.
+(:func:`process_event`) mints an installation token, ingests the PR, runs the
+review loop, and posts the review (RC1-117), with re-push dedup (RC1-118).
 """
 from __future__ import annotations
 
@@ -27,11 +27,14 @@ import hmac
 import logging
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from app.config import settings
+
+if TYPE_CHECKING:  # avoid importing the store at module load; worker imports it lazily
+    from app.dedup import DedupStore
 
 logger = logging.getLogger("app.webhook")
 
@@ -116,13 +119,18 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
 
 # --- default background processor ----------------------------------------
 
-def process_event(event: WebhookEvent) -> None:
+def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> None:
     """Run the review for a delivered PR and post it back (default worker).
 
     Mints an installation token, ingests the PR, runs the agentic review loop
     from the diff alone (the live service has no local checkout, so the agent's
-    file tools point at an empty dir and it reviews the patch), then posts a
-    single review with the verdict via :func:`app.posting.post_review`.
+    file tools point at an empty dir and it reviews the patch), then posts/
+    refreshes the review via :func:`app.posting.post_review`.
+
+    Dedup (RC1-118): skip webhook redeliveries (same delivery id), commits we've
+    already reviewed (same head SHA), and *stale* events — if the PR's current
+    head has moved past the event's SHA, a newer push will (or already did)
+    trigger its own review, so only the latest head is reviewed.
 
     Exceptions are swallowed and logged — a background task has no client to
     return an error to, and one bad delivery must not take the worker down.
@@ -130,28 +138,44 @@ def process_event(event: WebhookEvent) -> None:
     from app.auth import GitHubAppAuth
     from app.agent.reviewer import review_pull_request
     from app.agent.tools import RepoTools
+    from app.dedup import dedup_store
     from app.models import PRRef
     from app.posting import post_review
 
+    store = store if store is not None else dedup_store
     log = _event_logger(event)
+
+    if store.seen_delivery(event.delivery_id):
+        log.info("skip_duplicate_delivery")
+        return
+    if store.already_reviewed(event.slug, event.head_sha):
+        log.info("skip_already_reviewed")
+        return
+
     try:
         with GitHubAppAuth() as auth:
             gh = auth.client_for_repo(event.owner, event.repo)
             pr = gh.fetch_pull_request(PRRef(event.owner, event.repo, event.number))
+            if pr.head_sha and pr.head_sha != event.head_sha:
+                log.info("skip_stale_head current=%s", pr.head_sha[:12])
+                return
             with tempfile.TemporaryDirectory(prefix="pr-review-") as empty:
                 result = review_pull_request(pr, RepoTools(empty), client=None)
-            review = post_review(
+            outcome = post_review(
                 gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha
             )
+        store.mark_reviewed(event.slug, event.head_sha)
     except Exception:  # noqa: BLE001 — background worker is the last line of defense
         log.exception("review_failed")
         return
 
     log.info(
-        "review_posted findings=%d event=%s review_id=%s",
+        "review_posted findings=%d event=%s summary=%s new_comments=%d dismissed=%d",
         len(result.findings),
-        review.get("state") or review.get("id", "?"),
-        review.get("id", "?"),
+        outcome["event"],
+        outcome["summary_action"],
+        outcome["new_comments"],
+        outcome["dismissed"],
     )
 
 

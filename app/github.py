@@ -115,10 +115,11 @@ class GitHubClient:
             raise GitHubError(f"GitHub returned {resp.status_code} for {url}")
         return resp
 
-    def _post(self, path: str, json: dict) -> httpx.Response:
+    def _send(self, method: str, path: str, json: dict) -> httpx.Response:
+        """POST/PATCH/PUT helper for write endpoints (reviews, comments)."""
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         try:
-            resp = self._client.post(url, headers=self._headers(), json=json)
+            resp = self._client.request(method, url, headers=self._headers(), json=json)
         except httpx.HTTPError as exc:  # network/timeout
             raise GitHubError(f"Request to {url} failed: {exc}") from exc
 
@@ -140,6 +141,29 @@ class GitHubClient:
                 status=resp.status_code,
             )
         return resp
+
+    def _post(self, path: str, json: dict) -> httpx.Response:
+        return self._send("POST", path, json)
+
+    def _patch(self, path: str, json: dict) -> httpx.Response:
+        return self._send("PATCH", path, json)
+
+    def _put(self, path: str, json: dict) -> httpx.Response:
+        return self._send("PUT", path, json)
+
+    def _get_all(self, path: str, *, max_items: int = 500) -> list[dict]:
+        """Fetch a paginated list endpoint into one list (bounded)."""
+        items: list[dict] = []
+        page = 1
+        while True:
+            batch = self._get(path, params={"per_page": 100, "page": page}).json()
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < 100 or len(items) >= max_items:
+                break
+            page += 1
+        return items
 
     def _fetch_files(
         self, ref: PRRef, *, max_files: int
@@ -223,6 +247,46 @@ class GitHubClient:
             f"/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews", payload
         )
         return resp.json()
+
+    # -- issue comments (the upserted review summary lives here) ---------
+
+    def list_issue_comments(self, ref: PRRef) -> list[dict]:
+        """All issue comments on the PR (a PR is an issue for the comments API)."""
+        return self._get_all(
+            f"/repos/{ref.owner}/{ref.repo}/issues/{ref.number}/comments"
+        )
+
+    def create_issue_comment(self, ref: PRRef, body: str) -> dict:
+        return self._post(
+            f"/repos/{ref.owner}/{ref.repo}/issues/{ref.number}/comments",
+            {"body": body},
+        ).json()
+
+    def update_issue_comment(self, ref: PRRef, comment_id: int, body: str) -> dict:
+        return self._patch(
+            f"/repos/{ref.owner}/{ref.repo}/issues/comments/{comment_id}",
+            {"body": body},
+        ).json()
+
+    # -- review comments + reviews (for dedup + supersede) --------------
+
+    def list_review_comments(self, ref: PRRef) -> list[dict]:
+        """Inline review comments already on the PR (used to skip duplicates)."""
+        return self._get_all(
+            f"/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/comments"
+        )
+
+    def list_reviews(self, ref: PRRef) -> list[dict]:
+        return self._get_all(
+            f"/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews"
+        )
+
+    def dismiss_review(self, ref: PRRef, review_id: int, message: str) -> dict:
+        """Dismiss a prior review (only valid for CHANGES_REQUESTED / APPROVED)."""
+        return self._put(
+            f"/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/dismissals",
+            {"message": message, "event": "DISMISS"},
+        ).json()
 
 
 def _parse_file(item: dict) -> ChangedFile:
