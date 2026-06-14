@@ -75,8 +75,12 @@ review on a background task. It handles `pull_request` `opened` / `synchronize` 
 uvicorn app.webhook:app --port 8000     # GET /healthz, POST /webhook
 ```
 
-Posting the review back to the PR is wired up in RC1-117; today the background
-worker runs the review and logs the outcome.
+The background worker posts a **single review** via the GitHub Reviews API: a
+top-level summary plus inline comments anchored to changed-hunk lines, with
+severity tags. Findings that can't attach to a diff line (PR-level, or a line
+outside the diff) fold into the summary. The verdict defaults to **Comment** and
+escalates to **Request changes** only when a finding's category is in `block_on`
+(default `leaked_secret`); `block_on` is configurable via `REVIEW_BLOCK_ON`.
 
 ## Layout
 
@@ -87,6 +91,8 @@ app/
   github.py            # PR ingestion: diff + metadata (RC1-108)
   auth.py              # GitHub App auth: JWT -> installation tokens (RC1-115)
   webhook.py           # FastAPI webhook receiver: HMAC verify + async review (RC1-116)
+  posting.py           # post one review (summary + inline comments) via Reviews API (RC1-117)
+  verdict.py           # verdict policy: Comment, or Request changes on a block_on category (RC1-117)
   review.py            # local dry-run CLI: `python -m app.review` (RC1-113)
   agent/
     tools.py           # repo-exploration tools: read / list / grep (RC1-109)

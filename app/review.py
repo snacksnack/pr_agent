@@ -38,6 +38,7 @@ from app.agent.tools import RepoTools, ToolError
 from app.config import settings
 from app.github import GitHubError, fetch_pull_request, parse_pr_spec
 from app.models import Finding, PRRef, PullRequest, ReviewResult
+from app.verdict import gating_findings
 
 # Exit codes (documented for later CI use).
 EXIT_OK = 0          # review ran; no blocking finding
@@ -84,15 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
 # --- block_on / verdict ---------------------------------------------------
 
 def blocking_findings(result: ReviewResult, block_on: list[str]) -> list[Finding]:
-    """Findings that should gate a merge under the current ``block_on`` policy.
+    """Findings that gate a merge under the verdict policy (RC1-117).
 
-    A finding gates if its category is named in ``block_on`` or it is a
-    ``blocker``-severity finding (the rubric reserves 'blocker' for the
-    block_on cases, e.g. a committed secret). The final verdict policy is
-    formalized in RC1-117; this is the dry-run approximation.
+    Delegates to the shared policy in :mod:`app.verdict`: a finding gates only
+    when its *category* is named in ``block_on`` (default ``leaked_secret``).
+    Severity alone never gates — a non-secret ``blocker`` is surfaced but stays
+    advisory (see docs/rc1-114-tuning.md).
     """
-    block = set(block_on)
-    return [f for f in result.findings if f.category in block or f.severity == "blocker"]
+    return gating_findings(result.findings, block_on)
 
 
 # --- n8n hook (stub-tolerant until RC1-112 lands) -------------------------

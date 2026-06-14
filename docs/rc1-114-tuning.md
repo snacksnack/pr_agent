@@ -190,3 +190,10 @@ Basis:
 **Carried to RC1-117 as a hard prerequisite (verdict policy):** the BLOCK verdict
 currently gates on any `blocker`-severity finding, not just committed secrets
 (demonstrated in Run 2). Must be fixed before going live — see Open questions.
+
+> **Resolved in RC1-117.** Committed secrets now get a distinct `leaked_secret`
+> category (added to the rubric/schema in `app/agent/prompts.py`), `block_on`
+> defaults to `leaked_secret`, and the shared verdict policy (`app/verdict.py`)
+> gates on `block_on` *category* only — the bare `severity == 'blocker'` clause
+> is gone. A non-secret blocker is surfaced prominently but stays advisory.
+> Covered by `tests/test_verdict.py` and the updated `tests/test_review.py`.
