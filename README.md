@@ -63,6 +63,21 @@ run metadata. The exit code is CI-friendly:
 | `1` | Review ran; a `block_on` finding was present |
 | `2` | The review could not be produced (e.g. bad PR spec, ingestion error) |
 
+## Webhook service (RC1-116)
+
+The live path is a FastAPI app that GitHub POSTs events to. It verifies the
+delivery's HMAC signature, acknowledges within GitHub's ~10s window, and runs the
+review on a background task. It handles `pull_request` `opened` / `synchronize` /
+`reopened`; everything else is acked and ignored. Needs `GITHUB_WEBHOOK_SECRET`
+(and, for the background review, the App credentials + `ANTHROPIC_API_KEY`).
+
+```bash
+uvicorn app.webhook:app --port 8000     # GET /healthz, POST /webhook
+```
+
+Posting the review back to the PR is wired up in RC1-117; today the background
+worker runs the review and logs the outcome.
+
 ## Layout
 
 ```
@@ -71,6 +86,7 @@ app/
   config.py            # typed settings via pydantic-settings (RC1-107)
   github.py            # PR ingestion: diff + metadata (RC1-108)
   auth.py              # GitHub App auth: JWT -> installation tokens (RC1-115)
+  webhook.py           # FastAPI webhook receiver: HMAC verify + async review (RC1-116)
   review.py            # local dry-run CLI: `python -m app.review` (RC1-113)
   agent/
     tools.py           # repo-exploration tools: read / list / grep (RC1-109)
@@ -94,6 +110,7 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
+| `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 
 ## Build plan (RC1-106)
 
