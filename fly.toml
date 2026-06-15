@@ -1,0 +1,46 @@
+# Fly.io app config for the PR Review Agent webhook service (RC1-119).
+#
+# Secrets are NOT defined here — set them with `fly secrets set` so they live in
+# Fly's encrypted store and never land in git:
+#   fly secrets set \
+#     ANTHROPIC_API_KEY=... \
+#     GITHUB_APP_ID=... \
+#     GITHUB_WEBHOOK_SECRET=... \
+#     GITHUB_APP_PRIVATE_KEY="$(cat path/to/app-private-key.pem)"
+#
+app = "pr-review-agent-snacksnack"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret runtime config. Secrets (above) override nothing here; review
+# behavior can also be tuned via `fly secrets`/`[env]` without a rebuild.
+[env]
+  LOG_LEVEL = "INFO"
+
+[http_service]
+  # Must match EXPOSE/$PORT in the Dockerfile.
+  internal_port = 8080
+  # GitHub webhooks are HTTPS-only; redirect any plain HTTP.
+  force_https = true
+  # Idle cost control: scale to zero when there's no traffic and cold-start a
+  # machine on the next webhook delivery. GitHub retries failed deliveries, so a
+  # brief wake-up latency is safe.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  # Healthcheck hits the existing FastAPI endpoint (app/webhook.py:/healthz).
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1

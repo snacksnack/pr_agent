@@ -88,6 +88,41 @@ reviewed, the summary comment is **refreshed in place** rather than stacked,
 inline comments already posted on unchanged lines aren't repeated, and the
 agent's prior "Request changes" reviews are dismissed when superseded.
 
+## Deploy (RC1-119)
+
+The service ships as a container (`Dockerfile`) and runs on **Fly.io**
+(`fly.toml`). The image runs `uvicorn app.webhook:app` on port `8080`; Fly's
+healthcheck polls the existing `GET /healthz` endpoint, and the machine
+**auto-stops when idle** (`min_machines_running = 0`) and cold-starts on the next
+webhook delivery — GitHub retries deliveries, so the brief wake-up is safe.
+
+Secrets are **never committed** — set them in Fly's encrypted store:
+
+```bash
+fly launch --no-deploy            # first time only; creates/links the app
+fly secrets set \
+  ANTHROPIC_API_KEY=... \
+  GITHUB_APP_ID=... \
+  GITHUB_WEBHOOK_SECRET=... \
+  GITHUB_APP_PRIVATE_KEY="$(cat path/to/app-private-key.pem)"
+fly deploy
+fly status                        # confirm the machine is healthy
+curl https://<app>.fly.dev/healthz   # confirm the public HTTPS endpoint
+```
+
+Build/run the container locally to validate before deploying:
+
+```bash
+docker build -t pr-review-agent .
+docker run --rm -p 8080:8080 pr-review-agent   # then: curl localhost:8080/healthz
+```
+
+The re-push/redelivery dedup store (RC1-118) is in-memory, so an idle auto-stop
+clears it; that's the documented tradeoff — at worst a stop costs one redundant
+review, never a wrong one. Persisting it is a later concern if the service scales
+out. Registering and installing the App, then the end-to-end live test, is the
+next story (RC1-120).
+
 ## Layout
 
 ```
