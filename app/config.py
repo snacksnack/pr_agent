@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     max_tool_turns: int = 20
     max_files_read: int = 40
     log_level: str = "INFO"
+    # Total GitHub API attempts per request before giving up (1 = no retry).
+    # Transient failures (5xx / rate limit / dropped connection) back off
+    # between attempts; see ``app.retry`` (RC1-120).
+    github_max_attempts: int = 4
 
     # --- Live GitHub App (RC1-115 / RC1-116); unset during the dry-run phase ---
     github_app_id: str | None = None
@@ -52,7 +56,7 @@ class Settings(BaseSettings):
         """
         return [item.strip() for item in self.review_block_on.split(",") if item.strip()]
 
-    @field_validator("max_tool_turns", "max_files_read")
+    @field_validator("max_tool_turns", "max_files_read", "github_max_attempts")
     @classmethod
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:

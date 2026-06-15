@@ -120,8 +120,24 @@ docker run --rm -p 8080:8080 pr-review-agent   # then: curl localhost:8080/healt
 The re-push/redelivery dedup store (RC1-118) is in-memory, so an idle auto-stop
 clears it; that's the documented tradeoff — at worst a stop costs one redundant
 review, never a wrong one. Persisting it is a later concern if the service scales
-out. Registering and installing the App, then the end-to-end live test, is the
-next story (RC1-120).
+out.
+
+## Go live (RC1-120)
+
+Registering the App, installing it account-wide, and the end-to-end live test
+are the final step. The exact click-by-click runbook (App permissions, events,
+webhook URL, Fly secrets, and the live-PR verification checklist) lives in
+[`docs/rc1-120-golive.md`](docs/rc1-120-golive.md).
+
+Two pieces of hardening ship with it. Every GitHub call — reads, writes, and
+App-auth token minting — retries transient failures (dropped connections, `5xx`,
+`429`, and the rate-limited `403`) with bounded exponential backoff + jitter,
+honoring GitHub's `Retry-After` / `X-RateLimit-Reset` hints (`app/retry.py`;
+`GITHUB_MAX_ATTEMPTS`, default 4). Terminal responses (`404`, `422`, a real
+permission `403`) aren't retried. And `configure_logging()` attaches a stdout
+handler to the `app.*` loggers at `LOG_LEVEL` so the lifecycle lines
+(`accepted` → `review_posted`), dedup skips, retry warnings, and `review_failed`
+tracebacks actually surface under uvicorn.
 
 ## Layout
 
@@ -159,6 +175,7 @@ All settings load from environment variables (and an optional `.env`). See
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
+| `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |
 
 ## Build plan (RC1-106)
 
