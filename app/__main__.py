@@ -26,6 +26,7 @@ def main() -> int:
     print(f"  block_on               {settings.block_on}")
     print(f"  max_tool_turns         {settings.max_tool_turns}")
     print(f"  max_files_read         {settings.max_files_read}")
+    print(f"  github_max_attempts    {settings.github_max_attempts}")
     print(f"  log_level              {settings.log_level}")
 
     print("\nLive GitHub App (used later — RC1-115 / RC1-116)")

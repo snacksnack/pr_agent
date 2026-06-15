@@ -38,6 +38,30 @@ if TYPE_CHECKING:  # avoid importing the store at module load; worker imports it
 
 logger = logging.getLogger("app.webhook")
 
+
+def configure_logging() -> None:
+    """Make our ``app.*`` loggers actually emit at the configured level.
+
+    Under uvicorn the root logger defaults to WARNING with no handler for our
+    namespace, so the INFO lifecycle lines (accepted / review_posted / dedup
+    skips) and the retry WARNINGs would silently vanish — exactly the signal you
+    need to see a live review working or failing. We attach one stdout handler to
+    the ``app`` logger at ``settings.log_level`` and stop propagation so uvicorn's
+    root handler doesn't double-print. Idempotent: safe to call on every app
+    build (tests build many).
+    """
+    app_logger = logging.getLogger("app")
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    app_logger.setLevel(level)
+    if not any(getattr(h, "_pr_agent", False) for h in app_logger.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler._pr_agent = True  # type: ignore[attr-defined]  # mark as ours (idempotency)
+        app_logger.addHandler(handler)
+    app_logger.propagate = False
+
 # pull_request actions worth a review. "opened"/"reopened" are new work to look
 # at; "synchronize" fires when the head branch gets new commits (a re-push).
 # Other actions (labeled, assigned, closed, edited, ...) are ignored.
@@ -209,6 +233,7 @@ def create_app(
     worker. Resolving the secret per-request (not captured here) means rotating
     ``GITHUB_WEBHOOK_SECRET`` doesn't require rebuilding the app.
     """
+    configure_logging()
     app = FastAPI(title="PR Review Agent webhook", version="RC1-116")
     worker = processor or process_event
 

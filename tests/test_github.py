@@ -140,3 +140,64 @@ def test_auth_error_raises():
     with _client(handler) as gh:
         with pytest.raises(GitHubError):
             gh.fetch_pull_request(PRRef("o", "r", 1))
+
+
+# --- retry/backoff (RC1-120) ----------------------------------------------
+
+def _retrying_client(handler) -> GitHubClient:
+    """A client that retries but never actually sleeps (offline + instant)."""
+    transport = httpx.MockTransport(handler)
+    return GitHubClient(
+        token="t", client=httpx.Client(transport=transport), sleep=lambda _d: None
+    )
+
+
+def test_get_retries_transient_5xx_then_succeeds():
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/pulls/42") and not path.endswith("/files"):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                return httpx.Response(503)  # transient
+            return httpx.Response(200, json=_pr_json())
+        if path.endswith("/files"):
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    with _retrying_client(handler) as gh:
+        pr = gh.fetch_pull_request(PRRef("octocat", "Hello-World", 42))
+
+    assert attempts["n"] == 3
+    assert pr.title == "Add feature"
+
+
+def test_get_gives_up_after_max_attempts():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500)
+
+    with _retrying_client(handler) as gh:
+        with pytest.raises(GitHubError):
+            gh.fetch_pull_request(PRRef("o", "r", 42))
+    # Default github_max_attempts = 4 (1 + 3 retries).
+    assert calls["n"] == 4
+
+
+def test_write_retries_rate_limited_403():
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(403, headers={"Retry-After": "1"}, json={"message": "rate limited"})
+        return httpx.Response(200, json={"id": 99})
+
+    with _retrying_client(handler) as gh:
+        review = gh.create_review(PRRef("o", "r", 42), body="b", event="COMMENT")
+
+    assert attempts["n"] == 2
+    assert review["id"] == 99

@@ -18,6 +18,7 @@ from starlette.testclient import TestClient
 from app.webhook import (
     WebhookEvent,
     WebhookParseError,
+    configure_logging,
     create_app,
     parse_pull_request_event,
     process_event,
@@ -307,3 +308,18 @@ def test_rejection_does_not_log_secret_or_signature(caplog):
     assert SECRET not in blob
     assert sig not in blob
     assert "signature_rejected" in blob
+
+
+# --- logging configuration (RC1-120 error visibility) ---------------------
+
+def test_configure_logging_attaches_one_handler_and_is_idempotent():
+    app_logger = logging.getLogger("app")
+    # Clean any handlers our prior calls (or app build) may have added.
+    app_logger.handlers = [h for h in app_logger.handlers if not getattr(h, "_pr_agent", False)]
+    configure_logging()
+    configure_logging()  # second call must not stack a second handler
+    ours = [h for h in app_logger.handlers if getattr(h, "_pr_agent", False)]
+    assert len(ours) == 1
+    # INFO lifecycle lines must be emittable, and we don't double-print via root.
+    assert app_logger.level <= logging.INFO
+    assert app_logger.propagate is False

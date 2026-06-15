@@ -45,7 +45,13 @@ Milestone 3 — deploy:
 - [x] RC1-119 Dockerize + Fly.io (`Dockerfile`, `.dockerignore`, `fly.toml`;
       serves `uvicorn app.webhook:app`, healthcheck on `/healthz`, auto-stops
       when idle; secrets via `fly secrets`, never committed)
-- [ ] RC1-120 register/install the App + end-to-end live test
+- [x] RC1-120 register/install the App + end-to-end live test — App registered
+      (webhook → Fly, `pull_request` event, min perms), installed account-wide
+      ("All repositories"), and validated on a real PR (the agent reviewed its
+      own RC1-120 PR: single summary + severity-tagged inline comments, advisory
+      verdict). Hardening: GitHub-API retries/backoff (`app/retry.py`, wired into
+      `github.py` + `auth.py`; `GITHUB_MAX_ATTEMPTS`) and log visibility
+      (`configure_logging()` in `webhook.py`). Runbook: `docs/rc1-120-golive.md`.
 
 ## Layout
 
@@ -60,6 +66,7 @@ app/
   posting.py    post/refresh review: upsert summary comment + inline comments (RC1-117/118)
   verdict.py    verdict policy: gate on block_on category only (RC1-117)
   dedup.py      re-push/redelivery dedup store (RC1-118)
+  retry.py      GitHub-API retry/backoff helper (RC1-120)
   review.py     dry-run CLI (RC1-113)
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()

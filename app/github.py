@@ -10,11 +10,14 @@ output is identical, so everything downstream is auth-agnostic.
 from __future__ import annotations
 
 import re
+import time
+from typing import Callable
 
 import httpx
 
 from app.config import settings
 from app.models import ChangedFile, PRRef, PullRequest
+from app.retry import request_with_retry
 
 GITHUB_API = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -67,11 +70,15 @@ class GitHubClient:
         *,
         base_url: str = GITHUB_API,
         client: httpx.Client | None = None,
+        max_attempts: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._token = token if token is not None else settings.github_token
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
         self._owns_client = client is None
+        self._max_attempts = max_attempts or settings.github_max_attempts
+        self._sleep = sleep
 
     def __enter__(self) -> "GitHubClient":
         return self
@@ -97,8 +104,13 @@ class GitHubClient:
     def _get(self, path: str, params: dict | None = None) -> httpx.Response:
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         try:
-            resp = self._client.get(url, headers=self._headers(), params=params)
-        except httpx.HTTPError as exc:  # network/timeout
+            resp = request_with_retry(
+                lambda: self._client.get(url, headers=self._headers(), params=params),
+                max_attempts=self._max_attempts,
+                sleep=self._sleep,
+                describe=f"GET {url}",
+            )
+        except httpx.HTTPError as exc:  # network/timeout, retries exhausted
             raise GitHubError(f"Request to {url} failed: {exc}") from exc
 
         if resp.status_code == 404:
@@ -119,8 +131,13 @@ class GitHubClient:
         """POST/PATCH/PUT helper for write endpoints (reviews, comments)."""
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         try:
-            resp = self._client.request(method, url, headers=self._headers(), json=json)
-        except httpx.HTTPError as exc:  # network/timeout
+            resp = request_with_retry(
+                lambda: self._client.request(method, url, headers=self._headers(), json=json),
+                max_attempts=self._max_attempts,
+                sleep=self._sleep,
+                describe=f"{method} {url}",
+            )
+        except httpx.HTTPError as exc:  # network/timeout, retries exhausted
             raise GitHubError(f"Request to {url} failed: {exc}") from exc
 
         if resp.status_code in (401, 403):

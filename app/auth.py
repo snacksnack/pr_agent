@@ -21,11 +21,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 import httpx
 
 from app.config import settings
 from app.github import API_VERSION, DEFAULT_TIMEOUT, GITHUB_API, GitHubClient
+from app.retry import request_with_retry
 
 # GitHub caps the app JWT at 10 minutes. Stay safely under it, and back-date
 # ``iat`` to absorb clock drift between us and GitHub (their docs recommend 60s).
@@ -119,6 +121,8 @@ class GitHubAppAuth:
         base_url: str = GITHUB_API,
         client: httpx.Client | None = None,
         time_fn=time.time,
+        max_attempts: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._app_id = app_id if app_id is not None else settings.github_app_id
         self._private_key = (
@@ -128,6 +132,8 @@ class GitHubAppAuth:
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
         self._owns_client = client is None
         self._time_fn = time_fn
+        self._max_attempts = max_attempts or settings.github_max_attempts
+        self._sleep = sleep
         # (installation_id, scope) -> InstallationToken
         self._token_cache: dict[tuple[int, _TokenScope], InstallationToken] = {}
         # "owner/repo" -> installation_id (stable; safe to memoize)
@@ -170,10 +176,15 @@ class GitHubAppAuth:
     ) -> httpx.Response:
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         try:
-            resp = self._client.request(
-                method, url, headers=self._headers(bearer), json=json
+            resp = request_with_retry(
+                lambda: self._client.request(
+                    method, url, headers=self._headers(bearer), json=json
+                ),
+                max_attempts=self._max_attempts,
+                sleep=self._sleep,
+                describe=f"{method} {url}",
             )
-        except httpx.HTTPError as exc:  # network / timeout
+        except httpx.HTTPError as exc:  # network / timeout, retries exhausted
             raise GitHubAuthError(f"Request to {url} failed: {exc}") from exc
 
         if resp.status_code in (401, 403):
@@ -262,4 +273,10 @@ class GitHubAppAuth:
         (and won't close) the transport — manage that via :meth:`close`.
         """
         token = self.token_for_repo(owner, repo).token
-        return GitHubClient(token=token, base_url=self._base_url, client=self._client)
+        return GitHubClient(
+            token=token,
+            base_url=self._base_url,
+            client=self._client,
+            max_attempts=self._max_attempts,
+            sleep=self._sleep,
+        )
