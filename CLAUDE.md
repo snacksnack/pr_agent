@@ -40,7 +40,12 @@ Milestone 2 — App + webhook:
 - [x] RC1-117 review posting + verdict (`app/posting.py`, `app/verdict.py`;
       resolves the RC1-114 verdict-policy carryover)
 - [x] RC1-118 re-push dedup (`app/dedup.py` + upsert/supersede in `app/posting.py`)
-Milestone 3 — deploy: RC1-119 Dockerize + Fly.io · RC1-120 register/install + e2e.
+
+Milestone 3 — deploy:
+- [x] RC1-119 Dockerize + Fly.io (`Dockerfile`, `.dockerignore`, `fly.toml`;
+      serves `uvicorn app.webhook:app`, healthcheck on `/healthz`, auto-stops
+      when idle; secrets via `fly secrets`, never committed)
+- [ ] RC1-120 register/install the App + end-to-end live test
 
 ## Layout
 

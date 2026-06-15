@@ -1,0 +1,37 @@
+# Keep the build context (and image) lean and secret-free.
+# Mirrors .gitignore, plus build/CI cruft that should never enter the image.
+
+# Secrets / local config — provided at runtime via `fly secrets`, never baked in.
+.env
+.env.*
+!.env.example
+
+# Virtualenvs
+.venv/
+venv/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests aren't needed at runtime
+tests/
+
+# Local repo checkouts the agent clones to review (RC1-109)
+.work/
+
+# VCS / editor / docs
+.git/
+.gitignore
+.github/
+docs/
+*.md
