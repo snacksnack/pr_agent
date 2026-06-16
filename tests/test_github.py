@@ -4,6 +4,8 @@ The GitHub API is mocked with ``httpx.MockTransport`` so these run offline.
 """
 from __future__ import annotations
 
+import base64
+
 import httpx
 import pytest
 
@@ -108,6 +110,59 @@ def test_max_files_truncation():
 
     assert len(pr.files) == 120
     assert pr.truncated_files is True
+
+
+# --- get_file_text (Contents API; RC1-121 live n8n source) ----------------
+
+def _contents_response(text: str) -> dict:
+    return {
+        "encoding": "base64",
+        "content": base64.b64encode(text.encode()).decode(),
+    }
+
+
+def test_get_file_text_decodes_content_at_ref():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["ref"] = request.url.params.get("ref")
+        return httpx.Response(200, json=_contents_response('{"hello": 1}'))
+
+    with _client(handler) as gh:
+        text = gh.get_file_text(PRRef("o", "r", 42), "flows/poll.json", git_ref="headsha")
+
+    assert text == '{"hello": 1}'
+    # The path is sourced at the requested ref, with slashes preserved.
+    assert captured["path"] == "/repos/o/r/contents/flows/poll.json"
+    assert captured["ref"] == "headsha"
+
+
+def test_get_file_text_missing_file_returns_none():
+    with _client(lambda req: httpx.Response(404)) as gh:
+        assert gh.get_file_text(PRRef("o", "r", 42), "gone.json", git_ref="h") is None
+
+
+def test_get_file_text_directory_or_oversized_returns_none():
+    # A directory yields a JSON list; an oversized file omits inline content.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "dir" in request.url.path:
+            return httpx.Response(200, json=[{"name": "a.json"}])
+        return httpx.Response(200, json={"encoding": "none", "content": ""})
+
+    with _client(handler) as gh:
+        assert gh.get_file_text(PRRef("o", "r", 42), "dir", git_ref="h") is None
+        assert gh.get_file_text(PRRef("o", "r", 42), "big.json", git_ref="h") is None
+
+
+def test_get_file_text_undecodable_bytes_returns_none():
+    bad = base64.b64encode(b"\xff\xfe\x00").decode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"encoding": "base64", "content": bad})
+
+    with _client(handler) as gh:
+        assert gh.get_file_text(PRRef("o", "r", 42), "x.json", git_ref="h") is None
 
 
 def test_missing_patch_is_kept_none():

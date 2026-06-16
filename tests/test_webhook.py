@@ -212,6 +212,9 @@ def _wire_fakes(monkeypatch, pr, posted):
         def fetch_pull_request(self, ref):
             return pr
 
+        def get_file_text(self, ref, path, *, git_ref=None):
+            return None  # no workflow files in the base fixture
+
     class FakeAuth:
         def __enter__(self):
             return self
@@ -222,8 +225,9 @@ def _wire_fakes(monkeypatch, pr, posted):
         def client_for_repo(self, owner, repo):
             return FakeClient()
 
-    def fake_review(pull_request, repo_tools, client=None):
+    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
         posted["reviewed"] = posted.get("reviewed", 0) + 1
+        posted["precomputed"] = precomputed_findings
         return ReviewResult(summary="ok", model="m")
 
     def fake_post(client, pull_request, result, *, block_on, commit_id=None):
@@ -287,6 +291,145 @@ def test_process_event_skips_stale_head(monkeypatch):
     event = WebhookEvent("d-1", "synchronize", "octo", "hello", 42, "older-sha", 1)
     process_event(event, store=DedupStore())
     assert "reviewed" not in posted  # never ran the review
+
+
+# --- live n8n check on the webhook path (RC1-121) -------------------------
+
+def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
+    # A PR that changes an n8n workflow JSON with an aggressive cron trigger.
+    # The live path has no checkout, so it must fetch the file at the head via
+    # the Contents API, run the deterministic check, hand the finding to the
+    # loop as context, and merge it into the posted result exactly once.
+    import app.auth
+    import app.agent.reviewer
+    import app.posting
+    from app.dedup import DedupStore
+    from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
+
+    workflow = json.dumps(
+        {
+            "nodes": [
+                {
+                    "name": "Cron",
+                    "type": "n8n-nodes-base.cron",
+                    "parameters": {"triggerTimes": {"item": [{"mode": "everyMinute"}]}},
+                }
+            ],
+            "connections": {},
+        }
+    )
+    pr = PullRequest(
+        ref=PRRef("octo", "hello", 42),
+        title="Add workflow",
+        head_sha="abc123def4567890",
+        files=[ChangedFile(filename="flows/poll.json", status="added")],
+    )
+
+    fetched: dict = {}
+
+    class FakeClient:
+        def fetch_pull_request(self, ref):
+            return pr
+
+        def get_file_text(self, ref, path, *, git_ref=None):
+            fetched["path"] = path
+            fetched["git_ref"] = git_ref
+            return workflow
+
+    class FakeAuth:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def client_for_repo(self, owner, repo):
+            return FakeClient()
+
+    seen: dict = {}
+
+    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
+        seen["precomputed"] = precomputed_findings
+        # The loop must NOT re-emit the deterministic finding (it's context).
+        return ReviewResult(summary="ok", model="m")
+
+    posted: dict = {}
+
+    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
+        posted["result"] = result
+        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
+                "review_id": 5, "event": "COMMENT"}
+
+    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
+    monkeypatch.setattr(app.agent.reviewer, "review_pull_request", fake_review)
+    monkeypatch.setattr(app.posting, "post_review", fake_post)
+
+    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
+    process_event(event, store=DedupStore())
+
+    # Sourced the file at the PR head, not the base.
+    assert fetched == {"path": "flows/poll.json", "git_ref": "abc123def4567890"}
+    # Fed to the loop as already-recorded context...
+    assert [f.category for f in seen["precomputed"]] == ["n8n"]
+    assert seen["precomputed"][0].file == "flows/poll.json"
+    # ...and merged into the posted result exactly once (no duplication).
+    n8n_findings = [f for f in posted["result"].findings if f.category == "n8n"]
+    assert len(n8n_findings) == 1
+
+
+def test_process_event_n8n_check_failure_does_not_abort_review(monkeypatch):
+    # If sourcing/parsing a workflow blows up, the n8n step degrades to nothing
+    # and the review still posts — an advisory side-check never sinks a review.
+    import app.auth
+    import app.agent.reviewer
+    import app.posting
+    from app.dedup import DedupStore
+    from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
+
+    pr = PullRequest(
+        ref=PRRef("octo", "hello", 42),
+        title="T",
+        head_sha="abc123def4567890",
+        files=[ChangedFile(filename="flow.json", status="added")],
+    )
+
+    class FakeClient:
+        def fetch_pull_request(self, ref):
+            return pr
+
+        def get_file_text(self, ref, path, *, git_ref=None):
+            raise RuntimeError("boom")
+
+    class FakeAuth:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def client_for_repo(self, owner, repo):
+            return FakeClient()
+
+    posted: dict = {}
+
+    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
+        posted["precomputed"] = precomputed_findings
+        return ReviewResult(summary="ok", model="m")
+
+    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
+        posted["posted"] = True
+        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
+                "review_id": 5, "event": "COMMENT"}
+
+    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
+    monkeypatch.setattr(app.agent.reviewer, "review_pull_request", fake_review)
+    monkeypatch.setattr(app.posting, "post_review", fake_post)
+
+    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
+    process_event(event, store=DedupStore())
+
+    assert posted.get("posted") is True
+    assert posted["precomputed"] == []
 
 
 # --- logging never leaks secrets ------------------------------------------

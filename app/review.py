@@ -25,7 +25,6 @@ review callables; both are injectable so the CLI can be tested offline.
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 import tempfile
@@ -95,62 +94,27 @@ def blocking_findings(result: ReviewResult, block_on: list[str]) -> list[Finding
     return gating_findings(result.findings, block_on)
 
 
-# --- n8n hook (stub-tolerant until RC1-112 lands) -------------------------
-
-def _coerce_finding(item: Any) -> Finding | None:
-    """Normalize whatever the n8n check returns into a :class:`Finding`."""
-    if isinstance(item, Finding):
-        return item
-    if isinstance(item, dict):
-        severity, message = item.get("severity"), item.get("message")
-        if not severity or not message:
-            return None
-        line = item.get("line")
-        return Finding(
-            severity=str(severity),
-            category=str(item.get("category") or "n8n"),
-            message=str(message),
-            file=item.get("file"),
-            line=int(line) if isinstance(line, int) else None,
-            suggestion=item.get("suggestion"),
-        )
-    return None
-
+# --- n8n hook -------------------------------------------------------------
 
 def run_n8n_checks(pr: PullRequest, repo_root: Path | None) -> list[Finding]:
     """Run the deterministic n8n execution-cost check over changed JSON files.
 
-    Guarded on every axis: does nothing without a local checkout, skips files
-    that aren't n8n workflows, and treats the not-yet-implemented check
-    (``NotImplementedError`` from RC1-112) — and any parse/read error — as
-    "nothing to add" rather than failing the whole review.
+    Sources file contents from the local ``--repo-path`` checkout and delegates
+    to the shared :func:`app.agent.checks.n8n.run_checks` runner, so the dry-run
+    CLI and the live webhook (which fetches contents via the GitHub Contents
+    API) stay on one code path. Does nothing without a local checkout; a file
+    missing on disk reads as ``None`` and is skipped.
     """
     if repo_root is None:
         return []
-    findings: list[Finding] = []
-    for f in pr.files:
-        if f.status == "removed" or not f.filename.endswith(".json"):
-            continue
-        path = repo_root / f.filename
+
+    def _read(filename: str) -> str | None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue  # missing locally or not valid JSON — skip
-        if not n8n.looks_like_n8n_workflow(data):
-            continue
-        try:
-            raw = n8n.check_workflow(data)
-        except NotImplementedError:
-            return []  # RC1-112 not built yet — drop the whole step cleanly
-        except Exception:
-            continue  # a single bad workflow shouldn't sink the review
-        for item in raw or []:
-            finding = _coerce_finding(item)
-            if finding is not None:
-                if finding.file is None:
-                    finding.file = f.filename
-                findings.append(finding)
-    return findings
+            return (repo_root / filename).read_text(encoding="utf-8")
+        except OSError:
+            return None  # absent locally or unreadable — skip
+
+    return n8n.run_checks(pr, _read)
 
 
 # --- output ---------------------------------------------------------------

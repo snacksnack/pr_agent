@@ -22,9 +22,10 @@ Design notes:
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+import json
+from typing import Any, Callable, Iterable
 
-from app.models import Finding
+from app.models import Finding, PullRequest
 
 # Category every finding in this module carries (matches prompts.CATEGORIES).
 CATEGORY = "n8n"
@@ -322,4 +323,73 @@ def check_workflow(data: Any) -> list[Finding]:
                 findings.extend(rule(node, kind, params))
         except Exception:
             continue  # robustness: never let one node break the whole check
+    return findings
+
+
+# --- PR-level runner (source-agnostic) ------------------------------------
+
+# Sources one changed file's text by repo-relative path. Returns ``None`` to
+# skip it — the file is absent, binary/oversized, or otherwise unreadable. The
+# dry-run CLI reads from a local checkout; the live webhook fetches at the PR
+# head via the GitHub Contents API. Either way the check sees the same bytes.
+ReadText = Callable[[str], "str | None"]
+
+
+def _coerce_finding(item: Any) -> Finding | None:
+    """Normalize whatever a rule/check returns into a :class:`Finding`."""
+    if isinstance(item, Finding):
+        return item
+    if isinstance(item, dict):
+        severity, message = item.get("severity"), item.get("message")
+        if not severity or not message:
+            return None
+        line = item.get("line")
+        return Finding(
+            severity=str(severity),
+            category=str(item.get("category") or CATEGORY),
+            message=str(message),
+            file=item.get("file"),
+            line=int(line) if isinstance(line, int) else None,
+            suggestion=item.get("suggestion"),
+        )
+    return None
+
+
+def run_checks(pr: PullRequest, read_text: ReadText) -> list[Finding]:
+    """Run the execution-cost check over a PR's changed n8n workflow JSON.
+
+    ``read_text(filename) -> str | None`` sources each changed file's contents
+    from wherever the caller has them (a local checkout, the GitHub Contents
+    API, …); returning ``None`` skips that file. This keeps the dry-run CLI and
+    the live webhook on one code path — only the byte source differs.
+
+    Recoverable on every axis (a hard requirement of the check): removed files
+    and non-``.json`` paths are ignored, and a file that's missing, isn't valid
+    JSON, isn't an n8n workflow, or trips the check is skipped rather than
+    propagated — one bad file never sinks the review. Findings with no file are
+    anchored to their workflow.
+    """
+    findings: list[Finding] = []
+    for f in pr.files:
+        if f.status == "removed" or not f.filename.endswith(".json"):
+            continue
+        text = read_text(f.filename)
+        if text is None:
+            continue  # missing / unreadable at head — skip
+        try:
+            data = json.loads(text)
+        except ValueError:
+            continue  # not valid JSON — skip
+        if not looks_like_n8n_workflow(data):
+            continue
+        try:
+            raw = check_workflow(data)
+        except Exception:
+            continue  # a single bad workflow shouldn't sink the review
+        for item in raw or []:
+            finding = _coerce_finding(item)
+            if finding is not None:
+                if finding.file is None:
+                    finding.file = f.filename
+                findings.append(finding)
     return findings

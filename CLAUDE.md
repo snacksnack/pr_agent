@@ -40,6 +40,12 @@ Milestone 2 — App + webhook:
 - [x] RC1-117 review posting + verdict (`app/posting.py`, `app/verdict.py`;
       resolves the RC1-114 verdict-policy carryover)
 - [x] RC1-118 re-push dedup (`app/dedup.py` + upsert/supersede in `app/posting.py`)
+- [x] RC1-121 run n8n cost check on the webhook path — shared source-agnostic
+      runner (`n8n.run_checks(pr, read_text)`); live path sources changed-file
+      contents at the PR head via the Contents API (`GitHubClient.get_file_text`)
+      and `process_event` runs it first → feeds findings to the loop as context →
+      merges once (mirrors the dry-run CLI). Recoverable: missing/non-JSON/
+      unparseable files skip, never fail the review.
 
 Milestone 3 — deploy:
 - [x] RC1-119 Dockerize + Fly.io (`Dockerfile`, `.dockerignore`, `fly.toml`;
