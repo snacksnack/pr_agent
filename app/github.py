@@ -9,9 +9,11 @@ output is identical, so everything downstream is auth-agnostic.
 """
 from __future__ import annotations
 
+import base64
 import re
 import time
 from typing import Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -237,6 +239,42 @@ class GitHubClient:
             truncated_files=truncated,
             html_url=data.get("html_url"),
         )
+
+    def get_file_text(
+        self, ref: PRRef, path: str, *, git_ref: str | None = None
+    ) -> str | None:
+        """Fetch a file's text content at a git ref via the Contents API.
+
+        Used by the live review path, which has no local checkout: it sources a
+        changed file's bytes at the PR head (``git_ref``) so deterministic
+        checks (e.g. the n8n cost check) can run on real repos.
+
+        Returns ``None`` — never raises — when the file can't be turned into
+        usable text: it's absent at the ref, it's a directory, or GitHub omits
+        the inline content (binary, or larger than the Contents API's ~1 MB
+        cap). Callers treat ``None`` as "skip this file", so a missing or
+        oversized file never fails the review.
+        """
+        # Encode the path but keep its slashes so subdirectories survive.
+        encoded = quote(path, safe="/")
+        params = {"ref": git_ref} if git_ref else None
+        try:
+            resp = self._get(
+                f"/repos/{ref.owner}/{ref.repo}/contents/{encoded}", params=params
+            )
+        except GitHubError:
+            return None  # 404/permission/transport — best-effort, just skip it
+        data = resp.json()
+        # A directory yields a list; a file yields a dict with base64 content.
+        if not isinstance(data, dict) or data.get("encoding") != "base64":
+            return None
+        content = data.get("content")
+        if not isinstance(content, str):
+            return None
+        try:
+            return base64.b64decode(content).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None  # undecodable bytes — not text we can check
 
     def create_review(
         self,

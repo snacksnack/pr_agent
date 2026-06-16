@@ -33,8 +33,9 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from app.config import settings
 
-if TYPE_CHECKING:  # avoid importing the store at module load; worker imports it lazily
+if TYPE_CHECKING:  # avoid importing these at module load; worker imports lazily
     from app.dedup import DedupStore
+    from app.models import Finding
 
 logger = logging.getLogger("app.webhook")
 
@@ -146,10 +147,13 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
 def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> None:
     """Run the review for a delivered PR and post it back (default worker).
 
-    Mints an installation token, ingests the PR, runs the agentic review loop
-    from the diff alone (the live service has no local checkout, so the agent's
-    file tools point at an empty dir and it reviews the patch), then posts/
-    refreshes the review via :func:`app.posting.post_review`.
+    Mints an installation token, ingests the PR, runs the deterministic n8n
+    execution-cost check over the PR's changed workflow JSON (sourced at the head
+    via the Contents API, since there's no local checkout), runs the agentic
+    review loop from the diff alone (the agent's file tools point at an empty dir
+    and it reviews the patch) with those findings handed in as already-recorded
+    context, then merges them once and posts/refreshes the review via
+    :func:`app.posting.post_review` — mirroring the dry-run CLI's pipeline.
 
     Dedup (RC1-118): skip webhook redeliveries (same delivery id), commits we've
     already reviewed (same head SHA), and *stale* events — if the PR's current
@@ -183,8 +187,15 @@ def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> 
             if pr.head_sha and pr.head_sha != event.head_sha:
                 log.info("skip_stale_head current=%s", pr.head_sha[:12])
                 return
+            # Deterministic checks run first (same as the dry-run CLI): their
+            # findings are fed to the loop as already-recorded context so the
+            # model builds on them instead of duplicating them, then merged once.
+            precomputed = _run_n8n_checks(gh, pr, log)
             with tempfile.TemporaryDirectory(prefix="pr-review-") as empty:
-                result = review_pull_request(pr, RepoTools(empty), client=None)
+                result = review_pull_request(
+                    pr, RepoTools(empty), client=None, precomputed_findings=precomputed
+                )
+            result.findings.extend(precomputed)
             outcome = post_review(
                 gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha
             )
@@ -201,6 +212,28 @@ def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> 
         outcome["new_comments"],
         outcome["dismissed"],
     )
+
+
+# --- deterministic n8n check (live path) ----------------------------------
+
+def _run_n8n_checks(gh: Any, pr: Any, log: logging.LoggerAdapter) -> "list[Finding]":
+    """Run the n8n execution-cost check over the PR's changed workflow JSON.
+
+    Sources each changed file's contents at the PR head via the Contents API
+    (there's no checkout live), then delegates to the shared runner the dry-run
+    CLI uses. Best-effort: any failure degrades to "no findings" and is logged,
+    never aborting the review the way a raise would.
+    """
+    from app.agent.checks import n8n
+
+    def _read(filename: str) -> str | None:
+        return gh.get_file_text(pr.ref, filename, git_ref=pr.head_sha)
+
+    try:
+        return n8n.run_checks(pr, _read)
+    except Exception:  # noqa: BLE001 — an advisory side-check must never sink a review
+        log.exception("n8n_check_failed")
+        return []
 
 
 # --- structured logging ---------------------------------------------------

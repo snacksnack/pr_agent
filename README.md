@@ -75,6 +75,13 @@ review on a background task. It handles `pull_request` `opened` / `synchronize` 
 uvicorn app.webhook:app --port 8000     # GET /healthz, POST /webhook
 ```
 
+Before the review loop runs, the deterministic n8n execution-cost check (RC1-112)
+runs on the live path too: for any changed n8n workflow JSON it fetches the file
+at the PR head via the Contents API (there's no local checkout), runs the check,
+hands its findings to the loop as already-recorded context, and merges them once
+— exactly as the dry-run CLI does. A missing, non-JSON, or unparseable file is
+skipped, never failing the review.
+
 The background worker posts the review as a **single upserted summary comment**
 plus inline comments anchored to changed-hunk lines, with severity tags.
 Findings that can't attach to a diff line (PR-level, or a line outside the diff)

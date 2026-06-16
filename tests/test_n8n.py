@@ -238,3 +238,59 @@ def test_multiple_costly_nodes_each_flagged():
     assert len(findings) == 3
     labels = " ".join(f.message for f in findings)
     assert "Cron" in labels and "Loop" in labels and "Child" in labels
+
+
+# --- PR-level runner (RC1-121: source-agnostic over changed files) --------
+
+def _changed(filename, status="modified"):
+    from app.models import ChangedFile
+    return ChangedFile(filename=filename, status=status)
+
+
+def _pr(*files):
+    from app.models import PRRef, PullRequest
+    return PullRequest(ref=PRRef("o", "r", 1), files=list(files))
+
+
+def test_run_checks_flags_changed_workflow_and_anchors_file():
+    wf = _wf(_node("n8n-nodes-base.cron", name="Cron",
+                   parameters={"triggerTimes": {"item": [{"mode": "everyMinute"}]}}))
+    pr = _pr(_changed("flows/poll.json", status="added"))
+
+    findings = n8n.run_checks(pr, lambda name: __import__("json").dumps(wf))
+
+    assert len(findings) == 1
+    assert findings[0].file == "flows/poll.json"  # anchored to the workflow file
+    assert findings[0].category == "n8n"
+
+
+def test_run_checks_skips_removed_and_non_json_and_unreadable():
+    import json as _json
+    wf = _json.dumps(_wf(_node("n8n-nodes-base.cron", name="Cron",
+                               parameters={"triggerTimes": {"item": [{"mode": "everyMinute"}]}})))
+    reads: list[str] = []
+
+    def read(name):
+        reads.append(name)
+        if name == "missing.json":
+            return None  # unreadable / absent at head
+        if name == "bad.json":
+            return "{not json"
+        if name == "notflow.json":
+            return '{"foo": 1}'
+        return wf
+
+    pr = _pr(
+        _changed("flows/poll.json"),           # flagged
+        _changed("dropped.json", status="removed"),  # skipped: removed
+        _changed("script.py"),                 # skipped: not .json
+        _changed("missing.json"),              # skipped: None
+        _changed("bad.json"),                  # skipped: invalid JSON
+        _changed("notflow.json"),              # skipped: not an n8n workflow
+    )
+
+    findings = n8n.run_checks(pr, read)
+
+    assert [f.file for f in findings] == ["flows/poll.json"]
+    # The reader is never consulted for removed or non-.json paths.
+    assert "dropped.json" not in reads and "script.py" not in reads
