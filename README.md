@@ -20,8 +20,16 @@ escalate to "Request changes" only on a committed secret.
 
 ## Status
 
-This is the **RC1-107** scaffold: project layout, configuration, and runnable
-skeleton. The review logic is built out across the stories below.
+**The review pipeline works today.** You can run a full agentic review against
+any real PR from the command line — see [Dry-run a review](#dry-run-a-review-rc1-113)
+below. Implemented and tested: the agentic review loop that explores the repo
+before commenting, the rubric-driven findings (convention, security, test
+coverage, dependency risk, PR-vs-diff drift), the n8n execution-cost check,
+GitHub App authentication, and review posting.
+
+**What's pending is deployment**, not the review logic — standing the pipeline
+up as the always-on, account-wide hosted GitHub App (Fly.io) so reviews fire
+automatically on every PR. Until then, the dry-run CLI is the way to run it.
 
 ## Getting started
 
