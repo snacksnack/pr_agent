@@ -12,7 +12,6 @@ import pytest
 from app.github import GitHubClient, GitHubError, parse_pr_spec
 from app.models import PRRef
 
-
 # --- spec parsing ---------------------------------------------------------
 
 def test_parse_pr_spec_valid():
@@ -183,18 +182,16 @@ def test_404_raises_actionable_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"message": "Not Found"})
 
-    with _client(handler) as gh:
-        with pytest.raises(GitHubError):
-            gh.fetch_pull_request(PRRef("o", "r", 999))
+    with _client(handler) as gh, pytest.raises(GitHubError):
+        gh.fetch_pull_request(PRRef("o", "r", 999))
 
 
 def test_auth_error_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"message": "Bad credentials"})
 
-    with _client(handler) as gh:
-        with pytest.raises(GitHubError):
-            gh.fetch_pull_request(PRRef("o", "r", 1))
+    with _client(handler) as gh, pytest.raises(GitHubError):
+        gh.fetch_pull_request(PRRef("o", "r", 1))
 
 
 # --- retry/backoff (RC1-120) ----------------------------------------------
@@ -235,9 +232,8 @@ def test_get_gives_up_after_max_attempts():
         calls["n"] += 1
         return httpx.Response(500)
 
-    with _retrying_client(handler) as gh:
-        with pytest.raises(GitHubError):
-            gh.fetch_pull_request(PRRef("o", "r", 42))
+    with _retrying_client(handler) as gh, pytest.raises(GitHubError):
+        gh.fetch_pull_request(PRRef("o", "r", 42))
     # Default github_max_attempts = 4 (1 + 3 retries).
     assert calls["n"] == 4
 
@@ -248,7 +244,9 @@ def test_write_retries_rate_limited_403():
     def handler(request: httpx.Request) -> httpx.Response:
         attempts["n"] += 1
         if attempts["n"] == 1:
-            return httpx.Response(403, headers={"Retry-After": "1"}, json={"message": "rate limited"})
+            return httpx.Response(
+                403, headers={"Retry-After": "1"}, json={"message": "rate limited"}
+            )
         return httpx.Response(200, json={"id": 99})
 
     with _retrying_client(handler) as gh:

@@ -14,7 +14,6 @@ from app.agent.reviewer import ReviewError, format_pr_for_review, review_pull_re
 from app.agent.tools import RepoTools
 from app.models import Finding, PRRef, PullRequest
 
-
 # --- scripted fake Anthropic client --------------------------------------
 
 class FakeMessages:
@@ -196,7 +195,13 @@ def test_seed_prompt_has_no_precomputed_section_when_none(pr):
 def test_malformed_findings_are_skipped(repo, pr):
     scripted = [
         [_submit("t1", "mixed", [
-            {"severity": "blocker", "category": "security", "message": "real one", "file": "a.py", "line": 3},
+            {
+                "severity": "blocker",
+                "category": "security",
+                "message": "real one",
+                "file": "a.py",
+                "line": 3,
+            },
             {"category": "security"},                         # missing severity+message -> skip
             {"severity": "nit", "message": "no category ok", "line": "notanumber"},
         ])],

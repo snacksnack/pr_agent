@@ -116,7 +116,14 @@ def format_pr_for_review(
     return "\n".join(parts)
 
 
-def _create(client: Any, *, model: str, messages: list, max_tokens: int, tool_choice: dict | None = None):
+def _create(
+    client: Any,
+    *,
+    model: str,
+    messages: list,
+    max_tokens: int,
+    tool_choice: dict | None = None,
+):
     kwargs: dict[str, Any] = {
         "model": model,
         "system": SYSTEM_PROMPT,
@@ -227,7 +234,11 @@ def review_pull_request(
 
         if submission is not None:
             return _result_from_submission(
-                submission, model=model, tool_turns=turns, files_read=files_read, truncated=truncated
+                submission,
+                model=model,
+                tool_turns=turns,
+                files_read=files_read,
+                truncated=truncated,
             )
     else:
         # Ran the full turn budget without submitting.

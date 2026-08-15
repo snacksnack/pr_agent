@@ -116,6 +116,8 @@ tests/          pytest, offline
 pip install -r requirements.txt
 python -m app                 # config sanity check (no creds needed)
 pytest -q                     # run tests
+pytest --cov                  # ...with the 88% floor CI enforces
+ruff check .                  # lint (line-length 100, rules E,F,I,UP,B,SIM)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
 ```
 

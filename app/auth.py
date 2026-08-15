@@ -19,9 +19,9 @@ unchanged with it (acceptance criterion 3).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Callable
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -90,7 +90,7 @@ class InstallationToken:
         self, *, skew: int = EXPIRY_SKEW_SECONDS, now: datetime | None = None
     ) -> bool:
         """True if the token is still safely usable (not within ``skew`` of expiry)."""
-        moment = now or datetime.now(timezone.utc)
+        moment = now or datetime.now(UTC)
         return moment < self.expires_at - timedelta(seconds=skew)
 
 
@@ -98,10 +98,10 @@ def _parse_expiry(value: str | None) -> datetime:
     """Parse GitHub's ISO-8601 ``expires_at`` (e.g. ``2026-06-14T22:14:10Z``)."""
     if not value:
         # Be conservative: assume the documented 1-hour lifetime from now.
-        return datetime.now(timezone.utc) + timedelta(hours=1)
+        return datetime.now(UTC) + timedelta(hours=1)
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -139,7 +139,7 @@ class GitHubAppAuth:
         # "owner/repo" -> installation_id (stable; safe to memoize)
         self._install_cache: dict[str, int] = {}
 
-    def __enter__(self) -> "GitHubAppAuth":
+    def __enter__(self) -> GitHubAppAuth:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -249,7 +249,7 @@ class GitHubAppAuth:
         """Return a cached-or-fresh installation token, optionally repo-scoped."""
         scope: _TokenScope = tuple(sorted(repositories or ()))
         key = (installation_id, scope)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cached = self._token_cache.get(key)
         if cached is not None and cached.is_fresh(now=now):
             return cached

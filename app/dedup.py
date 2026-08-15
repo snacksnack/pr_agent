@@ -28,8 +28,8 @@ class DedupStore:
 
     def __init__(self, *, max_entries: int = 2048) -> None:
         self._max = max_entries
-        self._deliveries: "OrderedDict[str, None]" = OrderedDict()
-        self._reviewed: "OrderedDict[tuple[str, str], None]" = OrderedDict()
+        self._deliveries: OrderedDict[str, None] = OrderedDict()
+        self._reviewed: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._lock = threading.Lock()
 
     def _remember(self, store: OrderedDict, key) -> bool:

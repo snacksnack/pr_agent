@@ -13,7 +13,8 @@ the loop / config (``settings.block_on``), not here.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # import-only-for-typing keeps this module runtime-dependency-free
     from app.models import Finding
@@ -225,11 +226,15 @@ SUBMIT_TOOL = {
                         },
                         "file": {
                             "type": "string",
-                            "description": "Repo-relative path of the file the finding refers to, if any.",
+                            "description": (
+                                "Repo-relative path of the file the finding refers to, if any."
+                            ),
                         },
                         "line": {
                             "type": "integer",
-                            "description": "Line number in the file the finding anchors to, if applicable.",
+                            "description": (
+                                "Line number in the file the finding anchors to, if applicable."
+                            ),
                         },
                         "suggestion": {
                             "type": "string",
@@ -247,7 +252,7 @@ SUBMIT_TOOL = {
 
 # --- already-recorded (deterministic) findings ----------------------------
 
-def format_precomputed_findings(findings: "Iterable[Finding] | None") -> str:
+def format_precomputed_findings(findings: Iterable[Finding] | None) -> str:
     """Render findings from deterministic static checks for the seed prompt.
 
     Deterministic checks (e.g. the n8n execution-cost check, RC1-112) run

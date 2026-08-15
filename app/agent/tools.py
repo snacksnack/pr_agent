@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import fnmatch
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 
 # Output guardrails (cost / context-window protection).
 MAX_READ_BYTES = 64_000
@@ -323,7 +323,10 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory path relative to the repo root (default: root)."},
+                "path": {
+                    "type": "string",
+                    "description": "Directory path relative to the repo root (default: root).",
+                },
             },
             "required": [],
         },
@@ -340,11 +343,25 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Regex (or literal if fixed=true) to search for."},
-                "path": {"type": "string", "description": "Directory or file to search under (default: repo root)."},
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex (or literal if fixed=true) to search for.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file to search under (default: repo root).",
+                },
                 "ignore_case": {"type": "boolean", "description": "Case-insensitive match."},
-                "fixed": {"type": "boolean", "description": "Treat pattern as a literal string, not a regex."},
-                "glob": {"type": "string", "description": "Only search files whose name matches this glob, e.g. '*.py'."},
+                "fixed": {
+                    "type": "boolean",
+                    "description": "Treat pattern as a literal string, not a regex.",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": (
+                        "Only search files whose name matches this glob, e.g. '*.py'."
+                    ),
+                },
             },
             "required": ["pattern"],
         },

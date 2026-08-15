@@ -23,7 +23,8 @@ Design notes:
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from app.models import Finding, PullRequest
 

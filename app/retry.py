@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 
@@ -114,7 +114,11 @@ def request_with_retry(
             return resp
 
         directed = _retry_after_seconds(resp)
-        delay = min(directed, max_delay) if directed is not None else _backoff(attempt, base_delay, max_delay)
+        delay = (
+            min(directed, max_delay)
+            if directed is not None
+            else _backoff(attempt, base_delay, max_delay)
+        )
         logger.warning(
             "github_retry %s attempt=%d/%d status=%d sleep=%.1fs",
             describe, attempt, max_attempts, resp.status_code, delay,

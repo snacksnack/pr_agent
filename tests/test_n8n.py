@@ -11,7 +11,6 @@ from __future__ import annotations
 from app.agent.checks import n8n
 from app.models import Finding
 
-
 # --- helpers --------------------------------------------------------------
 
 def _wf(*nodes: dict, connections: dict | None = None) -> dict:
@@ -99,10 +98,11 @@ def test_cron_every_minute_flagged():
 
 
 def test_cron_everyx_two_minutes_flagged_but_ten_is_not():
-    hot = _wf(_node("n8n-nodes-base.cron",
-                    parameters={"triggerTimes": {"item": [{"mode": "everyX", "value": 2, "unit": "minutes"}]}}))
-    cool = _wf(_node("n8n-nodes-base.cron",
-                     parameters={"triggerTimes": {"item": [{"mode": "everyX", "value": 10, "unit": "minutes"}]}}))
+    def every(value: int):
+        return {"triggerTimes": {"item": [{"mode": "everyX", "value": value, "unit": "minutes"}]}}
+
+    hot = _wf(_node("n8n-nodes-base.cron", parameters=every(2)))
+    cool = _wf(_node("n8n-nodes-base.cron", parameters=every(10)))
     assert len(n8n.check_workflow(hot)) == 1
     assert n8n.check_workflow(cool) == []
 
@@ -114,22 +114,22 @@ def test_cron_hourly_mode_not_flagged():
 
 
 def test_cron_custom_expression_every_minute_flagged():
-    wf = _wf(_node("n8n-nodes-base.cron",
-                   parameters={"triggerTimes": {"item": [{"mode": "custom", "cronExpression": "* * * * *"}]}}))
+    times = {"triggerTimes": {"item": [{"mode": "custom", "cronExpression": "* * * * *"}]}}
+    wf = _wf(_node("n8n-nodes-base.cron", parameters=times))
     assert len(n8n.check_workflow(wf)) == 1
 
 
 def test_cron_custom_expression_hourly_not_flagged():
-    wf = _wf(_node("n8n-nodes-base.cron",
-                   parameters={"triggerTimes": {"item": [{"mode": "custom", "cronExpression": "0 * * * *"}]}}))
+    times = {"triggerTimes": {"item": [{"mode": "custom", "cronExpression": "0 * * * *"}]}}
+    wf = _wf(_node("n8n-nodes-base.cron", parameters=times))
     assert n8n.check_workflow(wf) == []
 
 
 # --- scheduleTrigger (newer node) -----------------------------------------
 
 def test_schedule_trigger_seconds_flagged():
-    wf = _wf(_node("n8n-nodes-base.scheduleTrigger",
-                   parameters={"rule": {"interval": [{"field": "seconds", "secondsInterval": 30}]}}))
+    rule = {"rule": {"interval": [{"field": "seconds", "secondsInterval": 30}]}}
+    wf = _wf(_node("n8n-nodes-base.scheduleTrigger", parameters=rule))
     findings = n8n.check_workflow(wf)
     assert len(findings) == 1
     assert "30 second" in findings[0].message
@@ -142,8 +142,8 @@ def test_schedule_trigger_minutes_below_threshold_flagged():
 
 
 def test_schedule_trigger_minutes_at_threshold_not_flagged():
-    wf = _wf(_node("n8n-nodes-base.scheduleTrigger",
-                   parameters={"rule": {"interval": [{"field": "minutes", "minutesInterval": 15}]}}))
+    rule = {"rule": {"interval": [{"field": "minutes", "minutesInterval": 15}]}}
+    wf = _wf(_node("n8n-nodes-base.scheduleTrigger", parameters=rule))
     assert n8n.check_workflow(wf) == []
 
 

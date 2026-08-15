@@ -1,5 +1,7 @@
 # PR Review Agent
 
+[![CI](https://github.com/snacksnack/pr_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/snacksnack/pr_agent/actions/workflows/ci.yml)
+
 An autonomous code-review agent that reviews every pull request opened across a
 GitHub account — current repos and any created in the future. On each PR it
 explores the repository for context and posts a single structured review
