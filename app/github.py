@@ -10,9 +10,10 @@ output is identical, so everything downstream is auth-agnostic.
 from __future__ import annotations
 
 import base64
+import contextlib
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import quote
 
 import httpx
@@ -82,7 +83,7 @@ class GitHubClient:
         self._max_attempts = max_attempts or settings.github_max_attempts
         self._sleep = sleep
 
-    def __enter__(self) -> "GitHubClient":
+    def __enter__(self) -> GitHubClient:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -151,10 +152,10 @@ class GitHubClient:
         if resp.status_code >= 400:
             # Surface GitHub's message (e.g. why a review/comment was rejected).
             detail = ""
-            try:
+            # A non-JSON error body is normal (nginx pages, rate-limit HTML);
+            # the status code is the finding either way.
+            with contextlib.suppress(ValueError):
                 detail = f": {resp.json().get('message', '')}"
-            except ValueError:
-                pass
             raise GitHubError(
                 f"GitHub returned {resp.status_code} for {url}{detail}",
                 status=resp.status_code,

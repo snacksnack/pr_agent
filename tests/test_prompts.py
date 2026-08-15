@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from app.agent import prompts
 from app.agent.reviewer import ALL_TOOLS
-from app.models import Finding, SEVERITY_ORDER
-
+from app.models import SEVERITY_ORDER, Finding
 
 # --- finding schema contract ---------------------------------------------
 

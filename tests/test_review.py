@@ -12,8 +12,7 @@ import json
 import pytest
 
 from app import review as cli
-from app.models import Finding, PRRef, PullRequest, ChangedFile, ReviewResult
-
+from app.models import ChangedFile, Finding, PRRef, PullRequest, ReviewResult
 
 # --- helpers --------------------------------------------------------------
 
@@ -61,7 +60,9 @@ def test_pr_flag_is_required():
 
 
 def test_bad_pr_spec_returns_error_exit(capsys):
-    code = cli.main(["--pr", "not-a-spec"], fetch=lambda ref: _pr(), review=lambda p, t, pre: _result())
+    code = cli.main(
+        ["--pr", "not-a-spec"], fetch=lambda ref: _pr(), review=lambda p, t, pre: _result()
+    )
     assert code == cli.EXIT_ERROR
     assert "error" in capsys.readouterr().err.lower()
 

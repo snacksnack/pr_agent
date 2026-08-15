@@ -1,0 +1,43 @@
+name: CI
+
+# RC1-256. This repo had no workflows at all while shipping an agent that
+# enforces code quality on other people's pull requests — fourteen test modules,
+# none of them running on push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      # No credentials are configured for this job, deliberately. The suite is
+      # fixture- and mock-driven; a test that needs a live key is a finding to
+      # fix rather than a secret to add.
+      - name: Test (pytest, with coverage floor)
+        run: pytest --cov
+
+      # Exercises app/__main__.py, which is omitted from the coverage figure
+      # for exactly this reason. It prints which credentials are set without
+      # printing any value, so it is safe to run with none configured — and it
+      # catches a settings change that breaks startup before a deploy does.
+      - name: Config sanity check
+        run: python -m app

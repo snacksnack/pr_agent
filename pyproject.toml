@@ -1,0 +1,39 @@
+# Tool configuration only — no `[project]` table.
+#
+# This repo installs from `requirements.txt` and runs as a flat app, not a
+# package. Adding `[project]` would make it pip-installable and change how the
+# Dockerfile and Fly deploy resolve it, which is a bigger change than RC1-256
+# asked for. Ruff and pytest read their config from here regardless.
+
+[tool.ruff]
+# Matched to launch-planner-agent and tpm-automation-platform on purpose: three
+# repos linted three ways is three things to remember.
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    # The config sanity check. It is not untested — CI runs `python -m app` as
+    # its own step, which is a better exercise of it than importing it would be.
+    # Left in the source tree and out of the percentage so the number means
+    # "code covered by tests" rather than "code covered by something".
+    "app/__main__.py",
+]
+
+[tool.coverage.report]
+# Measured at 90% on 2026-08-15 with two points of headroom. A floor set at the
+# current number fails on the next honest refactor; one set far below it never
+# fires. Raise it when the real number moves up, not before.
+fail_under = 88
+show_missing = true

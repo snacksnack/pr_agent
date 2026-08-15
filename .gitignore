@@ -20,3 +20,7 @@ venv/
 
 # Local repo checkouts the agent clones to review (RC1-109)
 /.work/
+
+# Coverage (RC1-256)
+.coverage
+htmlcov/

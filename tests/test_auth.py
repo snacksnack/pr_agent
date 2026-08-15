@@ -6,7 +6,7 @@ so JWT claims and token-cache expiry are deterministic.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import jwt as pyjwt
@@ -68,13 +68,15 @@ def test_build_app_jwt_accepts_escaped_newline_pem():
 
 def test_build_app_jwt_bad_key_raises():
     with pytest.raises(GitHubAuthError):
-        build_app_jwt(APP_ID, "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----", now=NOW)
+        build_app_jwt(
+            APP_ID, "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----", now=NOW
+        )
 
 
 # --- InstallationToken freshness -----------------------------------------
 
 def test_installation_token_is_fresh():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
     fresh = InstallationToken("t", now + timedelta(hours=1))
     near = InstallationToken("t", now + timedelta(seconds=EXPIRY_SKEW_SECONDS - 1))
     assert fresh.is_fresh(now=now) is True
@@ -112,7 +114,7 @@ class FakeGitHub:
             import json as _json
 
             self.mint_bodies.append(_json.loads(request.content or b"{}"))
-            expires = datetime.now(timezone.utc) + self.token_ttl
+            expires = datetime.now(UTC) + self.token_ttl
             return httpx.Response(
                 201, json={"token": f"ghs_minted_{self.mint_calls}", "expires_at": _iso(expires)}
             )
@@ -203,7 +205,11 @@ def test_client_for_repo_uses_installation_token():
 # --- error handling -------------------------------------------------------
 
 def test_missing_credentials_raise():
-    auth = GitHubAppAuth("", "", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))))
+    auth = GitHubAppAuth(
+        "",
+        "",
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))),
+    )
     with pytest.raises(GitHubAuthError):
         auth.app_jwt()
 
@@ -213,7 +219,10 @@ def test_installation_lookup_404_raises():
         return httpx.Response(404, json={"message": "Not installed"})
 
     auth = GitHubAppAuth(
-        APP_ID, PRIVATE_PEM, client=httpx.Client(transport=httpx.MockTransport(handler)), time_fn=lambda: NOW
+        APP_ID,
+        PRIVATE_PEM,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        time_fn=lambda: NOW,
     )
     with pytest.raises(GitHubAuthError):
         auth.installation_id_for_repo("octo", "repo")
@@ -226,7 +235,10 @@ def test_mint_401_raises():
         return httpx.Response(200, json={"id": 1})
 
     auth = GitHubAppAuth(
-        APP_ID, PRIVATE_PEM, client=httpx.Client(transport=httpx.MockTransport(handler)), time_fn=lambda: NOW
+        APP_ID,
+        PRIVATE_PEM,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        time_fn=lambda: NOW,
     )
     with pytest.raises(GitHubAuthError):
         auth.token_for_installation(1)

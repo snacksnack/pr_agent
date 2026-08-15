@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 
 from app.github import GitHubClient, GitHubError
 from app.models import ChangedFile, Finding, PRRef, PullRequest, ReviewResult
@@ -39,7 +38,9 @@ def _pr(files=None) -> PullRequest:
     files = files if files is not None else [
         ChangedFile(filename="app/x.py", status="modified", patch=PATCH)
     ]
-    return PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="headsha123", files=files)
+    return PullRequest(
+        ref=PRRef("octo", "hello", 42), title="T", head_sha="headsha123", files=files
+    )
 
 
 def _result(findings, summary="Looks mostly fine.") -> ReviewResult:
@@ -136,7 +137,10 @@ class FakeGitHub:
         if self.raise_422 and comments:
             raise GitHubError("line not part of the diff", status=422)
         self._id += 1
-        return {"id": self._id, "state": "CHANGES_REQUESTED" if event == EVENT_REQUEST_CHANGES else "COMMENTED"}
+        return {
+            "id": self._id,
+            "state": "CHANGES_REQUESTED" if event == EVENT_REQUEST_CHANGES else "COMMENTED",
+        }
 
 
 def test_first_push_creates_summary_and_posts_inline():

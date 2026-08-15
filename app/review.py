@@ -28,8 +28,9 @@ import argparse
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.agent.checks import n8n
 from app.agent.reviewer import review_pull_request

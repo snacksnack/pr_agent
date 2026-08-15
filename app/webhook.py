@@ -26,8 +26,9 @@ import hashlib
 import hmac
 import logging
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
@@ -144,7 +145,7 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
 
 # --- default background processor ----------------------------------------
 
-def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> None:
+def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> None:
     """Run the review for a delivered PR and post it back (default worker).
 
     Mints an installation token, ingests the PR, runs the deterministic n8n
@@ -163,9 +164,9 @@ def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> 
     Exceptions are swallowed and logged — a background task has no client to
     return an error to, and one bad delivery must not take the worker down.
     """
-    from app.auth import GitHubAppAuth
     from app.agent.reviewer import review_pull_request
     from app.agent.tools import RepoTools
+    from app.auth import GitHubAppAuth
     from app.dedup import dedup_store
     from app.models import PRRef
     from app.posting import post_review
@@ -216,7 +217,7 @@ def process_event(event: WebhookEvent, *, store: "DedupStore | None" = None) -> 
 
 # --- deterministic n8n check (live path) ----------------------------------
 
-def _run_n8n_checks(gh: Any, pr: Any, log: logging.LoggerAdapter) -> "list[Finding]":
+def _run_n8n_checks(gh: Any, pr: Any, log: logging.LoggerAdapter) -> list[Finding]:
     """Run the n8n execution-cost check over the PR's changed workflow JSON.
 
     Sources each changed file's contents at the PR head via the Contents API

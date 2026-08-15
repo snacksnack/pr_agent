@@ -203,8 +203,8 @@ def test_healthz_ok():
 
 def _wire_fakes(monkeypatch, pr, posted):
     """Stub the lazily-imported deps of process_event; return nothing."""
-    import app.auth
     import app.agent.reviewer
+    import app.auth
     import app.posting
     from app.models import ReviewResult
 
@@ -300,8 +300,8 @@ def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
     # The live path has no checkout, so it must fetch the file at the head via
     # the Contents API, run the deterministic check, hand the finding to the
     # loop as context, and merge it into the posted result exactly once.
-    import app.auth
     import app.agent.reviewer
+    import app.auth
     import app.posting
     from app.dedup import DedupStore
     from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
@@ -380,8 +380,8 @@ def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
 def test_process_event_n8n_check_failure_does_not_abort_review(monkeypatch):
     # If sourcing/parsing a workflow blows up, the n8n step degrades to nothing
     # and the review still posts — an advisory side-check never sinks a review.
-    import app.auth
     import app.agent.reviewer
+    import app.auth
     import app.posting
     from app.dedup import DedupStore
     from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
