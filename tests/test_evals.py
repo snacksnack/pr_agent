@@ -230,3 +230,47 @@ def test_the_corpus_covers_every_gating_category():
     assert set(settings.block_on) <= covered, (
         f"{set(settings.block_on) - covered} gate the verdict but have no planted case"
     )
+
+
+# --- RC1-255: the committed run log is a data artifact --------------------
+
+
+def test_the_committed_run_log_contains_no_provider_shaped_credential():
+    """Run records store model output verbatim, so they inherit its sensitivity.
+
+    This repo's eval plants a credential on purpose and the review agent quotes
+    it back in a finding — so the record of that run contains the fixture. That
+    is fine while the fixture is an invented value no scanner claims, and it was
+    not fine when the fixture used a realistic `sk_live_...`: GitHub push
+    protection refused the log, correctly.
+
+    Committing run records (agent-evals/docs/trend.md) makes this a standing
+    property rather than a one-off. The guard is here rather than in the harness
+    because this is the only repo whose subject deliberately handles secrets.
+    """
+    import re
+    from pathlib import Path
+
+    log = Path(__file__).resolve().parents[1] / "eval-runs" / "runs.jsonl"
+    if not log.exists():
+        pytest.skip("no committed run log yet")
+
+    provider_shaped = re.compile(
+        r"sk_(live|test)_[A-Za-z0-9]{20,}"
+        r"|AKIA[0-9A-Z]{16}"
+        r"|gh[pousr]_[A-Za-z0-9]{36}"
+        r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+        r"|AIza[0-9A-Za-z_-]{35}"
+        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    )
+    hits = [
+        i
+        for i, line in enumerate(log.read_text().splitlines(), start=1)
+        if provider_shaped.search(line)
+    ]
+    assert not hits, (
+        f"run log line(s) {hits} contain a provider-shaped credential. A planted "
+        "secret must be a value no real scanner claims — see the leaked-secret "
+        "case in evals/corpus.py for why, and drop the affected records rather "
+        "than allowlisting them."
+    )
