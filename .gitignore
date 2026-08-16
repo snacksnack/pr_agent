@@ -24,3 +24,6 @@ venv/
 # Coverage (RC1-256)
 .coverage
 htmlcov/
+
+# Eval run records — local measurements, not artifacts of the repo (RC1-253)
+eval-runs/
