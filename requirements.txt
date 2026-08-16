@@ -23,6 +23,6 @@ pytest>=8
 # RC1-253: the shared eval harness. Pinned by tag — if the ruler can move under
 # a run, a changed score no longer says whether the reviewer drifted or the
 # measurement did.
-agent-evals @ git+https://github.com/snacksnack/agent-evals@v0.1.2
+agent-evals[sql] @ git+https://github.com/snacksnack/agent-evals@v0.2.0
 pytest-cov>=5
 ruff>=0.7

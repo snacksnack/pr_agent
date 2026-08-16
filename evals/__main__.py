@@ -26,6 +26,24 @@ from evals import corpus, subject
 RUNS_PATH = Path(os.environ.get("EVAL_RUNS_PATH", "./eval-runs/runs.jsonl"))
 
 
+def _store():
+    """The shared Postgres store when `EVAL_DATABASE_URL` is set, else the
+    local JSONL default (RC1-263).
+
+    Read from the process environment, never `.env` — the credential lives in
+    one place outside every repo. An unreachable store fails the run loudly:
+    a silent fallback to the file would fork the record history.
+    """
+    dsn = os.environ.get("EVAL_DATABASE_URL")
+    if dsn:
+        from agent_evals.sql_store import SqlRunStore
+
+        store = SqlRunStore(dsn)
+        store.ensure_schema()
+        return store
+    return RunStore(RUNS_PATH)
+
+
 def _print(result) -> None:
     if result.error:
         print(f"  ERROR {result.case_id}: {result.error}")
@@ -80,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         finished_at=datetime.now(UTC),
         results=results,
     )
-    RunStore(RUNS_PATH).append(record)
+    _store().append(record)
 
     planted = [r for r in results if r.case_id != "clean" and not r.error]
     found = sum(
