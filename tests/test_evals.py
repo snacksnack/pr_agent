@@ -182,3 +182,51 @@ def test_the_verdict_check_encodes_category_gating_not_severity():
     assert not subject._verdict(sql, review_cli.EXIT_BLOCKED, [blocker]).passed, (
         "blocking on a non-gating category would be a policy regression"
     )
+
+
+# --- RC1-255: the prompt contract, free and gating ------------------------
+
+
+def test_the_severity_words_the_scorer_ranks_are_the_ones_the_prompt_defines():
+    """`subject._SEVERITY_RANK` orders nit < warning < blocker.
+
+    Those strings come from `SEVERITY_GUIDANCE`. If the prompt were reworded to
+    use different labels, every severity check would silently compare against
+    values the model never emits — and the planted-defect suite is billed, so
+    CI would never notice. This is the free half of that guarantee.
+    """
+    from app.agent.prompts import SEVERITY_GUIDANCE
+
+    for severity in subject._SEVERITY_RANK:
+        assert f"{severity}:" in SEVERITY_GUIDANCE, (
+            f"the prompt no longer defines {severity!r}, which the scorer ranks"
+        )
+
+
+def test_every_block_on_category_is_a_real_category():
+    """A typo in `block_on` would silently disable gating.
+
+    `verdict.py` gates on category membership. A category that does not exist
+    matches nothing, so every review would come back advisory — including one
+    with a committed secret — and no test would fail. The eval's leaked-secret
+    case asserts the exit code, but it is billed; this runs on every push.
+    """
+    from app.agent.prompts import CATEGORIES
+    from app.config import settings
+
+    unknown = [c for c in settings.block_on if c not in CATEGORIES]
+    assert not unknown, (
+        f"block_on names {', '.join(unknown)}, which is not in CATEGORIES — "
+        "nothing would gate, and the build would stay green"
+    )
+    assert settings.block_on, "an empty block_on means nothing can ever block a merge"
+
+
+def test_the_corpus_covers_every_gating_category():
+    """Whatever gates must have a planted case proving it gates."""
+    from app.config import settings
+
+    covered = {c.category for c in corpus.CASES if c.category}
+    assert set(settings.block_on) <= covered, (
+        f"{set(settings.block_on) - covered} gate the verdict but have no planted case"
+    )
