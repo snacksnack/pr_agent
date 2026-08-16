@@ -1,8 +1,8 @@
 """`python -m evals` — run the planted-defect corpus (RC1-253).
 
-Billed: every case drives a real model through the real review loop. Exit codes
-match the other repos' harnesses — `0` all passed, `1` a case failed, `2` a case
-errored, meaning the subject produced nothing to score.
+Billed: every case drives a real model through the real review loop. The
+run/record/exit plumbing is `agent_evals.runner` (RC1-262); what lives here is
+this repo's subject, its corpus, and its summary lines.
 
 Recall and noise are printed as separate lines and stored as separate fields.
 They are never combined: a reviewer that flags everything scores perfect recall,
@@ -13,52 +13,13 @@ average away.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
-from agent_evals.record import RunRecord, RunStore, new_run_id
+from agent_evals.runner import UnknownCase, exit_code, print_result, record_run, select_cases
 
 from app.config import settings
 from evals import corpus, subject
-
-RUNS_PATH = Path(os.environ.get("EVAL_RUNS_PATH", "./eval-runs/runs.jsonl"))
-
-
-def _store():
-    """The shared Postgres store when `EVAL_DATABASE_URL` is set, else the
-    local JSONL default (RC1-263).
-
-    Read from the process environment, never `.env` — the credential lives in
-    one place outside every repo. An unreachable store fails the run loudly:
-    a silent fallback to the file would fork the record history.
-    """
-    dsn = os.environ.get("EVAL_DATABASE_URL")
-    if dsn:
-        from agent_evals.sql_store import SqlRunStore
-
-        store = SqlRunStore(dsn)
-        store.ensure_schema()
-        return store
-    return RunStore(RUNS_PATH)
-
-
-def _print(result) -> None:
-    if result.error:
-        print(f"  ERROR {result.case_id}: {result.error}")
-        return
-    status = "pass" if result.passed else "FAIL"
-    obs = result.observations
-    print(
-        f"  {status} {result.case_id}  ({result.usage.latency_ms / 1000:.0f}s, "
-        f"{obs['findings']} finding(s), {obs['noise']} off-target)"
-    )
-    for characteristic in result.characteristics:
-        if characteristic.passed and not characteristic.advisory:
-            continue
-        mark = "~" if characteristic.advisory else "✗"
-        print(f"    {mark} {characteristic.name}: {characteristic.detail}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,27 +39,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cannot run: {exc}", file=sys.stderr)
         return 2
 
-    cases = subject.CASES
-    if args.case:
-        cases = tuple(c for c in cases if c.id == args.case)
-        if not cases:
-            print(f"no case {args.case!r}", file=sys.stderr)
-            return 2
+    try:
+        cases = select_cases(subject.CASES, args.case)
+    except UnknownCase as exc:
+        print(exc, file=sys.stderr)
+        return 2
 
     print(f"{len(cases)} case(s) against {settings.review_model} — this spends money.\n")
     started = datetime.now(UTC)
     results = [subject.run(case) for case in cases]
     for result in results:
-        _print(result)
-
-    record = RunRecord(
-        run_id=new_run_id(subject.NAME),
-        subject_version=subject.version(),
-        started_at=started,
-        finished_at=datetime.now(UTC),
-        results=results,
-    )
-    _store().append(record)
+        obs = result.observations
+        extra = "" if result.error else f"{obs['findings']} finding(s), {obs['noise']} off-target"
+        print_result(result, extra=extra)
 
     planted = [r for r in results if r.case_id != "clean" and not r.error]
     found = sum(
@@ -115,11 +68,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{clean.observations['by_severity']['blocker']} blocker(s)"
         )
     print("  (never averaged — see evals/subject.py)")
-    print(f"\nrun {record.run_id} recorded")
 
-    if any(r.error for r in results):
-        return 2
-    return 0 if all(r.passed for r in results) else 1
+    record_run(subject.version(), started, results)
+    return exit_code(results)
 
 
 if __name__ == "__main__":
