@@ -13,6 +13,37 @@ risk, and PR-description-vs-diff drift.
 - **Design & decisions:** the "PR Agent" project in Notion (Project Overview,
   Decision Log, RAID Log, Runbook, Sprint Notes)
 
+## How we know the reviews are any good
+
+`evals/` scores the reviewer against diffs with defects planted on purpose — one
+per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff. It runs
+through the real dry-run CLI with only the GitHub fetch stubbed, so the prompts,
+the loop, the deterministic n8n check, the merge and the verdict policy are all
+the shipped ones. Harness:
+[`agent-evals`](https://github.com/snacksnack/agent-evals), pinned by tag.
+
+```bash
+python -m evals --list   # the corpus, free
+python -m evals          # billed — needs ANTHROPIC_API_KEY
+```
+
+**Four numbers, never averaged.** Whether the defect was found, whether it was
+categorised right, whether the severity met the floor, and how much else came
+back. The fixes are different — a miss is a rubric gap, a mislabel is a taxonomy
+problem, an under-severe call is a calibration problem — so one score would move
+for all three and point at none of them.
+
+**The clean diff is the load-bearing case.** Recall alone is gamed by flagging
+everything, which is the failure this agent's own prompt warns about:
+*"over-flagging trains people to ignore reviews."* Latest run: **13/13 planted
+defects found, 1 advisory finding on the clean diff, 0 blockers.**
+
+**Only `leaked_secret` gates.** `block_on` is a category list, not a severity
+threshold, so a `blocker`-severity finding in any other category stays advisory.
+The corpus shows that is not hypothetical — the SQL-injection and PR-drift cases
+both drew blocker-severity findings and both exited 0. Every case asserts its
+exit code, because "does not block" is as much a promise as "blocks".
+
 ## Architecture (target)
 
 Custom **GitHub App** (installed account-wide — all repos, including future) →
