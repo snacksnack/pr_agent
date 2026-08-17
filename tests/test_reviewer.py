@@ -17,8 +17,9 @@ from app.models import Finding, PRRef, PullRequest
 # --- scripted fake Anthropic client --------------------------------------
 
 class FakeMessages:
-    def __init__(self, scripted):
+    def __init__(self, scripted, usages=None):
         self._scripted = list(scripted)
+        self._usages = list(usages or [])  # optional per-call (input, output) tokens
         self.calls = []  # records kwargs of each create() call
 
     def create(self, **kwargs):
@@ -28,12 +29,16 @@ class FakeMessages:
         if not self._scripted:
             raise AssertionError("fake client ran out of scripted responses")
         content = self._scripted.pop(0)
-        return SimpleNamespace(content=content, stop_reason="tool_use")
+        usage = None
+        if self._usages:
+            used_in, used_out = self._usages.pop(0)
+            usage = SimpleNamespace(input_tokens=used_in, output_tokens=used_out)
+        return SimpleNamespace(content=content, stop_reason="tool_use", usage=usage)
 
 
 class FakeClient:
-    def __init__(self, scripted):
-        self.messages = FakeMessages(scripted)
+    def __init__(self, scripted, usages=None):
+        self.messages = FakeMessages(scripted, usages)
 
 
 def _text(t):
@@ -94,6 +99,45 @@ def test_explores_then_submits(repo, pr):
     # The submit tool must have been offered to the model.
     tool_names = {t["name"] for t in client.messages.calls[0]["tools"]}
     assert "submit_review" in tool_names and "grep" in tool_names
+
+
+def test_token_usage_is_summed_across_every_turn(repo, pr):
+    """Every call in the loop is metered, so the review can be priced (RC1-269)."""
+    scripted = [
+        [_use("t1", "grep", pattern="TODO")],
+        [_submit("t2", "fine", [])],
+    ]
+    client = FakeClient(scripted, usages=[(100, 10), (200, 20)])
+
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=10, max_files_read=10)
+
+    assert result.input_tokens == 300
+    assert result.output_tokens == 30
+
+
+def test_a_fake_without_usage_records_zero_tokens(repo, pr):
+    """Fakes and older SDK shapes omit usage; the loop records zero, not a crash."""
+    client = FakeClient([[_submit("t1", "fine", [])]])
+
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=10, max_files_read=10)
+
+    assert result.input_tokens == 0 and result.output_tokens == 0
+
+
+def test_forced_submission_tokens_are_counted(repo, pr):
+    # Turn budget of 1 is exhausted by the grep turn; the forced submit_review
+    # call is a real billed call and must be metered too.
+    scripted = [
+        [_use("t1", "grep", pattern="TODO")],
+        [_submit("t2", "forced", [])],
+    ]
+    client = FakeClient(scripted, usages=[(100, 10), (50, 5)])
+
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=1, max_files_read=10)
+
+    assert result.truncated is True
+    assert result.input_tokens == 150
+    assert result.output_tokens == 15
 
 
 def test_grep_tool_result_fed_back(repo, pr):
