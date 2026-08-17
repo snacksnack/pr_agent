@@ -37,13 +37,14 @@ import tempfile
 import time
 from pathlib import Path
 
+from agent_evals import pricing
 from agent_evals.case import Case
 from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion, Usage
 
 from app import review as review_cli
 from app.agent import prompts
 from app.config import settings
-from app.models import Finding, PullRequest
+from app.models import Finding, PullRequest, ReviewResult
 from evals import corpus
 
 NAME = "pr-review"
@@ -188,7 +189,7 @@ def run(case: Case) -> CaseResult:
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
-        exit_code, findings = _review(planted, pr)
+        exit_code, findings, result = _review(planted, pr)
     except Exception as exc:
         return CaseResult(
             case_id=case.id,
@@ -223,7 +224,7 @@ def run(case: Case) -> CaseResult:
     return CaseResult(
         case_id=case.id,
         characteristics=results,
-        usage=Usage(latency_ms=latency_ms),
+        usage=_usage(latency_ms, result),
         observations={
             "exit_code": exit_code,
             "findings": len(findings),
@@ -326,20 +327,39 @@ def _merged_once(
     )
 
 
-def _review(planted: corpus.PlantedCase, pr: PullRequest) -> tuple[int, list[Finding]]:
-    """Run the real CLI, capturing the merged findings on the way past.
+def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
+    """Priced from the loop's summed token counts (RC1-269).
+
+    Recording $0 for a billed suite is RC1-254's exact finding; the guard stays
+    honest when nothing was captured — no measured tokens, no invented cost.
+    """
+    if result is None:
+        return Usage(latency_ms=latency_ms)
+    return Usage(
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=pricing.cost_usd(result.model, result.input_tokens, result.output_tokens),
+        latency_ms=latency_ms,
+    )
+
+
+def _review(
+    planted: corpus.PlantedCase, pr: PullRequest
+) -> tuple[int, list[Finding], ReviewResult | None]:
+    """Run the real CLI, capturing the merged result on the way past.
 
     `main` prints a report and returns an exit code; the findings themselves are
     not returned. Wrapping the review function is how both are obtained without
     reimplementing the pipeline — and the wrapper is transparent, so the n8n
-    merge and the verdict still happen exactly as they ship.
+    merge and the verdict still happen exactly as they ship. The captured
+    `ReviewResult` also carries the loop's token counts for pricing.
     """
-    captured: list[Finding] = []
+    captured: list[ReviewResult] = []
     inner = review_cli._default_review(model=settings.review_model)
 
     def _capture(pull, tools, precomputed):
         result = inner(pull, tools, precomputed)
-        captured.append(result)  # type: ignore[arg-type]
+        captured.append(result)
         return result
 
     argv = ["--pr", f"{pr.ref.owner}/{pr.ref.repo}#{pr.ref.number}"]
@@ -353,5 +373,6 @@ def _review(planted: corpus.PlantedCase, pr: PullRequest) -> tuple[int, list[Fin
         exit_code = review_cli.main(
             argv, fetch=lambda _ref: pr, review=_capture, out=io.StringIO()
         )
-    findings = list(captured[0].findings) if captured else []
-    return exit_code, findings
+    result = captured[0] if captured else None
+    findings = list(result.findings) if result else []
+    return exit_code, findings, result

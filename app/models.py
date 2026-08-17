@@ -101,6 +101,10 @@ class ReviewResult:
     files_read: int = 0
     # True if the run hit a guardrail (turn or file-read cap) before finishing.
     truncated: bool = False
+    # Token spend summed across every model call in the loop, forced
+    # submission included, so a caller can price the review (RC1-269).
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def sorted_findings(self) -> list[Finding]:

@@ -136,8 +136,24 @@ def _create(
     return client.messages.create(**kwargs)
 
 
+def _tokens(response: Any) -> tuple[int, int]:
+    """Input/output token counts of one response, zero when a fake omits them."""
+    usage = _get(response, "usage")
+    return (
+        _get(usage, "input_tokens", 0) or 0,
+        _get(usage, "output_tokens", 0) or 0,
+    )
+
+
 def _result_from_submission(
-    payload: dict, *, model: str, tool_turns: int, files_read: int, truncated: bool
+    payload: dict,
+    *,
+    model: str,
+    tool_turns: int,
+    files_read: int,
+    truncated: bool,
+    input_tokens: int,
+    output_tokens: int,
 ) -> ReviewResult:
     findings: list[Finding] = []
     for item in payload.get("findings") or []:
@@ -165,6 +181,8 @@ def _result_from_submission(
         tool_turns=tool_turns,
         files_read=files_read,
         truncated=truncated,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -201,10 +219,15 @@ def review_pull_request(
     files_read = 0
     turns = 0
     truncated = False
+    input_tokens = 0
+    output_tokens = 0
 
     for _ in range(max_tool_turns):
         turns += 1
         response = _create(client, model=model, messages=messages, max_tokens=max_tokens)
+        used_in, used_out = _tokens(response)
+        input_tokens += used_in
+        output_tokens += used_out
         blocks = _normalize_blocks(_get(response, "content"))
         messages.append({"role": "assistant", "content": blocks})
 
@@ -239,20 +262,36 @@ def review_pull_request(
                 tool_turns=turns,
                 files_read=files_read,
                 truncated=truncated,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
     else:
         # Ran the full turn budget without submitting.
         truncated = True
 
     # Force a final structured submission.
-    submission = _force_submit(client, messages, model=model, max_tokens=max_tokens)
+    submission, (used_in, used_out) = _force_submit(
+        client, messages, model=model, max_tokens=max_tokens
+    )
     return _result_from_submission(
-        submission, model=model, tool_turns=turns, files_read=files_read, truncated=truncated
+        submission,
+        model=model,
+        tool_turns=turns,
+        files_read=files_read,
+        truncated=truncated,
+        input_tokens=input_tokens + used_in,
+        output_tokens=output_tokens + used_out,
     )
 
 
-def _force_submit(client: Any, messages: list, *, model: str, max_tokens: int) -> dict:
-    """Make one final call that must call submit_review, and return its input."""
+def _force_submit(
+    client: Any, messages: list, *, model: str, max_tokens: int
+) -> tuple[dict, tuple[int, int]]:
+    """Make one final call that must call submit_review.
+
+    Returns the submission's input plus the call's token counts, so the forced
+    turn is metered like every other one.
+    """
     nudge = messages + [
         {
             "role": "user",
@@ -269,5 +308,5 @@ def _force_submit(client: Any, messages: list, *, model: str, max_tokens: int) -
     )
     for block in _normalize_blocks(_get(response, "content")):
         if block["type"] == "tool_use" and block["name"] == "submit_review":
-            return block["input"]
+            return block["input"], _tokens(response)
     raise ReviewError("model did not submit a review when forced")
