@@ -20,7 +20,11 @@ per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff. It runs
 through the real dry-run CLI with only the GitHub fetch stubbed, so the prompts,
 the loop, the deterministic n8n check, the merge and the verdict policy are all
 the shipped ones. Harness:
-[`agent-evals`](https://github.com/snacksnack/agent-evals), pinned by tag.
+[`agent-evals`](https://github.com/snacksnack/agent-evals), pinned by tag — its
+README is the methodology. Billed runs publish to the shared
+[quality trend page](https://snacksnack.github.io/agent-evals/); keys, store and
+the publish step are the library's
+[runbook](https://github.com/snacksnack/agent-evals/blob/main/docs/measuring.md).
 
 ```bash
 python -m evals --list   # the corpus, free
