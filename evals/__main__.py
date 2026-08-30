@@ -16,6 +16,7 @@ import argparse
 import sys
 from datetime import UTC, datetime
 
+from agent_evals import llmobs
 from agent_evals.runner import UnknownCase, exit_code, print_result, record_run, select_cases
 
 from app.config import settings
@@ -46,8 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"{len(cases)} case(s) against {settings.review_model} — this spends money.\n")
+    # RC1-322: billed spend is traced spend; a no-op without DD_API_KEY.
+    llmobs.enable("pr-review-agent", service="evals")
     started = datetime.now(UTC)
-    results = [subject.run(case) for case in cases]
+    results = []
+    for case in cases:
+        with llmobs.case(case.id) as traced:
+            result = subject.run(case)
+            traced.record(result)
+        results.append(result)
     for result in results:
         obs = result.observations
         extra = "" if result.error else f"{obs['findings']} finding(s), {obs['noise']} off-target"
