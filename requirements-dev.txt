@@ -1,0 +1,11 @@
+# PR Review Agent — dev/test dependencies (RC1-322 split; see requirements.txt
+# for why the runtime file must stay git-free).
+-r requirements.txt
+
+pytest>=8
+# RC1-253: the shared eval harness. Pinned by tag — if the ruler can move under
+# a run, a changed score no longer says whether the reviewer drifted or the
+# measurement did.
+agent-evals[sql,llmobs] @ git+https://github.com/snacksnack/agent-evals@v0.4.0
+pytest-cov>=5
+ruff>=0.7

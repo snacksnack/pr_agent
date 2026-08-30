@@ -113,7 +113,7 @@ tests/          pytest, offline
 ## Commands
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime-only: requirements.txt
 python -m app                 # config sanity check (no creds needed)
 pytest -q                     # run tests
 pytest --cov                  # ...with the 88% floor CI enforces
