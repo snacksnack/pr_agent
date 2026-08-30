@@ -30,10 +30,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from agent_evals import llmobs
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from app.config import settings
+from app.observability import enable_llm_obs
 
 if TYPE_CHECKING:  # avoid importing these at module load; worker imports lazily
     from app.dedup import DedupStore
@@ -269,9 +269,9 @@ def create_app(
     ``GITHUB_WEBHOOK_SECRET`` doesn't require rebuilding the app.
     """
     configure_logging()
-    # RC1-322: reviews triggered by webhooks become LLM Obs traces. The image
-    # ships agent-evals (one requirements.txt); a no-op without DD_API_KEY.
-    llmobs.enable("pr-review-agent", service="webhook")
+    # RC1-322: reviews triggered by webhooks become LLM Obs traces; a no-op
+    # without DD_API_KEY.
+    enable_llm_obs("pr-review-agent", service="webhook")
     app = FastAPI(title="PR Review Agent webhook", version="RC1-116")
     worker = processor or process_event
 
