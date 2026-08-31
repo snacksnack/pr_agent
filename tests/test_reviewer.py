@@ -224,7 +224,7 @@ def test_precomputed_findings_rendered_in_seed_prompt(repo, pr):
 
     review_pull_request(pr, repo, client=client, max_tool_turns=5, precomputed_findings=pre)
 
-    seed = client.messages.calls[0]["messages"][0]["content"]
+    seed = client.messages.calls[0]["messages"][0]["content"][0]["text"]
     assert "already recorded by automated checks" in seed
     assert "do NOT repeat" in seed
     assert "cron fires every minute" in seed and "flow.json:8" in seed
@@ -232,6 +232,46 @@ def test_precomputed_findings_rendered_in_seed_prompt(repo, pr):
 
 def test_seed_prompt_has_no_precomputed_section_when_none(pr):
     assert "already recorded by automated checks" not in format_pr_for_review(pr)
+
+
+# --- prompt caching (RC1-350) ---------------------------------------------
+
+def test_every_call_carries_two_cache_breakpoints(repo, pr):
+    # One breakpoint on the constant tools+system prefix, one riding the
+    # latest turn — and never more, or old markers would eat the API's
+    # four-breakpoint cap as the conversation grows.
+    scripted = [
+        [_use("t1", "grep", pattern="TODO")],
+        [_use("t2", "read_file", path="src/app.py")],
+        [_submit("t3", "done", [])],
+    ]
+    client = FakeClient(scripted)
+    review_pull_request(pr, repo, client=client, max_tool_turns=10, max_files_read=10)
+
+    for call in client.messages.calls:
+        assert call["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert call["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        marked = [
+            block
+            for message in call["messages"]
+            if isinstance(message["content"], list)
+            for block in message["content"]
+            if isinstance(block, dict) and "cache_control" in block
+        ]
+        assert len(marked) == 1
+
+
+def test_forced_submit_nudge_carries_the_moving_breakpoint(repo, pr):
+    scripted = [
+        [_text("I think this looks fine")],  # no submission -> forced call
+        [_submit("tf", "all good", [])],
+    ]
+    client = FakeClient(scripted)
+    review_pull_request(pr, repo, client=client, max_tool_turns=10)
+
+    nudge = client.messages.calls[-1]["messages"][-1]
+    assert "review budget" in nudge["content"][0]["text"]
+    assert nudge["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
 # --- malformed findings are skipped, not fatal ---------------------------

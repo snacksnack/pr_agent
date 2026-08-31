@@ -36,6 +36,18 @@ DEFAULT_MAX_TOKENS = 4096
 
 ALL_TOOLS = [*TOOL_SCHEMAS, SUBMIT_TOOL]
 
+# Prompt caching (RC1-350). The loop re-sends the whole conversation on every
+# turn, so two 5-minute-TTL breakpoints let turns 2+ read the prefix at ~0.1x
+# input price: one on the constant tools+system prefix (shared across reviews
+# too), one riding the latest turn. The moving marker is applied to a copy at
+# send time — the history itself never accumulates markers, keeping each
+# request at two of the API's four-breakpoint cap.
+CACHE_CONTROL = {"type": "ephemeral"}
+
+SYSTEM_BLOCKS = [
+    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": CACHE_CONTROL}
+]
+
 
 class ReviewError(RuntimeError):
     """Raised when the loop cannot produce a structured review."""
@@ -116,6 +128,27 @@ def format_pr_for_review(
     return "\n".join(parts)
 
 
+def _user_text(text: str) -> dict:
+    """A user message in block form, so the prefix serializes identically
+    whether or not a cache marker rides the block on a given request."""
+    return {"role": "user", "content": [{"type": "text", "text": text}]}
+
+
+def _with_cache_marker(messages: list) -> list:
+    """Return ``messages`` with a cache breakpoint on the final content block.
+
+    Copies, never mutates: the loop's history stays unmarked so the breakpoint
+    moves forward each turn while earlier positions remain valid read points.
+    """
+    if not messages or not isinstance(messages[-1].get("content"), list):
+        return messages
+    last = dict(messages[-1])
+    blocks = list(last["content"])
+    blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
+    last["content"] = blocks
+    return [*messages[:-1], last]
+
+
 def _create(
     client: Any,
     *,
@@ -126,8 +159,8 @@ def _create(
 ):
     kwargs: dict[str, Any] = {
         "model": model,
-        "system": SYSTEM_PROMPT,
-        "messages": messages,
+        "system": SYSTEM_BLOCKS,
+        "messages": _with_cache_marker(messages),
         "tools": ALL_TOOLS,
         "max_tokens": max_tokens,
     }
@@ -214,7 +247,7 @@ def review_pull_request(
         client = Anthropic(api_key=settings.anthropic_api_key)
 
     messages: list[dict] = [
-        {"role": "user", "content": format_pr_for_review(pull_request, precomputed_findings)}
+        _user_text(format_pr_for_review(pull_request, precomputed_findings))
     ]
     files_read = 0
     turns = 0
@@ -293,11 +326,10 @@ def _force_submit(
     turn is metered like every other one.
     """
     nudge = messages + [
-        {
-            "role": "user",
-            "content": "You have used your review budget. Call submit_review now "
-            "with your final findings.",
-        }
+        _user_text(
+            "You have used your review budget. Call submit_review now "
+            "with your final findings."
+        )
     ]
     response = _create(
         client,
