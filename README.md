@@ -157,7 +157,7 @@ fly secrets set \
   GITHUB_APP_ID=... \
   GITHUB_WEBHOOK_SECRET=... \
   GITHUB_APP_PRIVATE_KEY="$(cat path/to/app-private-key.pem)"
-fly deploy
+scripts/deploy.sh                 # fly deploy + the commit sha for Datadog source links
 fly status                        # confirm the machine is healthy
 curl https://<app>.fly.dev/healthz   # confirm the public HTTPS endpoint
 ```
