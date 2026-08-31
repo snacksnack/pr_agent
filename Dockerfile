@@ -5,12 +5,21 @@
 # Fly auto-stops it when idle (see fly.toml).
 FROM python:3.12-slim
 
+# RC1-337: scripts/deploy.sh passes the commit it builds, so Datadog traces
+# and errors deep-link to source at that exact commit (the slim image has no
+# git, so the sha must arrive as a build arg). Empty on local builds, where
+# DD_API_KEY is absent and nothing traces anyway.
+ARG GIT_SHA=""
+
 # - PYTHONUNBUFFERED: stream logs straight to stdout so `fly logs` is live.
 # - PYTHONDONTWRITEBYTECODE: no .pyc clutter in the image.
 # - PIP_NO_CACHE_DIR: smaller image, no wheel cache layer.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    DD_GIT_COMMIT_SHA=$GIT_SHA \
+    DD_GIT_REPOSITORY_URL=https://github.com/snacksnack/pr_agent \
+    DD_VERSION=$GIT_SHA
 
 WORKDIR /app
 
