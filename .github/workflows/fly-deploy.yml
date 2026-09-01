@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # DORA needs the deploy's start time; GITHUB_ENV is the only state that
+      # survives between steps.
+      - name: Record deploy start
+        run: echo "DEPLOY_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - run: flyctl deploy --remote-only --build-arg GIT_SHA=${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -53,3 +59,29 @@ jobs:
             [ "$ok" -ge 3 ] || sleep 10
           done
           echo "boot health confirmed on $HEALTH_URL"
+
+      # Register the deploy with Datadog DORA (RC1-336). Runs only after the boot
+      # health gate, so a DORA deployment event means the app actually serves — not
+      # merely that flyctl exited 0. DORA deployments are a separate data source
+      # from CI Visibility: deployment frequency and lead time compute from these
+      # events, and lead time additionally needs commit_sha + repository_url to
+      # join the git metadata. Timestamps are nanoseconds. A failed POST fails the
+      # workflow on purpose: the deploy is live either way, but an unrecorded
+      # deploy silently undercounts the delivery dashboard.
+      - name: Report deploy to Datadog DORA
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          SERVICE: pr-review-agent-snacksnack
+          REPO_URL: https://github.com/snacksnack/pr_agent
+        run: |
+          set -euo pipefail
+          payload=$(printf '{"data":{"attributes":{"service":"%s","env":"prod","started_at":%s000000000,"finished_at":%s000000000,"git":{"commit_sha":"%s","repository_url":"%s"}}}}' \
+            "$SERVICE" "$DEPLOY_STARTED_AT" "$(date +%s)" "$GITHUB_SHA" "$REPO_URL")
+          code=$(curl -s -o resp.json -w '%{http_code}' -m 30 -X POST \
+            -H "DD-API-KEY: $DD_API_KEY" -H "Content-Type: application/json" \
+            -d "$payload" "https://api.datadoghq.com/api/v2/dora/deployment")
+          cat resp.json; echo
+          case "$code" in
+            2*) echo "DORA deployment recorded (HTTP $code)";;
+            *) echo "::error::DORA deployment POST failed with HTTP $code — this deploy is live but unrecorded"; exit 1;;
+          esac
