@@ -254,3 +254,35 @@ def test_write_retries_rate_limited_403():
 
     assert attempts["n"] == 2
     assert review["id"] == 99
+
+
+# --- git tree (RC1-364) ---------------------------------------------------
+
+def test_get_tree_returns_path_type_size_recursively():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["recursive"] = request.url.params.get("recursive")
+        return httpx.Response(200, json={"sha": "h", "truncated": False, "tree": [
+            {"path": "src", "type": "tree", "mode": "040000"},
+            {"path": "src/app.py", "type": "blob", "size": 120},
+            {"type": "blob"},  # malformed entry, dropped
+        ]})
+
+    with _client(handler) as gh:
+        tree = gh.get_tree(PRRef("o", "r", 42), "headsha")
+
+    assert captured["path"] == "/repos/o/r/git/trees/headsha"
+    assert captured["recursive"] == "1"
+    assert tree == [
+        {"path": "src", "type": "tree", "size": 0},
+        {"path": "src/app.py", "type": "blob", "size": 120},
+    ]
+
+
+def test_get_tree_unreadable_returns_none_never_raises():
+    with _client(lambda req: httpx.Response(403)) as gh:
+        assert gh.get_tree(PRRef("o", "r", 42), "h") is None
+    with _client(lambda req: httpx.Response(200, json={"message": "odd"})) as gh:
+        assert gh.get_tree(PRRef("o", "r", 42), "h") is None

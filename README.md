@@ -127,6 +127,17 @@ hands its findings to the loop as already-recorded context, and merges them once
 — exactly as the dry-run CLI does. A missing, non-JSON, or unparseable file is
 skipped, never failing the review.
 
+The agent's own `read_file` / `list_dir` / `grep` tools read the repository the
+same way (RC1-364): one Git Trees call for the layout, then Contents API reads at
+the PR head, cached per review. Until RC1-364 the live tools pointed at an empty
+directory and every read came back `no such file`, so live reviews were written
+from the diff alone and every trace showed errored tool spans. Two limits keep
+it cheap: `REMOTE_API_BUDGET` (default 60) caps API calls per review, and a grep
+reads at most 30 candidate files, changed files first, telling the model how
+many it did not reach so it can narrow with a path or glob. If the App token
+cannot read the tree, `read_file` still works and `grep` confines itself to the
+PR's changed files.
+
 The background worker posts the review as a **single upserted summary comment**
 plus inline comments anchored to changed-hunk lines, with severity tags.
 Findings that can't attach to a diff line (PR-level, or a line outside the diff)

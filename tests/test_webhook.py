@@ -228,6 +228,7 @@ def _wire_fakes(monkeypatch, pr, posted):
     def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
         posted["reviewed"] = posted.get("reviewed", 0) + 1
         posted["precomputed"] = precomputed_findings
+        posted["tools"] = repo_tools
         return ReviewResult(summary="ok", model="m")
 
     def fake_post(client, pull_request, result, *, block_on, commit_id=None):
@@ -254,6 +255,11 @@ def test_process_event_ingests_reviews_and_posts(monkeypatch):
     assert posted["pr"] is pr
     assert posted["commit_id"] == "abc123def4567890"
     assert "leaked_secret" in posted["block_on"]
+    # RC1-364: the live agent explores the repo through the API at the PR head,
+    # not an empty temp dir.
+    from app.agent.remote_tools import RemoteRepoTools
+    assert isinstance(posted["tools"], RemoteRepoTools)
+    assert posted["tools"].api_calls == 0  # nothing spent until the model asks
 
 
 def test_process_event_skips_duplicate_delivery_and_reviewed_sha(monkeypatch):

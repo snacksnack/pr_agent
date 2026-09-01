@@ -5,9 +5,11 @@ directory, and grep for a pattern. All three are scoped to a single repo root
 with strict path-safety (no escaping the root, no symlink traversal) and bounded
 output so a huge file or a noisy grep can't blow up the context window or cost.
 
-The tools operate on a local checkout, so they're source-agnostic: the dry-run
-CLI clones a PR's head, and the webhook service (RC1-116) will do the same — the
-tools don't care how the checkout got there.
+The tools here operate on a local checkout (the dry-run CLI's ``--repo-path``).
+The live webhook has no checkout; :mod:`app.agent.remote_tools` serves the same
+three tools from the GitHub Contents API at the PR head (RC1-364). Both share
+the formatting and matching helpers below and the :func:`dispatch_tool` contract,
+so the agent loop cannot tell which one it is talking to.
 
 Each tool is also exposed as an Anthropic tool schema (``TOOL_SCHEMAS``) and
 invoked via :meth:`RepoTools.dispatch`, which the agent loop (RC1-110) drives.
@@ -18,6 +20,7 @@ import fnmatch
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 # Output guardrails (cost / context-window protection).
 MAX_READ_BYTES = 64_000
@@ -152,37 +155,7 @@ class RepoTools:
             raise ToolError(f"{path!r} is a directory; use list_dir")
 
         size = p.stat().st_size
-        raw = p.read_bytes()[:MAX_READ_BYTES]
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ToolError(f"{path!r} is binary or not UTF-8 text") from exc
-
-        lines = text.splitlines()
-        total = len(lines)
-        start = max(1, start_line) if start_line else 1
-        end = min(total, end_line) if end_line else total
-        if start > total:
-            return f"({path!r} has {total} lines; start_line {start} is past the end)"
-
-        selected = lines[start - 1 : end]
-        line_truncated = False
-        if len(selected) > MAX_READ_LINES:
-            selected = selected[:MAX_READ_LINES]
-            end = start + MAX_READ_LINES - 1
-            line_truncated = True
-
-        width = len(str(end)) or 1
-        body = "\n".join(
-            f"{i:>{width}}  {line}" for i, line in enumerate(selected, start=start)
-        )
-
-        notes = []
-        if size > MAX_READ_BYTES:
-            notes.append(f"file clipped to first {MAX_READ_BYTES} bytes")
-        if line_truncated:
-            notes.append(f"output capped at {MAX_READ_LINES} lines")
-        return body + (f"\n... [{'; '.join(notes)}]" if notes else "")
+        return format_file_text(path, p.read_bytes()[:MAX_READ_BYTES], size, start_line, end_line)
 
     def list_dir(self, path: str = ".") -> str:
         """List a directory (dirs first), excluding noise dirs like .git."""
@@ -226,11 +199,7 @@ class RepoTools:
         max_results: int = MAX_GREP_MATCHES,
     ) -> str:
         """Search files under ``path`` for ``pattern``; return ``file:line: text``."""
-        flags = re.IGNORECASE if ignore_case else 0
-        try:
-            regex = re.compile(re.escape(pattern) if fixed else pattern, flags)
-        except re.error as exc:
-            raise ToolError(f"invalid regex {pattern!r}: {exc}") from exc
+        regex = compile_pattern(pattern, ignore_case=ignore_case, fixed=fixed)
 
         base = self._resolve(path)
         if not base.exists():
@@ -247,14 +216,8 @@ class RepoTools:
                 content = file.read_text("utf-8")
             except (UnicodeDecodeError, OSError):
                 continue  # skip binary / unreadable files
-            for num, line in enumerate(content.splitlines(), start=1):
-                if regex.search(line):
-                    snippet = line.strip()[:SNIPPET_MAX]
-                    results.append(f"{self._relpath(file)}:{num}: {snippet}")
-                    if len(results) >= max_results:
-                        truncated = True
-                        break
-            if truncated:
+            if grep_text(regex, self._relpath(file), content, results, max_results):
+                truncated = True
                 break
 
         if not results:
@@ -268,28 +231,102 @@ class RepoTools:
 
     def dispatch(self, name: str, tool_input: dict) -> str:
         """Invoke a tool by name; return its output or a recoverable error string."""
-        try:
-            if name == "read_file":
-                return self.read_file(
-                    tool_input["path"],
-                    tool_input.get("start_line"),
-                    tool_input.get("end_line"),
-                )
-            if name == "list_dir":
-                return self.list_dir(tool_input.get("path", "."))
-            if name == "grep":
-                return self.grep(
-                    tool_input["pattern"],
-                    tool_input.get("path", "."),
-                    ignore_case=bool(tool_input.get("ignore_case", False)),
-                    fixed=bool(tool_input.get("fixed", False)),
-                    glob=tool_input.get("glob"),
-                )
-            raise ToolError(f"unknown tool: {name!r}")
-        except ToolError as exc:
-            return f"Error: {exc}"
-        except KeyError as exc:
-            return f"Error: missing required argument {exc}"
+        return dispatch_tool(self, name, tool_input)
+
+
+# --- shared by the local and remote backends --------------------------------
+
+def format_file_text(
+    path: str,
+    raw: bytes,
+    size: int,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
+    """Number ``raw`` (already clipped to MAX_READ_BYTES) and slice it.
+
+    ``size`` is the file's true size so the clip note is accurate.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"{path!r} is binary or not UTF-8 text") from exc
+
+    lines = text.splitlines()
+    total = len(lines)
+    start = max(1, start_line) if start_line else 1
+    end = min(total, end_line) if end_line else total
+    if start > total:
+        return f"({path!r} has {total} lines; start_line {start} is past the end)"
+
+    selected = lines[start - 1 : end]
+    line_truncated = False
+    if len(selected) > MAX_READ_LINES:
+        selected = selected[:MAX_READ_LINES]
+        end = start + MAX_READ_LINES - 1
+        line_truncated = True
+
+    width = len(str(end)) or 1
+    body = "\n".join(
+        f"{i:>{width}}  {line}" for i, line in enumerate(selected, start=start)
+    )
+
+    notes = []
+    if size > MAX_READ_BYTES:
+        notes.append(f"file clipped to first {MAX_READ_BYTES} bytes")
+    if line_truncated:
+        notes.append(f"output capped at {MAX_READ_LINES} lines")
+    return body + (f"\n... [{'; '.join(notes)}]" if notes else "")
+
+
+def compile_pattern(pattern: str, *, ignore_case: bool = False, fixed: bool = False) -> re.Pattern:
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        return re.compile(re.escape(pattern) if fixed else pattern, flags)
+    except re.error as exc:
+        raise ToolError(f"invalid regex {pattern!r}: {exc}") from exc
+
+
+def grep_text(
+    regex: re.Pattern, relpath: str, content: str, results: list[str], max_results: int
+) -> bool:
+    """Append ``relpath:line: snippet`` rows for matches; True once the cap is hit."""
+    for num, line in enumerate(content.splitlines(), start=1):
+        if regex.search(line):
+            results.append(f"{relpath}:{num}: {line.strip()[:SNIPPET_MAX]}")
+            if len(results) >= max_results:
+                return True
+    return False
+
+
+def dispatch_tool(tools: Any, name: str, tool_input: dict) -> str:
+    """Route a tool call to ``tools`` (local or remote); errors become strings.
+
+    The dispatcher turns :class:`ToolError` into text so the model can adjust
+    and retry rather than crashing the review loop.
+    """
+    try:
+        if name == "read_file":
+            return tools.read_file(
+                tool_input["path"],
+                tool_input.get("start_line"),
+                tool_input.get("end_line"),
+            )
+        if name == "list_dir":
+            return tools.list_dir(tool_input.get("path", "."))
+        if name == "grep":
+            return tools.grep(
+                tool_input["pattern"],
+                tool_input.get("path", "."),
+                ignore_case=bool(tool_input.get("ignore_case", False)),
+                fixed=bool(tool_input.get("fixed", False)),
+                glob=tool_input.get("glob"),
+            )
+        raise ToolError(f"unknown tool: {name!r}")
+    except ToolError as exc:
+        return f"Error: {exc}"
+    except KeyError as exc:
+        return f"Error: missing required argument {exc}"
 
 
 # Anthropic tool schemas (RC1-110 passes these as the loop's `tools`).
@@ -338,7 +375,10 @@ TOOL_SCHEMAS = [
             "'path:line: text' rows. Pattern is a regular expression unless "
             "fixed=true. Optionally scope with a path, restrict to filenames "
             "matching a glob (e.g. '*.py'), or ignore case. Binary files and "
-            "noise directories are skipped; results are capped."
+            "noise directories are skipped; results are capped. On a live review "
+            "the search reads files through the GitHub API under a per-review "
+            "budget, so scope it with a path or glob rather than searching the "
+            "whole repository."
         ),
         "input_schema": {
             "type": "object",

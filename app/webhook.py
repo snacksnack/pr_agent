@@ -25,7 +25,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -152,10 +151,11 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
     Mints an installation token, ingests the PR, runs the deterministic n8n
     execution-cost check over the PR's changed workflow JSON (sourced at the head
     via the Contents API, since there's no local checkout), runs the agentic
-    review loop from the diff alone (the agent's file tools point at an empty dir
-    and it reviews the patch) with those findings handed in as already-recorded
-    context, then merges them once and posts/refreshes the review via
-    :func:`app.posting.post_review` — mirroring the dry-run CLI's pipeline.
+    review loop with its file tools served from the same API at the PR head
+    (RC1-364; no checkout, one tree call plus a budget of file reads) with those
+    findings handed in as already-recorded context, then merges them once and
+    posts/refreshes the review via :func:`app.posting.post_review` — mirroring
+    the dry-run CLI's pipeline.
 
     Dedup (RC1-118): skip webhook redeliveries (same delivery id), commits we've
     already reviewed (same head SHA), and *stale* events — if the PR's current
@@ -165,8 +165,8 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
     Exceptions are swallowed and logged — a background task has no client to
     return an error to, and one bad delivery must not take the worker down.
     """
+    from app.agent.remote_tools import RemoteRepoTools
     from app.agent.reviewer import review_pull_request
-    from app.agent.tools import RepoTools
     from app.auth import GitHubAppAuth
     from app.dedup import dedup_store
     from app.models import PRRef
@@ -193,10 +193,19 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
             # findings are fed to the loop as already-recorded context so the
             # model builds on them instead of duplicating them, then merged once.
             precomputed = _run_n8n_checks(gh, pr, log)
-            with tempfile.TemporaryDirectory(prefix="pr-review-") as empty:
-                result = review_pull_request(
-                    pr, RepoTools(empty), client=None, precomputed_findings=precomputed
-                )
+            tools = RemoteRepoTools(
+                gh,
+                pr.ref,
+                pr.head_sha,
+                changed_files=[f.filename for f in pr.files],
+                api_budget=settings.remote_api_budget,
+            )
+            result = review_pull_request(
+                pr, tools, client=None, precomputed_findings=precomputed
+            )
+            log.info(
+                "repo_tools api_calls=%d tree=%s", tools.api_calls, tools.tree_available
+            )
             result.findings.extend(precomputed)
             outcome = post_review(
                 gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha
