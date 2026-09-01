@@ -16,3 +16,40 @@ jobs:
       - run: flyctl deploy --remote-only --build-arg GIT_SHA=${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # Gate on boot health (RC1-355). flyctl deploy exiting 0 is not evidence the
+      # app runs: with min_machines_running = 0 the machine stops right after
+      # release, and a stopped machine's fly.toml check reports "warning", not
+      # "critical" — so the deploy succeeds whether or not the image can boot.
+      # That is how the RC1-322 crash-loop shipped silently. Requesting the public
+      # URL forces a cold start and exercises the same path a real request takes.
+      - name: Gate on boot health
+        env:
+          HEALTH_URL: https://pr-review-agent-snacksnack.fly.dev/healthz
+        run: |
+          set -uo pipefail
+          # Three consecutive passes, not the first 200: a crash-loop can answer
+          # once before the machine restarts underneath it.
+          deadline=$((SECONDS + 180))
+          ok=0
+          while [ "$ok" -lt 3 ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::$HEALTH_URL never stayed healthy for 3 consecutive checks within 180s"
+              exit 1
+            fi
+            # curl -w always prints a code (000 on connection failure), so no
+            # fallback is needed — an "|| echo 000" here doubles it in the log.
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 "$HEALTH_URL")
+            if [ "$code" = "200" ]; then
+              ok=$((ok + 1))
+              echo "healthy ($ok/3)"
+            else
+              if [ "$ok" -gt 0 ]; then
+                echo "::warning::flapped after $ok consecutive passes (HTTP $code) — possible restart loop"
+              fi
+              ok=0
+              echo "not healthy yet (HTTP $code)"
+            fi
+            [ "$ok" -ge 3 ] || sleep 10
+          done
+          echo "boot health confirmed on $HEALTH_URL"
