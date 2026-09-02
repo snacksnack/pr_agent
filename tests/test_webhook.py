@@ -15,6 +15,7 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
+from app.config import Settings
 from app.webhook import (
     WebhookEvent,
     WebhookParseError,
@@ -151,9 +152,13 @@ def test_dependabot_pr_acks_200_without_dispatch(action, caplog):
 
 
 def test_skip_authors_is_configurable(monkeypatch):
+    # Swap in a whole Settings object (not one attribute) so the test resolves
+    # the knob the same way production does: env -> Settings -> skip_authors.
     import app.webhook
 
-    monkeypatch.setattr(app.webhook.settings, "review_skip_authors", "renovate[bot]")
+    monkeypatch.setattr(
+        app.webhook, "settings", Settings(_env_file=None, review_skip_authors="renovate[bot]")
+    )
     rec = Recorder()
     assert _post(_client(rec), _pr_payload(author="renovate[bot]")).status_code == 200
     assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
@@ -163,7 +168,7 @@ def test_skip_authors_is_configurable(monkeypatch):
 def test_empty_skip_list_reviews_everyone(monkeypatch):
     import app.webhook
 
-    monkeypatch.setattr(app.webhook.settings, "review_skip_authors", "")
+    monkeypatch.setattr(app.webhook, "settings", Settings(_env_file=None, review_skip_authors=""))
     rec = Recorder()
     assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
     assert len(rec.events) == 1
