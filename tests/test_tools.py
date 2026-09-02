@@ -195,3 +195,24 @@ def test_tool_schemas_shape():
         assert schema["type"] == "object"
         assert "properties" in schema
         assert "required" in schema
+
+
+# --- dispatch survives what the model actually sends (RC1-364 follow-up) --
+
+def test_dispatch_accepts_line_numbers_sent_as_strings(repo):
+    out = repo.dispatch("read_file", {"path": "src/app.py", "start_line": "1", "end_line": "2"})
+    assert "1  def hello():" in out and "Bye" not in out
+
+
+def test_dispatch_reports_a_bad_line_number_instead_of_raising(repo):
+    out = repo.dispatch("read_file", {"path": "src/app.py", "start_line": "twelve"})
+    assert out == "Error: start_line must be an integer, got 'twelve'"
+
+
+def test_dispatch_turns_any_unexpected_exception_into_a_tool_error(repo, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(repo, "grep", boom)
+    out = repo.dispatch("grep", {"pattern": "x"})
+    assert out.startswith("Error: grep failed (RuntimeError: disk on fire)")
