@@ -66,6 +66,30 @@ SECRET_FILE_GLOBS = (
     ".pypirc",
     ".netrc",
 )
+# Generated dependency lock files (RC1-365). Not secret, just noise: thousands
+# of lines of registry URLs and hashes that burn the read budget, fill the seed
+# diff, and light up Datadog's sensitive-data scan on every trace. Dependency
+# changes are reviewed from the manifest and the diff header instead.
+LOCKFILE_NAMES = frozenset(
+    {
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lockb",
+        "uv.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "pdm.lock",
+        "cargo.lock",
+        "go.sum",
+        "composer.lock",
+        "gemfile.lock",
+        "packages.lock.json",
+        "flake.lock",
+    }
+)
+
 # Lookalikes that are safe and useful context (templates, public keys): allowed
 # even though they match a secret glob above. Checked first.
 SECRET_ALLOW_GLOBS = (
@@ -87,6 +111,18 @@ def is_secret_file(name: str) -> bool:
     if any(fnmatch.fnmatch(lowered, pat) for pat in SECRET_ALLOW_GLOBS):
         return False
     return any(fnmatch.fnmatch(lowered, pat) for pat in SECRET_FILE_GLOBS)
+
+
+def is_lockfile(name: str) -> bool:
+    """True for a generated dependency lock file, matched by basename."""
+    return name.lower() in LOCKFILE_NAMES
+
+
+def lockfile_refusal(path: str) -> ToolError:
+    return ToolError(
+        f"refused: {path!r} is a generated lock file; review dependency changes "
+        "from the manifest (package.json, pyproject.toml, ...) and the diff header."
+    )
 
 
 class ToolError(Exception):
@@ -123,14 +159,14 @@ class RepoTools:
 
     def _walk_files(self, base: Path):
         if base.is_file():
-            if not is_secret_file(base.name):
+            if not is_secret_file(base.name) and not is_lockfile(base.name):
                 yield base
             return
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
             for name in sorted(filenames):
-                if is_secret_file(name):
-                    continue  # never grep secret/credential files
+                if is_secret_file(name) or is_lockfile(name):
+                    continue  # never grep secret/credential or lock files
                 yield Path(dirpath) / name
 
     # -- tools -----------------------------------------------------------
@@ -149,6 +185,8 @@ class RepoTools:
                 "reviewer does not read these (they're typically gitignored and "
                 "not part of the PR). Review committed changes from the diff."
             )
+        if is_lockfile(p.name):
+            raise lockfile_refusal(path)
         if not p.exists():
             raise ToolError(f"no such file: {path!r}")
         if p.is_dir():
@@ -170,8 +208,8 @@ class RepoTools:
         for child in children:
             if child.name in IGNORED_DIRS:
                 continue
-            if child.is_file() and is_secret_file(child.name):
-                continue  # hide secret/credential files from listings
+            if child.is_file() and (is_secret_file(child.name) or is_lockfile(child.name)):
+                continue  # hide secret/credential and lock files from listings
             if child.is_dir():
                 entries.append(f"{child.name}/")
             else:
@@ -357,8 +395,10 @@ TOOL_SCHEMAS = [
             "Read a UTF-8 text file from the repository, returned with line "
             "numbers. Paths are relative to the repo root. Optionally pass "
             "start_line/end_line to read a slice. Output is truncated for very "
-            "large files. Secret/credential files (e.g. .env, private keys) are "
-            "not readable and won't appear in listings."
+            "large files. Secret/credential files (e.g. .env, private keys) and "
+            "generated lock files (package-lock.json, uv.lock, ...) are not "
+            "readable and won't appear in listings; review dependency changes "
+            "from the manifest and the diff."
         ),
         "input_schema": {
             "type": "object",
