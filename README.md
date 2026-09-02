@@ -235,6 +235,7 @@ All settings load from environment variables (and an optional `.env`). See
 | `GITHUB_TOKEN` | PAT for the dry-run CLI (RC1-113) | — |
 | `REVIEW_MODEL` | Workhorse review model | `claude-sonnet-4-6` |
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
+| `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |

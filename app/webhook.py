@@ -10,6 +10,7 @@ a 2xx inside ~10s or GitHub marks them failed and retries):
       -> verify the HMAC signature over the raw body      (reject forgeries)
       -> filter to pull_request opened/synchronize/reopened
       -> normalize into a WebhookEvent
+      -> drop PRs from skipped authors (Dependabot by default)   (cost guardrail)
       -> schedule the review on a BackgroundTask, return 202 immediately
 
 Signature verification runs on *every* delivery against the raw bytes (re-encoding
@@ -88,6 +89,7 @@ class WebhookEvent:
     number: int
     head_sha: str
     installation_id: int | None
+    author: str | None = None  # pull_request.user.login; drives the skip list
 
     @property
     def slug(self) -> str:
@@ -132,6 +134,7 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
             "pull_request.number, pull_request.head.sha)"
         )
     installation_id = (payload.get("installation") or {}).get("id")
+    author = (pr.get("user") or {}).get("login")
     return WebhookEvent(
         delivery_id=delivery_id,
         action=action,
@@ -140,6 +143,7 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
         number=number,
         head_sha=head_sha,
         installation_id=installation_id if isinstance(installation_id, int) else None,
+        author=author if isinstance(author, str) else None,
     )
 
 
@@ -338,6 +342,14 @@ def create_app(
         except WebhookParseError as exc:
             logger.warning("unparseable_payload delivery=%s: %s", delivery_id, exc)
             return Response(status_code=400)
+
+        # RC1-359: bot-authored PRs (Dependabot by default) are acknowledged but
+        # never reviewed. Each review is a billed model call, and enabling
+        # Dependabot alerts can open a dozen version-bump PRs at once; the
+        # skip runs before dispatch so no token is minted and no repo is read.
+        if event.author in settings.skip_authors:
+            _event_logger(event).info("skip_author author=%s", event.author)
+            return Response(status_code=200)
 
         _event_logger(event).info("accepted")
         background_tasks.add_task(worker, event)

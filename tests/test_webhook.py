@@ -15,6 +15,7 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
+from app.config import Settings
 from app.webhook import (
     WebhookEvent,
     WebhookParseError,
@@ -32,11 +33,14 @@ def _sign(body: bytes, secret: str = SECRET) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def _pr_payload(action: str = "opened") -> dict:
+def _pr_payload(action: str = "opened", *, author: str | None = "octocat") -> dict:
+    pull_request: dict = {"number": 42, "head": {"sha": "abc123def4567890"}}
+    if author is not None:
+        pull_request["user"] = {"login": author}
     return {
         "action": action,
         "number": 42,
-        "pull_request": {"number": 42, "head": {"sha": "abc123def4567890"}},
+        "pull_request": pull_request,
         "repository": {"name": "hello", "owner": {"login": "octo"}},
         "installation": {"id": 999},
     }
@@ -95,7 +99,12 @@ def test_parse_pull_request_event_extracts_fields():
     assert event.action == "synchronize"
     assert event.head_sha == "abc123def4567890"
     assert event.installation_id == 999
+    assert event.author == "octocat"
     assert event.slug == "octo/hello#42"
+
+
+def test_parse_pull_request_event_tolerates_missing_author():
+    assert parse_pull_request_event("d-1", _pr_payload(author=None)).author is None
 
 
 def test_parse_pull_request_event_missing_fields_raises():
@@ -128,6 +137,47 @@ def test_ignored_action_acks_200_without_dispatch():
     resp = _post(_client(rec), _pr_payload("closed"))
     assert resp.status_code == 200
     assert rec.events == []
+
+
+# --- endpoint: skipped authors (RC1-359 cost guardrail) -------------------
+
+@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
+def test_dependabot_pr_acks_200_without_dispatch(action, caplog):
+    rec = Recorder()
+    with caplog.at_level(logging.INFO, logger="app.webhook"):
+        resp = _post(_client(rec), _pr_payload(action, author="dependabot[bot]"))
+    assert resp.status_code == 200
+    assert rec.events == []
+    assert "skip_author author=dependabot[bot]" in caplog.text
+
+
+def test_skip_authors_is_configurable(monkeypatch):
+    # Swap in a whole Settings object (not one attribute) so the test resolves
+    # the knob the same way production does: env -> Settings -> skip_authors.
+    import app.webhook
+
+    monkeypatch.setattr(
+        app.webhook, "settings", Settings(_env_file=None, review_skip_authors="renovate[bot]")
+    )
+    rec = Recorder()
+    assert _post(_client(rec), _pr_payload(author="renovate[bot]")).status_code == 200
+    assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
+    assert [e.author for e in rec.events] == ["dependabot[bot]"]
+
+
+def test_empty_skip_list_reviews_everyone(monkeypatch):
+    import app.webhook
+
+    monkeypatch.setattr(app.webhook, "settings", Settings(_env_file=None, review_skip_authors=""))
+    rec = Recorder()
+    assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
+    assert len(rec.events) == 1
+
+
+def test_missing_author_is_still_reviewed():
+    rec = Recorder()
+    assert _post(_client(rec), _pr_payload(author=None)).status_code == 202
+    assert len(rec.events) == 1
 
 
 # --- endpoint: signature gate ---------------------------------------------
