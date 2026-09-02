@@ -277,6 +277,35 @@ class GitHubClient:
         except (ValueError, UnicodeDecodeError):
             return None  # undecodable bytes — not text we can check
 
+    def get_tree(self, ref: PRRef, sha: str) -> list[dict] | None:
+        """The recursive git tree at ``sha`` as ``[{path, type, size}]``.
+
+        One call per review (RC1-364): it is what lets the live agent's
+        ``list_dir`` and ``grep`` see the repository without a checkout. Returns
+        ``None`` — never raises — when the tree can't be read (permissions,
+        transport), and callers degrade to the diff's file list. GitHub truncates
+        past ~100k entries; the entries it does return are still useful.
+        """
+        try:
+            resp = self._get(
+                f"/repos/{ref.owner}/{ref.repo}/git/trees/{sha}", params={"recursive": "1"}
+            )
+        except GitHubError:
+            return None
+        data = resp.json()
+        entries = data.get("tree") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            return None
+        return [
+            {
+                "path": str(e.get("path")),
+                "type": str(e.get("type", "")),
+                "size": int(e.get("size") or 0),
+            }
+            for e in entries
+            if isinstance(e, dict) and e.get("path")
+        ]
+
     def create_review(
         self,
         ref: PRRef,

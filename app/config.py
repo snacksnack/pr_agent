@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     review_block_on: str = "leaked_secret"  # CSV; see ``block_on`` below
     max_tool_turns: int = 20
     max_files_read: int = 40
+    # Live reviews read the repo through the GitHub API (RC1-364); this caps
+    # the Contents/Trees calls one review may spend so a curious model cannot
+    # page through a large repository.
+    remote_api_budget: int = 60
     log_level: str = "INFO"
     # Total GitHub API attempts per request before giving up (1 = no retry).
     # Transient failures (5xx / rate limit / dropped connection) back off
@@ -56,7 +60,9 @@ class Settings(BaseSettings):
         """
         return [item.strip() for item in self.review_block_on.split(",") if item.strip()]
 
-    @field_validator("max_tool_turns", "max_files_read", "github_max_attempts")
+    @field_validator(
+        "max_tool_turns", "max_files_read", "remote_api_budget", "github_max_attempts"
+    )
     @classmethod
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:
