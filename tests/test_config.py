@@ -25,6 +25,21 @@ def test_block_on_empty_means_advisory_only():
     assert s.block_on == []
 
 
+def test_skip_authors_default_is_dependabot():
+    s = Settings(_env_file=None)
+    assert s.skip_authors == ["dependabot[bot]"]
+
+
+def test_skip_authors_parses_csv_and_trims():
+    s = Settings(_env_file=None, review_skip_authors="dependabot[bot], renovate[bot] ,")
+    assert s.skip_authors == ["dependabot[bot]", "renovate[bot]"]
+
+
+def test_skip_authors_empty_reviews_everyone():
+    s = Settings(_env_file=None, review_skip_authors="")
+    assert s.skip_authors == []
+
+
 def test_limits_must_be_positive():
     with pytest.raises(ValueError):
         Settings(_env_file=None, max_tool_turns=0)

@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     review_model: str = "claude-sonnet-4-6"
     deep_review_model: str = "claude-opus-4-6"
     review_block_on: str = "leaked_secret"  # CSV; see ``block_on`` below
+    # PR authors whose deliveries are acknowledged but never reviewed (CSV of
+    # GitHub logins; see ``skip_authors``). Dependabot's version bumps arrive in
+    # bursts once alerts are enabled and carry nothing for a reviewer to judge,
+    # so they stay off the billed review path (RC1-359).
+    review_skip_authors: str = "dependabot[bot]"
     max_tool_turns: int = 20
     max_files_read: int = 40
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
@@ -59,6 +64,15 @@ class Settings(BaseSettings):
         value means the reviewer is purely advisory and never blocks a merge.
         """
         return [item.strip() for item in self.review_block_on.split(",") if item.strip()]
+
+    @property
+    def skip_authors(self) -> list[str]:
+        """PR author logins the webhook acknowledges without dispatching a review.
+
+        Parsed from the comma-separated ``REVIEW_SKIP_AUTHORS`` env var. An empty
+        value means every PR the App sees is reviewed.
+        """
+        return [item.strip() for item in self.review_skip_authors.split(",") if item.strip()]
 
     @field_validator(
         "max_tool_turns", "max_files_read", "remote_api_budget", "github_max_attempts"
