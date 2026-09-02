@@ -299,18 +299,36 @@ def grep_text(
     return False
 
 
+def _line_arg(tool_input: dict, key: str) -> int | None:
+    """An optional 1-based line number, tolerating the model sending it as text.
+
+    The first live review under RC1-364 died on ``start_line="12"``: the schema
+    says integer, the model sent a string, and ``max(1, "12")`` raised out of
+    the loop. Coerce here; anything that is not a whole number is a tool error.
+    """
+    value = tool_input.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ToolError(f"{key} must be an integer, got {value!r}") from exc
+
+
 def dispatch_tool(tools: Any, name: str, tool_input: dict) -> str:
     """Route a tool call to ``tools`` (local or remote); errors become strings.
 
     The dispatcher turns :class:`ToolError` into text so the model can adjust
-    and retry rather than crashing the review loop.
+    and retry rather than crashing the review loop. It is also the loop's last
+    line of defense: any other exception a tool raises is reported the same way,
+    because a malformed argument must cost the model one turn, not the review.
     """
     try:
         if name == "read_file":
             return tools.read_file(
                 tool_input["path"],
-                tool_input.get("start_line"),
-                tool_input.get("end_line"),
+                _line_arg(tool_input, "start_line"),
+                _line_arg(tool_input, "end_line"),
             )
         if name == "list_dir":
             return tools.list_dir(tool_input.get("path", "."))
@@ -327,6 +345,8 @@ def dispatch_tool(tools: Any, name: str, tool_input: dict) -> str:
         return f"Error: {exc}"
     except KeyError as exc:
         return f"Error: missing required argument {exc}"
+    except Exception as exc:  # noqa: BLE001 — the loop must survive any tool
+        return f"Error: {name} failed ({type(exc).__name__}: {exc}); adjust the call or move on"
 
 
 # Anthropic tool schemas (RC1-110 passes these as the loop's `tools`).

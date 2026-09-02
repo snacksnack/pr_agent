@@ -182,3 +182,9 @@ def test_dispatch_mirrors_the_local_backend(tools):
     assert tools.dispatch("grep", {"pattern": "["}).startswith("Error: invalid regex")
     assert tools.dispatch("nope", {}) == "Error: unknown tool: 'nope'"
     assert tools.dispatch("grep", {}) == "Error: missing required argument 'pattern'"
+
+
+def test_remote_dispatch_accepts_string_line_numbers(tools):
+    # The exact shape that killed the first live review under RC1-364.
+    out = tools.dispatch("read_file", {"path": "README.md", "start_line": "2", "end_line": "2"})
+    assert out == "2  line two"
