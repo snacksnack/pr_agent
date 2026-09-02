@@ -298,3 +298,28 @@ def test_malformed_findings_are_skipped(repo, pr):
     nit = [f for f in result.findings if f.severity == "nit"][0]
     assert nit.category == "general"   # defaulted
     assert nit.line is None             # non-numeric line dropped
+
+
+def test_seed_diff_omits_lock_file_patches_but_keeps_their_header():
+    """RC1-365: the +/- counts stay, the registry-URL wall goes."""
+    from app.models import ChangedFile, PRRef, PullRequest
+
+    pr = PullRequest(
+        ref=PRRef("o", "r", 1),
+        title="bump",
+        files=[
+            ChangedFile(
+                filename="package-lock.json", status="modified", additions=43, deletions=43,
+                patch='@@ -1 +1 @@\n-"resolved": "https://registry.npmjs.org/a"\n+"resolved": "https://registry.npmjs.org/b"',
+            ),
+            ChangedFile(
+                filename="package.json", status="modified", additions=1, deletions=1,
+                patch='@@ -1 +1 @@\n-"a": "1"\n+"a": "2"',
+            ),
+        ],
+    )
+    seed = format_pr_for_review(pr)
+    assert "--- package-lock.json (modified, +43/-43) ---" in seed
+    assert "generated lock file; patch omitted" in seed
+    assert "registry.npmjs.org" not in seed
+    assert '+"a": "2"' in seed

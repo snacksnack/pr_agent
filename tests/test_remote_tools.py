@@ -188,3 +188,37 @@ def test_remote_dispatch_accepts_string_line_numbers(tools):
     # The exact shape that killed the first live review under RC1-364.
     out = tools.dispatch("read_file", {"path": "README.md", "start_line": "2", "end_line": "2"})
     assert out == "2  line two"
+
+
+# --- lock files (RC1-365) -------------------------------------------------
+
+LOCK_FILES = {
+    **FILES,
+    "package-lock.json": '{"resolved": "https://registry.npmjs.org/left-pad"}\n',
+    "uv.lock": 'source = { registry = "https://pypi.org/simple" }\n',
+}
+
+
+def test_remote_read_file_refuses_lock_files_without_spending_a_call():
+    gh = FakeGitHub(dict(LOCK_FILES))
+    tools = RemoteRepoTools(gh, REF, "h")
+    out = tools.dispatch("read_file", {"path": "package-lock.json"})
+    assert out.startswith("Error: refused: 'package-lock.json' is a generated lock file")
+    assert gh.calls == []
+
+
+def test_remote_grep_and_list_dir_skip_lock_files_even_when_they_changed():
+    gh = FakeGitHub(dict(LOCK_FILES))
+    tools = RemoteRepoTools(gh, REF, "h", changed_files=["package-lock.json", "src/util.py"])
+    assert tools.grep("registry") == "(no matches)"
+    fetched = [c[1] for c in gh.calls if c[0] == "contents"]
+    assert "package-lock.json" not in fetched and "uv.lock" not in fetched
+    listing = tools.list_dir()
+    assert "package-lock.json" not in listing and "uv.lock" not in listing
+
+
+def test_remote_grep_without_a_tree_still_skips_a_changed_lock_file():
+    gh = FakeGitHub(dict(LOCK_FILES), tree=False)
+    tools = RemoteRepoTools(gh, REF, "h", changed_files=["package-lock.json"])
+    assert tools.grep("registry") == "(no matches)"
+    assert [c for c in gh.calls if c[0] == "contents"] == []

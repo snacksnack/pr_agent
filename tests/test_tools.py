@@ -216,3 +216,42 @@ def test_dispatch_turns_any_unexpected_exception_into_a_tool_error(repo, monkeyp
     monkeypatch.setattr(repo, "grep", boom)
     out = repo.dispatch("grep", {"pattern": "x"})
     assert out.startswith("Error: grep failed (RuntimeError: disk on fire)")
+
+
+# --- lock files are noise, not context (RC1-365) --------------------------
+
+@pytest.fixture()
+def repo_with_lock(tmp_path):
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "package.json").write_text('{"dependencies": {"left-pad": "1.0.0"}}\n')
+    (root / "package-lock.json").write_text(
+        '{"packages": {"node_modules/left-pad": {"resolved": "https://registry.npmjs.org/x"}}}\n'
+    )
+    (root / "uv.lock").write_text(
+        '[[package]]\nname = "httpx"\nsource = { registry = "https://pypi.org" }\n'
+    )
+    (root / "src" / "app.py").write_text("import httpx\n")
+    return RepoTools(root)
+
+
+def test_read_file_refuses_lock_files_with_a_pointer_to_the_manifest(repo_with_lock):
+    with pytest.raises(ToolError, match="generated lock file"):
+        repo_with_lock.read_file("package-lock.json")
+    with pytest.raises(ToolError, match="generated lock file"):
+        repo_with_lock.read_file("uv.lock")
+    assert "left-pad" in repo_with_lock.read_file("package.json")
+
+
+def test_grep_and_list_dir_skip_lock_files(repo_with_lock):
+    out = repo_with_lock.grep("registry")
+    assert out == "(no matches)"
+    assert "httpx" in repo_with_lock.grep("httpx")  # src/app.py, not uv.lock
+    listing = repo_with_lock.list_dir()
+    assert "package.json (" in listing
+    assert "package-lock.json" not in listing and "uv.lock" not in listing
+
+
+def test_the_read_file_schema_tells_the_model_lock_files_are_off_limits():
+    read_tool = next(t for t in TOOL_SCHEMAS if t["name"] == "read_file")
+    assert "lock files" in read_tool["description"]

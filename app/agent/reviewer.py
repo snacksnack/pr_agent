@@ -25,7 +25,7 @@ from app.agent.prompts import (
     SYSTEM_PROMPT,
     format_precomputed_findings,
 )
-from app.agent.tools import TOOL_SCHEMAS, RepoTools
+from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult
 
@@ -106,6 +106,11 @@ def format_pr_for_review(
     for f in pr.files:
         header = f"\n--- {f.filename} ({f.status}, +{f.additions}/-{f.deletions}) ---"
         parts.append(header)
+        if is_lockfile(f.filename.rsplit("/", 1)[-1]):
+            # RC1-365: a lock file's patch is generated noise that would eat
+            # the diff budget; the header above already carries the +/- counts.
+            parts.append("(generated lock file; patch omitted — review the manifest change)")
+            continue
         if not f.patch:
             parts.append("(no inline patch — binary or too large; use read_file)")
             continue

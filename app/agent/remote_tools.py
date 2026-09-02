@@ -41,7 +41,9 @@ from app.agent.tools import (
     dispatch_tool,
     format_file_text,
     grep_text,
+    is_lockfile,
     is_secret_file,
+    lockfile_refusal,
 )
 from app.models import PRRef
 
@@ -139,6 +141,8 @@ class RemoteRepoTools:
                 f"refused: {path!r} looks like a secrets/credentials file; the "
                 "reviewer does not read these. Review committed changes from the diff."
             )
+        if is_lockfile(PurePosixPath(rel).name):
+            raise lockfile_refusal(path)
         text = self._fetch(rel)
         if text is None:
             raise ToolError(
@@ -169,7 +173,7 @@ class RemoteRepoTools:
                 continue
             if "/" in rest or e.get("type") == "tree":
                 dirs.add(head)
-            elif not is_secret_file(rest):
+            elif not is_secret_file(rest) and not is_lockfile(rest):
                 files.append((rest, int(e.get("size", 0))))
         if not dirs and not files:
             raise ToolError(f"no such directory: {path!r}")
@@ -234,7 +238,10 @@ class RemoteRepoTools:
         know about.
         """
         entries = self._entries()
-        changed = [f for f in self._changed if self._under(f, rel)]
+        changed = [
+            f for f in self._changed
+            if self._under(f, rel) and not is_lockfile(PurePosixPath(f).name)
+        ]
         if entries is None:
             pool = changed
         else:
@@ -245,6 +252,7 @@ class RemoteRepoTools:
                 and self._under(e["path"], rel)
                 and not self._noise(e["path"])
                 and not is_secret_file(PurePosixPath(e["path"]).name)
+                and not is_lockfile(PurePosixPath(e["path"]).name)
                 and int(e.get("size", 0)) <= MAX_GREP_FILE_BYTES
             ]
             sizes = {e["path"]: int(e.get("size", 0)) for e in entries}
