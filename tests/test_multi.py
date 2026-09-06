@@ -539,3 +539,23 @@ def test_scout_context_turns_come_from_settings(tmp_path, monkeypatch):
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
     assert result.tool_turns == 1 and result.truncated
+
+
+def test_a_zero_context_cap_skips_the_scout_when_the_context_is_complete(tmp_path):
+    repo = _repo_with_conventions(tmp_path)
+    sync = _sync()
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), repo, sync, async_client, scout_context_turns=0)
+    assert sync.messages.calls == [], "no scout call"
+    assert result.brief.startswith("(scout skipped: the conventions file")
+    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions, from CLAUDE.md" in prefix
+
+    # Without the context the scout has the whole job and runs.
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(), repo, sync, async_client, scout_context_turns=0, repo_context=False
+    )
+    assert len(sync.messages.calls) == 1 and result.brief == SCOUT[0][0]["input"]["brief"]

@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     # the full cap the scout spends every turn regardless of what it was
     # handed, so the context only makes exploration cheaper if the budget
     # shrinks with it. What is left for the scout is tests for the changed
-    # paths and whatever the callers list did not reach.
+    # paths and whatever the callers list did not reach. Zero skips the scout
+    # altogether when the context is complete: exploration is then Python's
+    # alone, and the reviewers read the conventions file and the callers list
+    # with no brief.
     review_scout_context_turns: int = 3
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
@@ -103,12 +106,18 @@ class Settings(BaseSettings):
         "remote_api_budget",
         "github_max_attempts",
         "review_scout_max_turns",
-        "review_scout_context_turns",
     )
     @classmethod
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be a positive integer")
+        return v
+
+    @field_validator("review_scout_context_turns")
+    @classmethod
+    def _must_not_be_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("must be zero or a positive integer")
         return v
 
 

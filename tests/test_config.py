@@ -69,5 +69,6 @@ def test_scout_context_turns_default_and_validation():
     """RC1-393: the short scout cap is positive and below the full one by default."""
     s = Settings(_env_file=None)
     assert s.review_scout_context_turns == 3 < s.review_scout_max_turns
+    assert Settings(_env_file=None, review_scout_context_turns=0).review_scout_context_turns == 0
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, review_scout_context_turns=0)
+        Settings(_env_file=None, review_scout_context_turns=-1)

@@ -332,7 +332,12 @@ def review_pull_request_multi(
         )
 
         started = time.perf_counter()
-        if plan.scout:
+        if plan.scout and turns == 0:
+            brief = scouting.skipped_brief(
+                "the conventions file and the callers of what changed are above, "
+                "gathered without a model turn; nothing left to explore"
+            )
+        elif plan.scout:
             with stage_span("agent", "scout"):
                 brief = scouting.explore(
                     pull_request,

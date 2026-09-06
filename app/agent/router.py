@@ -129,13 +129,16 @@ def scout_turns(context: RepoContext, *, full: int, with_context: int) -> int:
     """The scout's turn cap for this review, decided after the context is built
     (RC1-393).
 
-    When Python found the conventions file and searched the callers of every
-    changed symbol, the scout's remaining job is small — tests for the changed
+    When Python found the conventions file and the callers search ran to
+    completion, the scout's remaining job is small — tests for the changed
     paths, and whatever the callers list did not reach — and it gets the short
-    cap. When the repository has no conventions file, the diff changed nothing
-    Python could name, or the search was cut off, the scout has the whole job
-    and the full cap. Measured in the RC1-393 record: with the full cap the
-    scout spends every turn whatever it was handed.
+    cap. A diff that defines nothing Python could name still counts: no
+    changed interface is an answer to the callers question, not a gap. When
+    the repository has no conventions file, or the search was cut off by the
+    read budget, the scout has the whole job and the full cap. A short cap of
+    zero means the scout is skipped when the context is complete. Measured in
+    the RC1-393 record: with the full cap the scout spends every turn whatever
+    it was handed.
     """
-    answered = bool(context.conventions) and bool(context.symbols) and not context.search_stopped
+    answered = bool(context.conventions) and not context.search_stopped
     return min(full, with_context) if answered else full

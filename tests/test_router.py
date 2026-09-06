@@ -92,15 +92,23 @@ def test_scout_gets_the_short_cap_when_python_answered_conventions_and_callers()
     answered = RepoContext(conventions_path="CLAUDE.md", conventions="rules", symbols=["f"])
     assert router.scout_turns(answered, full=8, with_context=3) == 3
     assert router.scout_turns(answered, full=2, with_context=3) == 2, "never above the full cap"
+    assert router.scout_turns(answered, full=8, with_context=0) == 0, "zero: skip the scout"
 
 
 def test_scout_keeps_the_full_cap_when_the_context_is_incomplete():
     from app.agent.context import RepoContext
 
     no_file = RepoContext(symbols=["f"])
-    no_symbols = RepoContext(conventions_path="CLAUDE.md", conventions="rules")
     cut_off = RepoContext(
         conventions_path="CLAUDE.md", conventions="rules", symbols=["f"], search_stopped=True
     )
-    for ctx in (no_file, no_symbols, cut_off, RepoContext()):
+    for ctx in (no_file, cut_off, RepoContext()):
         assert router.scout_turns(ctx, full=8, with_context=3) == 8
+
+
+def test_a_diff_that_defines_nothing_still_gets_the_short_cap():
+    """No changed symbol is an answer to the callers question, not a gap."""
+    from app.agent.context import RepoContext
+
+    no_symbols = RepoContext(conventions_path="CLAUDE.md", conventions="rules")
+    assert router.scout_turns(no_symbols, full=8, with_context=3) == 3
