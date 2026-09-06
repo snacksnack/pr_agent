@@ -169,6 +169,11 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
     if result.mode == "multi":
         # RC1-390: turns/files above are the scout's; the reviewers ran once each.
         meta += f"  mode=multi reviewers={','.join(result.reviewers_run)}"
+        # RC1-393: what Python put in the prefix before the scout ran.
+        meta += (
+            f"  context(conventions={result.conventions_file or 'none'},"
+            f" callers={result.callers_found})"
+        )
         if result.off_scope_findings or result.deduplicated_findings:
             meta += (
                 f"  merged(off_scope={result.off_scope_findings},"

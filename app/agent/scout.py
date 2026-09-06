@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from app.agent.prompts import SCOUT_INSTRUCTIONS, SUBMIT_BRIEF_TOOL
+from app.agent.prompts import SCOUT_CONTEXT_NOTE, SCOUT_INSTRUCTIONS, SUBMIT_BRIEF_TOOL
 from app.agent.reviewer import (
     DEFAULT_MAX_TOKENS,
     ReviewError,
@@ -66,9 +66,21 @@ def explore(
     max_files_read: int,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
+    context: str = "",
 ) -> Brief:
-    """Run the exploration loop and return the brief."""
-    seed = "\n".join([*render_pr(pull_request, precomputed_findings), "", SCOUT_INSTRUCTIONS])
+    """Run the exploration loop and return the brief.
+
+    ``context`` (RC1-393) is what Python already established — the
+    conventions file and the callers list — rendered; it goes in the seed
+    ahead of the instructions, with a note telling the scout not to redo it.
+    """
+    parts = [*render_pr(pull_request, precomputed_findings)]
+    if context:
+        parts += ["", context]
+    parts += ["", SCOUT_INSTRUCTIONS]
+    if context:
+        parts += ["", SCOUT_CONTEXT_NOTE]
+    seed = "\n".join(parts)
     messages: list[dict] = [_user_text(seed)]
     files_read = 0
     turns = 0

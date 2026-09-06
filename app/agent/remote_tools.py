@@ -155,6 +155,23 @@ class RemoteRepoTools:
         raw = text.encode("utf-8")
         return format_file_text(rel, raw[:MAX_READ_BYTES], len(raw), start_line, end_line)
 
+    def read_text(self, path: str) -> str | None:
+        """Raw text for Python callers (RC1-393); ``None`` rather than an
+        error. One API call when uncached, none when the budget is spent."""
+        try:
+            rel = self._normalize(path)
+        except ToolError:
+            return None
+        if not rel or is_secret_file(PurePosixPath(rel).name):
+            return None
+        if is_lockfile(PurePosixPath(rel).name):
+            return None
+        try:
+            text = self._fetch(rel)
+        except ToolError:
+            return None  # budget exhausted: the context is optional, the review is not
+        return text[:MAX_READ_BYTES] if text is not None else None
+
     def list_dir(self, path: str = ".") -> str:
         rel = self._normalize(path)
         entries = self._entries()

@@ -370,9 +370,10 @@ REPO_CONTEXT = ReviewerSpec(
     (1, 4, 7),
     "Your evidence is the repository around the change: the conventions its "
     "neighbouring modules follow, the callers of what changed, and the tests "
-    "that do or do not cover it. The scout's brief above is that evidence; "
-    "cite it. When the brief did not reach what you needed, judge from the "
-    "diff alone and raise nothing about the missing evidence itself.",
+    "that do or do not cover it. The repository conventions, the callers "
+    "list and the scout's brief above are that evidence; cite them. When "
+    "none of them reached what you needed, judge from the diff alone and "
+    "raise nothing about the missing evidence itself.",
 )
 CHANGE_INTENT = ReviewerSpec(
     "change_intent",
@@ -441,6 +442,20 @@ SCOUT_INSTRUCTIONS = (
     "Be brief and factual: at most about 250 words, facts before opinions, no "
     "recommendations. If the tools return errors because no checkout is "
     "available, say so in one line and submit."
+)
+
+# Appended to the scout's seed when Python already put the conventions file
+# and the callers list above it (RC1-393). The scout is told what is done so
+# it does not spend turns re-reading the conventions file or grepping for
+# callers the list already names.
+SCOUT_CONTEXT_NOTE = (
+    "Some of that work is already done: the repository's conventions file "
+    "and the callers of what changed are above, gathered by grep before you "
+    "started. Do not re-read the conventions file or search for those "
+    "callers again. Look only for what is not already there: tests for the "
+    "changed paths, conventions the file does not state that the touched "
+    "modules follow, and callers the list did not reach. Your exploration "
+    "budget is short for that reason: a few tool calls, then submit."
 )
 
 SUBMIT_BRIEF_TOOL = {

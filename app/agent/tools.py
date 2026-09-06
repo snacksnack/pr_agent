@@ -201,6 +201,25 @@ class RepoTools:
         size = p.stat().st_size
         return format_file_text(path, p.read_bytes()[:MAX_READ_BYTES], size, start_line, end_line)
 
+    def read_text(self, path: str) -> str | None:
+        """A file's raw text, or ``None`` when there is nothing to read.
+
+        For Python callers (RC1-393's deterministic context), not the model:
+        no line numbers, no tool error — a missing, secret, lock, binary or
+        oversized file is ``None`` and the caller carries on. Clipped to
+        ``MAX_READ_BYTES`` like ``read_file``.
+        """
+        try:
+            p = self._resolve(path)
+        except ToolError:
+            return None
+        if is_secret_file(p.name) or is_lockfile(p.name) or not p.is_file():
+            return None
+        try:
+            return p.read_bytes()[:MAX_READ_BYTES].decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     def list_dir(self, path: str = ".") -> str:
         """List a directory (dirs first), excluding noise dirs like .git."""
         p = self._resolve(path)

@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # needs fewer turns than the single loop; every turn re-sends the growing
     # conversation, so the cap is the scout's cost ceiling.
     review_scout_max_turns: int = 8
+    # RC1-393: the scout's turn cap when Python has already put the
+    # conventions file and the callers list in front of it. Measured: with
+    # the full cap the scout spends every turn regardless of what it was
+    # handed, so the context only makes exploration cheaper if the budget
+    # shrinks with it. What is left for the scout is tests for the changed
+    # paths and whatever the callers list did not reach.
+    review_scout_context_turns: int = 3
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
@@ -96,6 +103,7 @@ class Settings(BaseSettings):
         "remote_api_budget",
         "github_max_attempts",
         "review_scout_max_turns",
+        "review_scout_context_turns",
     )
     @classmethod
     def _must_be_positive(cls, v: int) -> int:

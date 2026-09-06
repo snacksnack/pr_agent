@@ -3,8 +3,14 @@
 The single loop in :mod:`app.agent.reviewer` explores and judges in one
 conversation. This path makes the review's graph explicit in plain Python:
 
-    plan (router) -> scout -> [warm cache] -> reviewers (gather) -> merge -> verifier
+    plan (router) -> context (Python) -> scout -> [warm cache] -> reviewers (gather)
+        -> merge -> verifier
 
+* **Context** (:mod:`app.agent.context`, RC1-393) is the repository's own
+  conventions file and a grep for callers of what the diff changed, put in
+  the shared prefix and the scout's seed by Python with no model turn. It
+  is the part of exploration that is a property of the repository, done
+  once and cheaply so the scout does not spend turns re-deriving it.
 * **Router** (:mod:`app.agent.router`) decides from the file list which
   reviewers run and on which dimensions. The model never routes.
 * **Scout** (:mod:`app.agent.scout`) explores once, with tools, and writes a
@@ -46,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent import scout as scouting
+from app.agent.context import RepoContext, build_repo_context
 from app.agent.prompts import SUBMIT_TOOL, SYSTEM_PROMPT, ReviewerSpec, reviewer_instructions
 from app.agent.reviewer import (
     CACHE_CONTROL,
@@ -56,7 +63,7 @@ from app.agent.reviewer import (
     parse_findings,
     render_pr,
 )
-from app.agent.router import ReviewPlan, plan_review
+from app.agent.router import ReviewPlan, plan_review, scout_turns
 from app.agent.tools import RepoTools
 from app.agent.verifier import VERIFY_TOOL, verify_findings
 from app.config import settings
@@ -89,14 +96,23 @@ class ReviewerOutput:
 # --- the shared prefix ------------------------------------------------------
 
 def build_shared_prefix(
-    pull_request: PullRequest, precomputed_findings: list[Finding] | None, brief: str
+    pull_request: PullRequest,
+    precomputed_findings: list[Finding] | None,
+    brief: str,
+    context: str = "",
 ) -> str:
-    """The PR as the reviewers and the verifier all see it, plus the brief.
+    """The PR as the reviewers and the verifier all see it, the repository
+    context Python gathered (RC1-393; empty when there was none, and then
+    the prefix is the RC1-390 one), and the brief.
 
     One string, one cache breakpoint. Everything that differs per call comes
     after it.
     """
-    return "\n".join([*render_pr(pull_request, precomputed_findings), "", "Scout's brief:", brief])
+    parts = [*render_pr(pull_request, precomputed_findings)]
+    if context:
+        parts += ["", context]
+    parts += ["", "Scout's brief:", brief]
+    return "\n".join(parts)
 
 
 def _request(model: str, prefix: str, suffix: str, max_tokens: int) -> dict[str, Any]:
@@ -255,10 +271,12 @@ def review_pull_request_multi(
     model: str | None = None,
     max_files_read: int | None = None,
     scout_max_turns: int | None = None,
+    scout_context_turns: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
     verify: bool = False,
     plan: ReviewPlan | None = None,
+    repo_context: bool = True,
 ) -> ReviewResult:
     """Run the multi-agent review and return one :class:`ReviewResult`.
 
@@ -272,6 +290,11 @@ def review_pull_request_multi(
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
     scout_max_turns = (
         scout_max_turns if scout_max_turns is not None else settings.review_scout_max_turns
+    )
+    scout_context_turns = (
+        scout_context_turns
+        if scout_context_turns is not None
+        else settings.review_scout_context_turns
     )
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
@@ -289,6 +312,25 @@ def review_pull_request_multi(
 
     latency: dict[str, float] = {}
     with stage_span("workflow", "pr_review"):
+        # RC1-393: the deterministic context is gathered wherever the scout
+        # would explore — same gate, so a docs-only change or an empty
+        # checkout pays for neither.
+        started = time.perf_counter()
+        context = RepoContext()
+        if plan.scout and repo_context:
+            with stage_span("task", "repo_context"):
+                context = build_repo_context(pull_request, repo_tools)
+        context_text = context.render()
+        turns = scout_turns(context, full=scout_max_turns, with_context=scout_context_turns)
+        latency["context"] = _ms_since(started)
+        logger.info(
+            "context conventions=%s callers=%d unsearched=%d scout_turns=%d",
+            context.conventions_path,
+            len(context.callers),
+            len(context.symbols_unsearched),
+            turns,
+        )
+
         started = time.perf_counter()
         if plan.scout:
             with stage_span("agent", "scout"):
@@ -297,10 +339,11 @@ def review_pull_request_multi(
                     repo_tools,
                     client=client,
                     model=model,
-                    max_tool_turns=scout_max_turns,
+                    max_tool_turns=turns,
                     max_files_read=max_files_read,
                     max_tokens=max_tokens,
                     precomputed_findings=precomputed_findings,
+                    context=context_text,
                 )
         else:
             reason = plan.reasons[0] if plan.reasons else "nothing to explore"
@@ -308,7 +351,7 @@ def review_pull_request_multi(
 
         latency["scout"] = _ms_since(started)
 
-        prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text)
+        prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text, context_text)
         started = time.perf_counter()
         warm, outputs = asyncio.run(
             fan_out(async_client, plan.reviewers, model, prefix, max_tokens)
@@ -344,6 +387,8 @@ def review_pull_request_multi(
             off_scope_findings=off_scope,
             deduplicated_findings=deduplicated,
             unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
+            conventions_file=context.conventions_path,
+            callers_found=len(context.callers),
         )
         logger.info(
             "multi_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
@@ -357,8 +402,18 @@ def review_pull_request_multi(
             total.output_tokens,
         )
         annotate_span(
-            metadata={"reviewers": plan.names, "scout": plan.scout, "reasons": list(plan.reasons)},
-            metrics={"findings": len(findings), "off_scope": off_scope},
+            metadata={
+                "reviewers": plan.names,
+                "scout": plan.scout,
+                "reasons": list(plan.reasons),
+                "conventions_file": context.conventions_path,
+            },
+            metrics={
+                "findings": len(findings),
+                "off_scope": off_scope,
+                "callers_found": len(context.callers),
+                "scout_turn_cap": turns,
+            },
         )
 
         if verify and result.findings:
