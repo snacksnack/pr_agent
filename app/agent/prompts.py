@@ -371,7 +371,8 @@ REPO_CONTEXT = ReviewerSpec(
     "Your evidence is the repository around the change: the conventions its "
     "neighbouring modules follow, the callers of what changed, and the tests "
     "that do or do not cover it. The scout's brief above is that evidence; "
-    "cite it, and say when it did not reach a file you needed.",
+    "cite it. When the brief did not reach what you needed, judge from the "
+    "diff alone and raise nothing about the missing evidence itself.",
 )
 CHANGE_INTENT = ReviewerSpec(
     "change_intent",

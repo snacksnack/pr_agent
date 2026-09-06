@@ -57,8 +57,12 @@ VERIFIER_INSTRUCTIONS = (
     "\n"
     "Rules: judge only what is in front of you — do not investigate further. "
     "Do not add findings. Do not raise a severity. When in doubt, keep. A real "
-    "committed secret is always kept at blocker. Give a one-sentence reason "
-    "for every drop and downgrade. Call verify_findings exactly once."
+    "committed secret is always kept at blocker. When two findings describe "
+    "the same defect, keep the one whose category names it best, at the "
+    "higher of their severities, and drop the other; never drop a finding as "
+    "redundant unless a kept finding states the same defect. Give a "
+    "one-sentence reason for every drop and downgrade. Call verify_findings "
+    "exactly once."
 )
 
 VERIFY_TOOL = {
