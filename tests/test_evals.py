@@ -400,3 +400,55 @@ def test_multi_observations_carry_stages_and_the_cache_premise():
     assert obs["stages"]["reviewer:diff_local"]["cache_read"] == 900
     assert obs["stages"]["warm_cache"]["cost_usd"] != "0"
     assert obs["off_scope"] == 2 and obs["deduplicated"] == 1
+
+
+def test_prompt_version_names_a_checkout_and_the_context_control(monkeypatch):
+    """RC1-393: a run against a checkout, and one with the deterministic
+    context off, are each their own subject version."""
+    from app.config import Settings
+
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_multi_agent=True))
+    plain = subject.prompt_version()
+    assert subject.prompt_version(checkout=True) == plain + "+checkout"
+    assert subject.prompt_version(checkout=True, repo_context=False) == (
+        plain + "+checkout+no-context"
+    )
+    assert subject.version(checkout=True).prompt_version.endswith("+checkout")
+
+
+def test_multi_observations_carry_the_context_and_the_checkout():
+    from app.models import ReviewResult
+
+    result = ReviewResult(
+        model="claude-sonnet-4-6", mode="multi", conventions_file="CLAUDE.md", callers_found=5
+    )
+    obs = subject._multi_observations(result, checkout=True)
+    assert obs["checkout"] is True
+    assert obs["context"] == {"conventions_file": "CLAUDE.md", "callers": 5}
+    assert subject._multi_observations(result)["checkout"] is False
+
+
+def test_materialised_checkout_is_the_repo_copy_with_the_case_files_over_it(tmp_path):
+    src = tmp_path / "src"
+    (src / "app").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "__pycache__").mkdir()
+    (src / "CLAUDE.md").write_text("rules\n")
+    (src / ".env").write_text("SECRET=1\n")
+    (src / "app" / "a.py").write_text("a = 1\n")
+    (src / ".git" / "HEAD").write_text("ref\n")
+    (src / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+
+    into = tmp_path / "into"
+    into.mkdir()
+    subject.materialise_checkout(into, src, (("workflows/w.json", "{}"),))
+    assert (into / "CLAUDE.md").read_text() == "rules\n"
+    assert (into / "app" / "a.py").exists()
+    assert (into / "workflows" / "w.json").read_text() == "{}"
+    assert not (into / ".git").exists() and not (into / "__pycache__").exists()
+    assert not (into / ".env").exists(), "a local secret never enters a checkout the model reads"
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    subject.materialise_checkout(bare, None, (("w.json", "{}"),))
+    assert sorted(p.name for p in bare.iterdir()) == ["w.json"]

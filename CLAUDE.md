@@ -66,6 +66,11 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
 - [x] RC1-390 scout + three evidence-scoped reviewers + Python router
       (`app/agent/router.py`, `scout.py`, `multi.py`; `REVIEW_MULTI_AGENT`,
       default off; numbers and the decision in `docs/rc1-390-multi-agent.md`)
+- [x] RC1-393 cheap exploration: conventions file + callers by grep into the
+      shared prefix by Python, scout cap follows the context
+      (`app/agent/context.py`, `router.scout_turns`; `REVIEW_SCOUT_CONTEXT_TURNS`;
+      corpus run with `--repo-path` and the decision in
+      `docs/rc1-393-cheap-exploration.md`)
 - [ ] RC1-391 spike: port the same graph to LangGraph and compare
 
 ## Layout
@@ -87,9 +92,11 @@ app/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
     reviewer.py the loop: review_pull_request(...)
     verifier.py second pass over the loop's findings, flag-gated (RC1-387)
-    router.py   RC1-390: which reviewers run, decided from the file list
+    router.py   RC1-390: which reviewers run, decided from the file list;
+                RC1-393: the scout's turn cap, decided from the context
+    context.py  RC1-393: conventions file + callers by grep, Python only, into the prefix
     scout.py    RC1-390: the exploring half of the loop, ends in a brief
-    multi.py    RC1-390: scout -> warm cache -> reviewers (gather) -> merge -> verifier
+    multi.py    RC1-390: context -> scout -> warm cache -> reviewers (gather) -> merge -> verifier
     prompts.py  rubric/system prompt (RC1-111); reviewer specs + scout prompt (RC1-390)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
@@ -115,7 +122,9 @@ tests/          pytest, offline
   (`["leaked_secret"]`), `max_tool_turns`, `max_files_read`,
   `review_verify_findings` (off; RC1-387 experiment, see
   docs/rc1-387-verifier.md before turning it on), `review_multi_agent` (off;
-  RC1-390, see docs/rc1-390-multi-agent.md), `review_scout_max_turns`.
+  RC1-390, see docs/rc1-390-multi-agent.md), `review_scout_max_turns`,
+  `review_scout_context_turns` (RC1-393: the scout's cap once Python has put
+  the conventions file and callers in the prefix).
 - **Flag off must stay byte-identical.** `app/agent/multi.py` is imported only
   when `review_multi_agent` is on; changes to the single loop's request shape
   need a corpus run either way.
@@ -139,6 +148,8 @@ pytest --cov                  # ...with the 88% floor CI enforces
 ruff check .                  # lint (line-length 100, rules E,F,I,UP,B,SIM)
 python -m evals --list        # the planted-defect corpus (free)
 python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
+python -m evals --repo-path .  # ...with a checkout every case explores (RC1-393; the
+                               # scout runs on every case, so ~2-3x the diff-only cost)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
 ```
 

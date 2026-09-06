@@ -27,7 +27,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="evals", description=__doc__)
     parser.add_argument("--case", help="run a single case by id")
     parser.add_argument("--list", action="store_true", help="list the corpus and exit")
+    parser.add_argument(
+        "--repo-path",
+        metavar="PATH",
+        default=None,
+        help="RC1-393: a checkout every case explores (copied per case; the n8n "
+        "case's own files are written over it). Without it the corpus is diff-only.",
+    )
+    parser.add_argument(
+        "--no-repo-context",
+        action="store_true",
+        help="RC1-393: leave the conventions file and callers list out of the "
+        "multi-agent prefix — the control run for measuring them.",
+    )
     args = parser.parse_args(argv)
+    repo_context = not args.no_repo_context
 
     if args.list:
         for case in corpus.CASES:
@@ -48,9 +62,11 @@ def main(argv: list[str] | None = None) -> int:
 
     verify = "on" if settings.review_verify_findings else "off"
     multi = "on" if settings.review_multi_agent else "off"
+    checkout = f"checkout {args.repo_path}" if args.repo_path else "diff-only"
+    context = "repo context on" if repo_context else "repo context OFF"
     print(
         f"{len(cases)} case(s) against {settings.review_model}, verifier {verify}, "
-        f"multi-agent {multi} — this spends money.\n"
+        f"multi-agent {multi}, {checkout}, {context} — this spends money.\n"
     )
     # RC1-322: billed spend is traced spend; a no-op without DD_API_KEY.
     llmobs.enable("pr-review-agent", service="evals")
@@ -58,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for case in cases:
         with llmobs.case(case.id) as traced:
-            result = subject.run(case)
+            result = subject.run(case, repo_path=args.repo_path, repo_context=repo_context)
             traced.record(result)
         results.append(result)
     for result in results:
@@ -113,9 +129,27 @@ def main(argv: list[str] | None = None) -> int:
             f"{off_scope} off-scope finding(s) discarded"
             + (f"; cold on {', '.join(cold)}" if cold else "")
         )
+        # RC1-393: what exploration cost, and what Python put in front of it.
+        scouted = [r for r in multi_ran if not r.observations["multi"]["scout_skipped"]]
+        scout_cost = sum(
+            float(r.observations["multi"]["stages"].get("scout", {}).get("cost_usd", 0))
+            for r in scouted
+        )
+        with_conventions = sum(
+            1 for r in multi_ran if r.observations["multi"]["context"]["conventions_file"]
+        )
+        callers = sum(r.observations["multi"]["context"]["callers"] for r in multi_ran)
+        print(
+            f"  scout ran on {len(scouted)} case(s) for ${scout_cost:.3f}; "
+            f"conventions file on {with_conventions}, {callers} caller row(s) by grep"
+        )
     print("  (never averaged — see evals/subject.py)")
 
-    record_run(subject.version(), started, results)
+    record_run(
+        subject.version(checkout=args.repo_path is not None, repo_context=repo_context),
+        started,
+        results,
+    )
     return exit_code(results)
 
 

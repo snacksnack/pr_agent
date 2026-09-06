@@ -379,7 +379,7 @@ def test_empty_checkout_skips_the_scout_and_the_reviewers_still_run(pr, tmp_path
     assert sync.messages.calls == []
     assert result.brief.startswith("(scout skipped: no repository checkout")
     assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
-    assert set(result.stage_latency_ms) == {"scout", "fan_out"}
+    assert set(result.stage_latency_ms) == {"context", "scout", "fan_out"}
 
 
 def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
@@ -388,5 +388,174 @@ def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
         WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
     )
     result = _run(pr, repo, sync, async_client, verify=True)
-    assert set(result.stage_latency_ms) == {"scout", "fan_out", "verifier"}
+    assert set(result.stage_latency_ms) == {"context", "scout", "fan_out", "verifier"}
     assert all(v >= 0 for v in result.stage_latency_ms.values())
+
+
+# --- RC1-393: deterministic repository context --------------------------------
+
+def _repo_with_conventions(tmp_path):
+    root = tmp_path / "repo"
+    (root / "app").mkdir(parents=True)
+    (root / "CLAUDE.md").write_text("# Notes\n\n## Conventions\n\n- read config via settings\n")
+    (root / "app" / "x.py").write_text("def helper():\n    return 1\n")
+    (root / "app" / "y.py").write_text("from app.x import helper\n\nvalue = helper()\n")
+    return RepoTools(root)
+
+
+def _pr_changing_helper():
+    return PullRequest(
+        ref=PRRef("o", "r", 9),
+        title="Change helper",
+        body="changes helper",
+        files=[
+            ChangedFile(
+                "app/x.py",
+                "modified",
+                patch="@@ -1 +1 @@\n-def helper():\n+def helper(flag=False):",
+            )
+        ],
+    )
+
+
+def test_context_reaches_the_shared_prefix_and_the_scout_seed(tmp_path):
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
+
+    seed = sync.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions, from CLAUDE.md" in seed
+    assert "read config via settings" in seed
+    assert "app/y.py:1: from app.x import helper" in seed
+    assert "Some of that work is already done" in seed, "the scout is told not to redo it"
+    assert seed.index("Repository conventions") < seed.index("You are the scout")
+
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions, from CLAUDE.md" in prefix
+    assert "app/y.py:3: value = helper()" in prefix
+    assert prefix.index("Callers of what changed") < prefix.index("Scout's brief:")
+    assert "Some of that work is already done" not in prefix, "the scout note is the scout's"
+
+    assert result.conventions_file == "CLAUDE.md"
+    assert result.callers_found == 2
+    assert result.stage_latency_ms["context"] >= 0
+
+
+def test_context_can_be_switched_off_for_measurement(tmp_path):
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(),
+        _repo_with_conventions(tmp_path),
+        sync,
+        async_client,
+        repo_context=False,
+    )
+    seed = sync.messages.calls[0]["messages"][0]["content"][0]["text"]
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions" not in seed and "Repository conventions" not in prefix
+    assert "Some of that work is already done" not in seed
+    assert result.conventions_file is None and result.callers_found == 0
+
+
+def test_no_context_leaves_the_rc1_390_prefix_byte_identical(pr, repo):
+    """No conventions file and no symbols in the diff: nothing is added, so
+    the prefix is exactly what RC1-390 measured."""
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    _run(pr, repo, sync, async_client)
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert prefix == multi.build_shared_prefix(pr, None, SCOUT[0][0]["input"]["brief"])
+    seed = sync.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Some of that work is already done" not in seed
+
+
+def test_context_is_not_gathered_when_the_scout_is_skipped(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), RepoTools(empty), _sync(), async_client)
+    assert result.conventions_file is None and result.callers_found == 0
+
+
+def test_context_survives_the_verifier(tmp_path):
+    sync = _sync(*SCOUT, [_use("verify_findings", verdicts=[])])
+    async_client = _async(
+        WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
+    )
+    result = _run(
+        _pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client, verify=True
+    )
+    assert result.verified
+    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
+
+
+def test_review_pull_request_threads_the_context_switch(pr, repo, monkeypatch):
+    seen = {}
+
+    def fake_multi(*args, **kwargs):
+        seen.update(kwargs)
+        from app.models import ReviewResult
+
+        return ReviewResult(mode="multi")
+
+    monkeypatch.setattr("app.agent.multi.review_pull_request_multi", fake_multi)
+    review_pull_request(pr, repo, client=_sync(), multi=True, model="m", repo_context=False)
+    assert seen["repo_context"] is False
+
+
+def test_scout_turn_cap_shrinks_with_the_context_and_not_without(tmp_path, monkeypatch):
+    """With the conventions file and callers in hand the scout gets the short
+    cap: here 1 turn, so a scout that keeps exploring is forced to submit on
+    the next call. Without the context it keeps the full cap."""
+    repo = _repo_with_conventions(tmp_path)
+    explore = [_use("read_file", path="app/x.py")]
+    forced = [_use("submit_brief", brief="forced")]
+    sync = _sync(explore, forced)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(), repo, sync, async_client, scout_max_turns=5, scout_context_turns=1
+    )
+    assert result.tool_turns == 1 and result.truncated and result.brief == "forced"
+    assert sync.messages.calls[1]["tool_choice"] == {"type": "tool", "name": "submit_brief"}
+
+    sync = _sync(explore, explore, forced)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(),
+        repo,
+        sync,
+        async_client,
+        scout_max_turns=2,
+        scout_context_turns=1,
+        repo_context=False,
+    )
+    assert result.tool_turns == 2, "no context: the full cap"
+
+
+def test_scout_context_turns_come_from_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_context_turns=1))
+    sync = _sync([_use("read_file", path="app/x.py")], [_use("submit_brief", brief="b")])
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
+    assert result.tool_turns == 1 and result.truncated
+
+
+def test_a_zero_context_cap_skips_the_scout_when_the_context_is_complete(tmp_path):
+    repo = _repo_with_conventions(tmp_path)
+    sync = _sync()
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), repo, sync, async_client, scout_context_turns=0)
+    assert sync.messages.calls == [], "no scout call"
+    assert result.brief.startswith("(scout skipped: the conventions file")
+    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions, from CLAUDE.md" in prefix
+
+    # Without the context the scout has the whole job and runs.
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(), repo, sync, async_client, scout_context_turns=0, repo_context=False
+    )
+    assert len(sync.messages.calls) == 1 and result.brief == SCOUT[0][0]["input"]["brief"]

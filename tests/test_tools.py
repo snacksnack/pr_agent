@@ -269,3 +269,21 @@ def test_explorable_is_false_for_an_empty_root(tmp_path):
     assert RepoTools(empty).explorable is False  # noise dirs do not count
     (empty / "a.py").write_text("x = 1\n")
     assert RepoTools(empty).explorable is True
+
+
+# --- read_text (RC1-393) ------------------------------------------------------------
+
+def test_read_text_is_raw_and_never_raises(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("# hi\nrules\n")
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    (tmp_path / "uv.lock").write_text("lock\n")
+    (tmp_path / "bin").write_bytes(b"\xff\xfe\x00")
+    (tmp_path / "sub").mkdir()
+    tools = RepoTools(tmp_path)
+    assert tools.read_text("CLAUDE.md") == "# hi\nrules\n"
+    assert tools.read_text(".env") is None
+    assert tools.read_text("uv.lock") is None
+    assert tools.read_text("bin") is None
+    assert tools.read_text("sub") is None
+    assert tools.read_text("missing.md") is None
+    assert tools.read_text("../outside") is None

@@ -180,6 +180,12 @@ class ReviewResult:
     off_scope_findings: int = 0
     deduplicated_findings: int = 0
     unusable_reviewer_calls: int = 0
+    # RC1-393: what Python put in the shared prefix before any model ran —
+    # the conventions file it found (``None`` when the repo has none) and
+    # how many caller rows the grep produced — so a run record can say
+    # whether the scout had the cheap context or re-derived it.
+    conventions_file: str | None = None
+    callers_found: int = 0
 
     @property
     def usage(self) -> TokenUsage:

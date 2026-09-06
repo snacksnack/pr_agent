@@ -285,6 +285,7 @@ def review_pull_request(
     verify: bool | None = None,
     multi: bool | None = None,
     async_client: Any | None = None,
+    repo_context: bool = True,
 ) -> ReviewResult:
     """Run the agentic review loop over a PR and return structured findings.
 
@@ -301,7 +302,10 @@ def review_pull_request(
     evidence-scoped reviewers and the merge instead of this loop; ``None``
     defers to ``settings.review_multi_agent``. ``async_client`` is that
     path's fan-out client (``anthropic.AsyncAnthropic`` or a fake); unused
-    when ``multi`` is off.
+    when ``multi`` is off. ``repo_context`` (RC1-393) is whether that path
+    puts the conventions file and the callers list in the shared prefix
+    before the scout runs; the eval turns it off to measure it, nothing
+    else does.
     """
     model = model or settings.review_model
     verify = settings.review_verify_findings if verify is None else verify
@@ -322,6 +326,7 @@ def review_pull_request(
             max_tokens=max_tokens,
             precomputed_findings=precomputed_findings,
             verify=verify,
+            repo_context=repo_context,
         )
 
     if client is None:

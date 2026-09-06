@@ -286,4 +286,6 @@ def verify_findings(
         off_scope_findings=result.off_scope_findings,
         deduplicated_findings=result.deduplicated_findings,
         unusable_reviewer_calls=result.unusable_reviewer_calls,
+        conventions_file=result.conventions_file,
+        callers_found=result.callers_found,
     )

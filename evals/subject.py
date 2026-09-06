@@ -35,6 +35,7 @@ quietly accepting whatever came back.
 from __future__ import annotations
 
 import io
+import shutil
 import tempfile
 import time
 from decimal import Decimal
@@ -46,6 +47,8 @@ from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion,
 
 from app import review as review_cli
 from app.agent import prompts
+from app.agent.reviewer import review_pull_request
+from app.agent.tools import IGNORED_DIRS
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 from evals import corpus
@@ -82,12 +85,19 @@ def preflight() -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is not set. This subject drives a real model.")
 
 
-def prompt_version() -> str:
+def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
     """Hash of the rubric and severity calibration together.
 
     Both, because they are edited independently and a change to either moves
     these scores — the severity checks in particular exist to catch a
     calibration edit that reads as harmless.
+
+    ``checkout`` and ``repo_context`` (RC1-393) are run conditions rather
+    than prompts, and they end up here for the same reason the flags do: a
+    run against a checkout explores on every case where a diff-only run
+    explores on one, and a run with the deterministic context off is the
+    control for one with it on. Neither pair may be averaged, so each is
+    its own subject version.
     """
     import hashlib
 
@@ -105,18 +115,23 @@ def prompt_version() -> str:
         # path's prompt; a run with the flag on is its own subject version.
         material = (
             prompts.SCOUT_INSTRUCTIONS
+            + prompts.SCOUT_CONTEXT_NOTE
             + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
         ).encode()
         version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    if checkout:
+        version += "+checkout"
+    if not repo_context:
+        version += "+no-context"
     return version
 
 
-def version() -> SubjectVersion:
+def version(*, checkout: bool = False, repo_context: bool = True) -> SubjectVersion:
     return SubjectVersion(
         subject=NAME,
         code_version=_code_version(),
         model=settings.review_model,
-        prompt_version=prompt_version(),
+        prompt_version=prompt_version(checkout=checkout, repo_context=repo_context),
     )
 
 
@@ -234,12 +249,24 @@ def _name(rank: int) -> str:
     return "none"
 
 
-def run(case: Case) -> CaseResult:
+def run(
+    case: Case, *, repo_path: str | Path | None = None, repo_context: bool = True
+) -> CaseResult:
+    """Score one case.
+
+    ``repo_path`` (RC1-393) gives every case a checkout to explore — the
+    corpus is diff-only, so without one the scout runs on the single case
+    that materialises files, and the cost of exploration is invisible.
+    ``repo_context`` is the deterministic context switch, off for the
+    control run.
+    """
     planted = corpus.BY_ID[case.input["case_id"]]
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
-        exit_code, findings, result = _review(planted, pr)
+        exit_code, findings, result = _review(
+            planted, pr, repo_path=repo_path, repo_context=repo_context
+        )
     except Exception as exc:
         return CaseResult(
             case_id=case.id,
@@ -325,12 +352,12 @@ def run(case: Case) -> CaseResult:
             # RC1-390: which path ran and, when it was the multi-agent one,
             # what each stage cost — the cache premise is read per reviewer
             # call here, not inferred from the case total.
-            "multi": _multi_observations(result),
+            "multi": _multi_observations(result, checkout=repo_path is not None),
         },
     )
 
 
-def _multi_observations(result: ReviewResult | None) -> dict:
+def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) -> dict:
     if result is None or result.mode != "multi":
         return {"ran": False}
     reviewer_reads = [
@@ -357,6 +384,13 @@ def _multi_observations(result: ReviewResult | None) -> dict:
         "off_scope": result.off_scope_findings,
         "deduplicated": result.deduplicated_findings,
         "unusable_reviewer_calls": result.unusable_reviewer_calls,
+        # RC1-393: whether the case had a repository to explore, and what
+        # Python put in the prefix before the scout ran.
+        "checkout": checkout,
+        "context": {
+            "conventions_file": result.conventions_file,
+            "callers": result.callers_found,
+        },
     }
 
 
@@ -454,6 +488,26 @@ def _merged_once(
     )
 
 
+def materialise_checkout(
+    into: Path, repo_path: str | Path | None, repo_files: tuple[tuple[str, str], ...]
+) -> None:
+    """Build one case's checkout: a copy of ``repo_path`` (RC1-393; noise
+    directories and ``.git`` left behind), then the case's own files written
+    over it. Without a repo path it is the case's files alone, which is what
+    the n8n case has always had."""
+    if repo_path is not None:
+        shutil.copytree(
+            Path(repo_path).expanduser(),
+            into,
+            ignore=shutil.ignore_patterns(*IGNORED_DIRS, ".git", ".env"),
+            dirs_exist_ok=True,
+        )
+    for name, contents in repo_files:
+        path = into / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+
+
 #: Prompt-cache multipliers on the input price (5-minute cache): a write costs
 #: 1.25x, a read 0.1x. Same on every current model.
 _CACHE_WRITE = Decimal("1.25")
@@ -508,7 +562,11 @@ def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
 
 
 def _review(
-    planted: corpus.PlantedCase, pr: PullRequest
+    planted: corpus.PlantedCase,
+    pr: PullRequest,
+    *,
+    repo_path: str | Path | None = None,
+    repo_context: bool = True,
 ) -> tuple[int, list[Finding], ReviewResult | None]:
     """Run the real CLI, capturing the merged result on the way past.
 
@@ -517,22 +575,29 @@ def _review(
     reimplementing the pipeline — and the wrapper is transparent, so the n8n
     merge and the verdict still happen exactly as they ship. The captured
     `ReviewResult` also carries the loop's token counts for pricing.
+
+    The review function is the shipped `review_pull_request` with the CLI's
+    defaults (`client=None`, so the SDK is built from settings) plus the one
+    switch the CLI does not expose, `repo_context` (RC1-393).
     """
     captured: list[ReviewResult] = []
-    inner = review_cli._default_review(model=settings.review_model)
 
     def _capture(pull, tools, precomputed):
-        result = inner(pull, tools, precomputed)
+        result = review_pull_request(
+            pull,
+            tools,
+            client=None,
+            model=settings.review_model,
+            precomputed_findings=precomputed,
+            repo_context=repo_context,
+        )
         captured.append(result)
         return result
 
     argv = ["--pr", f"{pr.ref.owner}/{pr.ref.repo}#{pr.ref.number}"]
     with tempfile.TemporaryDirectory(prefix="pr-eval-") as tmp:
-        if planted.repo_files:
-            for name, contents in planted.repo_files:
-                path = Path(tmp) / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(contents, encoding="utf-8")
+        if repo_path is not None or planted.repo_files:
+            materialise_checkout(Path(tmp), repo_path, planted.repo_files)
             argv += ["--repo-path", tmp]
         exit_code = review_cli.main(
             argv, fetch=lambda _ref: pr, review=_capture, out=io.StringIO()
