@@ -211,6 +211,28 @@ async def fan_out(
     return warm, list(outputs)
 
 
+async def _fan_out_then_close(
+    async_client: Any,
+    reviewers: tuple[ReviewerSpec, ...],
+    model: str,
+    prefix: str,
+    max_tokens: int,
+    *,
+    close: bool,
+) -> tuple[TokenUsage, list[ReviewerOutput]]:
+    """``fan_out``, then close the client this review built, on the loop its
+    connections were opened on. Seen in the RC1-394 corpus run: a client
+    left to the garbage collector schedules its close on the loop
+    ``asyncio.run`` has already torn down — "Event loop is closed", once per
+    review, and a connection held until then. An injected client is the
+    caller's to close."""
+    try:
+        return await fan_out(async_client, reviewers, model, prefix, max_tokens)
+    finally:
+        if close:
+            await async_client.close()
+
+
 # --- the merge ----------------------------------------------------------------
 
 def merge_findings(outputs: list[ReviewerOutput]) -> tuple[list[Finding], int, int]:
@@ -309,6 +331,7 @@ def review_pull_request_multi(
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 
         client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
+    owns_async_client = async_client is None
     if async_client is None:
         from anthropic import AsyncAnthropic
 
@@ -377,7 +400,9 @@ def review_pull_request_multi(
     prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text, context_text)
     started = time.perf_counter()
     warm, outputs = asyncio.run(
-        fan_out(async_client, plan.reviewers, model, prefix, max_tokens)
+        _fan_out_then_close(
+            async_client, plan.reviewers, model, prefix, max_tokens, close=owns_async_client
+        )
     )
     latency["fan_out"] = _ms_since(started)
     findings, off_scope, deduplicated = merge_findings(outputs)

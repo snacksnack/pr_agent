@@ -644,6 +644,33 @@ def test_a_zero_context_cap_skips_the_scout_when_the_context_is_complete(tmp_pat
     assert len(sync.messages.calls) == 1 and result.brief == SCOUT[0][0]["input"]["brief"]
 
 
+def test_the_client_this_review_built_is_closed_on_its_own_loop(pr, repo, monkeypatch):
+    """RC1-394: the corpus run logged "Event loop is closed" once per case —
+    an AsyncAnthropic built here and left to the garbage collector. It is
+    closed inside the loop that used it; an injected client is not."""
+    import sys
+    import types
+
+    closed = []
+
+    class FakeAsync:
+        def __init__(self, **kw):
+            self.messages = AsyncMessages([WARM, _submit("", []), _submit("", []), _submit("", [])])
+
+        async def close(self):
+            closed.append(True)
+
+    fake_sdk = types.SimpleNamespace(AsyncAnthropic=FakeAsync, Anthropic=lambda **kw: _sync())
+    monkeypatch.setitem(sys.modules, "anthropic", fake_sdk)
+    plan = ReviewPlan(scout=True, reviewers=(DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT))
+    multi.review_pull_request_multi(pr, repo, client=_sync(*SCOUT), model="m", plan=plan)
+    assert closed == [True]
+
+    injected = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    injected.close = lambda: (_ for _ in ()).throw(AssertionError("closed the caller's client"))
+    _run(pr, repo, _sync(*SCOUT), injected)
+
+
 # --- what the cost metric needs from this path (RC1-395) -------------------------
 
 def test_scout_ran_is_recorded_when_the_scout_made_calls(pr, repo):
