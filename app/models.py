@@ -102,9 +102,18 @@ class ReviewResult:
     # True if the run hit a guardrail (turn or file-read cap) before finishing.
     truncated: bool = False
     # Token spend summed across every model call in the loop, forced
-    # submission included, so a caller can price the review (RC1-269).
+    # submission included, so a caller can price the review (RC1-269). The
+    # verifier pass (RC1-387), when it ran, is included in these totals and
+    # also broken out below so the two can be compared.
     input_tokens: int = 0
     output_tokens: int = 0
+    # RC1-387: what the verifier pass did. ``verified`` is False when the pass
+    # did not run (flag off, or nothing to verify); the rest are then empty.
+    verified: bool = False
+    verifier_dropped: list[Finding] = field(default_factory=list)
+    verifier_downgraded: int = 0
+    verifier_input_tokens: int = 0
+    verifier_output_tokens: int = 0
 
     @property
     def sorted_findings(self) -> list[Finding]:

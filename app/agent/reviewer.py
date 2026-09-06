@@ -88,6 +88,15 @@ def format_pr_for_review(
     checks that ran first), they are listed as already-recorded so the model
     builds on them rather than duplicating them.
     """
+    return "\n".join([*render_pr(pr, precomputed_findings), "", INSTRUCTIONS])
+
+
+def render_pr(
+    pr: PullRequest, precomputed_findings: list[Finding] | None = None
+) -> list[str]:
+    """The PR as the model sees it — metadata, description, bounded diff —
+    without the procedural instructions. Shared with the verifier (RC1-387)
+    so both passes read the same rendering of the same change."""
     parts = [
         f"Pull request: {pr.slug}",
         f"Title: {pr.title}",
@@ -128,9 +137,7 @@ def format_pr_for_review(
     precomputed = format_precomputed_findings(precomputed_findings)
     if precomputed:
         parts.append(precomputed)
-
-    parts.extend(["", INSTRUCTIONS])
-    return "\n".join(parts)
+    return parts
 
 
 def _user_text(text: str) -> dict:
@@ -234,6 +241,7 @@ def review_pull_request(
     max_files_read: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
+    verify: bool | None = None,
 ) -> ReviewResult:
     """Run the agentic review loop over a PR and return structured findings.
 
@@ -241,8 +249,13 @@ def review_pull_request(
     ran before the loop; they are shown to the model as already-recorded (so it
     doesn't duplicate them) but are NOT merged here — the caller owns merging
     them into the final result, keeping this function's output the model's own.
+
+    ``verify`` (RC1-387) runs the verifier pass over the loop's findings before
+    returning; ``None`` defers to ``settings.review_verify_findings``. The
+    deterministic findings are never verified — they are not the model's.
     """
     model = model or settings.review_model
+    verify = settings.review_verify_findings if verify is None else verify
     max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
 
@@ -294,7 +307,7 @@ def review_pull_request(
         messages.append({"role": "user", "content": tool_results})
 
         if submission is not None:
-            return _result_from_submission(
+            result = _result_from_submission(
                 submission,
                 model=model,
                 tool_turns=turns,
@@ -303,6 +316,7 @@ def review_pull_request(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
+            return _maybe_verify(result, pull_request, client, verify=verify)
     else:
         # Ran the full turn budget without submitting.
         truncated = True
@@ -311,7 +325,7 @@ def review_pull_request(
     submission, (used_in, used_out) = _force_submit(
         client, messages, model=model, max_tokens=max_tokens
     )
-    return _result_from_submission(
+    result = _result_from_submission(
         submission,
         model=model,
         tool_turns=turns,
@@ -320,6 +334,19 @@ def review_pull_request(
         input_tokens=input_tokens + used_in,
         output_tokens=output_tokens + used_out,
     )
+    return _maybe_verify(result, pull_request, client, verify=verify)
+
+
+def _maybe_verify(
+    result: ReviewResult, pull_request: PullRequest, client: Any, *, verify: bool
+) -> ReviewResult:
+    """Run the verifier pass (RC1-387) when it is on and there is something
+    to verify. A clean review pays nothing extra."""
+    if not verify or not result.findings:
+        return result
+    from app.agent.verifier import verify_findings
+
+    return verify_findings(pull_request, result, client=client)
 
 
 def _force_submit(
