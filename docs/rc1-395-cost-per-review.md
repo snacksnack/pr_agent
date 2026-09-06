@@ -116,13 +116,21 @@ this checkout.
 | Path | Cost, priced here | LLM Obs's own estimate for the trace | Latency | Turns | Findings | Stages |
 | --- | --- | --- | --- | --- | --- | --- |
 | Multi, context + 3-turn scout | **38.9 ¢** | 38.9 ¢ | 49.8 s | 3 (scout) | 5 | scout 24.9 ¢ · warm cache 8.1 ¢ · reviewers 1.8 / 1.5 / 1.2 ¢ · verifier 1.2 ¢ |
-| Single loop (production today) | **69.6 ¢** | see below | 106.8 s | 20 (the cap) | 2 | loop 63.1 ¢ · verifier 6.5 ¢ |
+| Single loop (production today) | **69.6 ¢** | 69.6 ¢ | 106.8 s | 20 (the cap) | 2 | loop 63.1 ¢ · verifier 6.5 ¢ |
 
-The multi review's price matches Datadog's own estimate for the same trace
-to the fourth decimal (`$0.3888` both ways, summed over the trace's nine
-`llm` spans) — the acceptance criterion was within a cent. The trace is one
-`workflow` span with three `agent` spans, two `task` spans and nine `llm`
-spans under it, and its root carries the cost metrics.
+Both prices match Datadog's own estimate for the same traces to the fourth
+decimal: `$0.3888` for the multi review and `$1.0847` for the two together,
+summed over their `llm` spans — the acceptance criterion was within a cent.
+The multi trace is one `workflow` span with three `agent` spans, two `task`
+spans and nine `llm` spans under it; the single loop's is one `workflow`
+span, one `agent` span (the verifier) and twenty-two `llm` spans. Each root
+carries the cost metrics.
+
+Both points were queryable by `max` within a minute. The `p50`/`p95`
+aggregations stayed empty for them: percentile aggregation was switched on
+between the two submissions and applies to points from then on, and the
+second point did not surface under it within the fifteen minutes watched.
+The first webhook review after the deploy is the check that they populate.
 
 Two things the numbers say that RC1-393 could only say from the corpus.
 The scout is 64% of the multi review on a PR this size (24.9 ¢ of 38.9 ¢),
