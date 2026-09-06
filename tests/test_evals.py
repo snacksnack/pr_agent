@@ -345,3 +345,58 @@ def test_the_corpus_covers_every_gating_category():
     assert set(settings.block_on) <= covered, (
         f"{set(settings.block_on) - covered} gate the verdict but have no planted case"
     )
+
+
+# --- RC1-390: the multi-agent path in the record -------------------------------
+
+
+def test_prompt_version_changes_when_multi_agent_is_on(monkeypatch):
+    """A multi-agent run is its own subject version, on top of the verifier's."""
+    from app.config import Settings
+
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
+    off = subject.prompt_version()
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_multi_agent=True))
+    on = subject.prompt_version()
+    assert on.startswith(off) and "+multi-sha256:" in on
+    monkeypatch.setattr(
+        subject,
+        "settings",
+        Settings(_env_file=None, review_multi_agent=True, review_verify_findings=True),
+    )
+    both = subject.prompt_version()
+    assert "+verify-sha256:" in both and both.endswith(on.split("+")[-1])
+
+
+def test_multi_observations_read_false_when_the_single_loop_ran():
+    from app.models import ReviewResult
+
+    assert subject._multi_observations(None) == {"ran": False}
+    assert subject._multi_observations(ReviewResult()) == {"ran": False}
+
+
+def test_multi_observations_carry_stages_and_the_cache_premise():
+    from app.models import ReviewResult, TokenUsage
+
+    result = ReviewResult(
+        model="claude-sonnet-4-6",
+        mode="multi",
+        reviewers_run=["diff_local", "change_intent"],
+        brief="(scout skipped: documentation-only change)",
+        stage_usage={
+            "scout": TokenUsage(),
+            "warm_cache": TokenUsage(0, 1, 900, 0),
+            "reviewer:diff_local": TokenUsage(3, 40, 0, 900),
+            "reviewer:change_intent": TokenUsage(3, 40, 0, 0),
+        },
+        off_scope_findings=2,
+        deduplicated_findings=1,
+        unusable_reviewer_calls=0,
+    )
+    obs = subject._multi_observations(result)
+    assert obs["ran"] is True and obs["reviewers"] == ["diff_local", "change_intent"]
+    assert obs["scout_skipped"] is True
+    assert obs["min_reviewer_cache_read"] == 0, "one reviewer wrote the prefix: the premise failed"
+    assert obs["stages"]["reviewer:diff_local"]["cache_read"] == 900
+    assert obs["stages"]["warm_cache"]["cost_usd"] != "0"
+    assert obs["off_scope"] == 2 and obs["deduplicated"] == 1

@@ -14,6 +14,7 @@ the loop / config (``settings.block_on``), not here.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # import-only-for-typing keeps this module runtime-dependency-free
@@ -279,3 +280,187 @@ def format_precomputed_findings(findings: Iterable[Finding] | None) -> str:
             loc = "(PR-level)"
         lines.append(f"- [{f.severity}/{f.category}] {loc}: {f.message}")
     return "\n".join(lines)
+
+
+# --- multi-agent review: scout brief + evidence-scoped reviewers (RC1-390) --
+
+# The rubric above is one string so the single loop's system prompt stays byte
+# for byte what it was. The multi-agent path needs the same text cut by
+# dimension, so the slices are derived from it here rather than kept as a
+# second copy that could drift: paragraph 0 is the preamble, 1-10 are the
+# numbered dimensions, the last is the cross-cutting note that names ``docs``.
+_RUBRIC_PARAGRAPHS: tuple[str, ...] = tuple(REVIEW_RUBRIC.split("\n\n"))
+RUBRIC_PREAMBLE = _RUBRIC_PARAGRAPHS[0]
+RUBRIC_DIMENSIONS: dict[int, str] = {
+    n: _RUBRIC_PARAGRAPHS[n] for n in range(1, len(_RUBRIC_PARAGRAPHS) - 1)
+}
+RUBRIC_CROSS_CUTTING = _RUBRIC_PARAGRAPHS[-1]
+
+# Which rubric dimension carries which categories. ``docs`` lives in the
+# cross-cutting note, ``general`` belongs to whichever reviewer has the
+# evidence, so neither has a number.
+DIMENSION_CATEGORIES: dict[int, tuple[str, ...]] = {
+    1: ("convention",),
+    2: ("pythonic",),
+    3: ("leaked_secret", "security"),
+    4: ("tests",),
+    5: ("dependencies",),
+    6: ("error_handling",),
+    7: ("breaking_change",),
+    8: ("pr_drift",),
+    9: ("infra_scalability",),
+    10: ("n8n",),
+}
+
+
+@dataclass(frozen=True)
+class ReviewerSpec:
+    """One evidence-scoped reviewer: a name, its rubric dimensions, and what
+    makes its evidence different from the other two.
+
+    The categories a reviewer may raise follow from its dimensions (plus
+    ``docs`` where it owns it, plus ``general`` always); anything else it
+    raises is discarded by the merge, because another reviewer had that
+    evidence.
+    """
+
+    name: str
+    dimensions: tuple[int, ...]
+    evidence: str = field(compare=False)
+    owns_docs: bool = False
+
+    @property
+    def categories(self) -> tuple[str, ...]:
+        cats: list[str] = []
+        for n in self.dimensions:
+            cats.extend(DIMENSION_CATEGORIES[n])
+        if self.owns_docs:
+            cats.append("docs")
+        return tuple(cats)
+
+    @property
+    def allowed(self) -> frozenset[str]:
+        return frozenset((*self.categories, "general"))
+
+    def narrowed(self, dimensions: tuple[int, ...]) -> ReviewerSpec:
+        """The same reviewer with a subset of its dimensions (the router's job)."""
+        return replace(self, dimensions=dimensions)
+
+    def rubric(self) -> str:
+        parts = [RUBRIC_DIMENSIONS[n] for n in self.dimensions]
+        if self.owns_docs:
+            parts.append(RUBRIC_CROSS_CUTTING)
+        return "\n\n".join(parts)
+
+
+# Three reviewers, split by the evidence each needs rather than by category:
+# the hunk alone; the hunk plus the surrounding repository; the hunk plus the
+# PR's stated intent and its manifests. Three is the number of distinct
+# contexts a review has, which is why it is three and not thirteen.
+DIFF_LOCAL = ReviewerSpec(
+    "diff_local",
+    (3, 2, 6),
+    "Everything you need is in the hunks themselves: a committed secret, an "
+    "injection, an unidiomatic construct, a swallowed exception, a docstring "
+    "that does not match its code. Judge the lines that changed.",
+    owns_docs=True,
+)
+REPO_CONTEXT = ReviewerSpec(
+    "repo_context",
+    (1, 4, 7),
+    "Your evidence is the repository around the change: the conventions its "
+    "neighbouring modules follow, the callers of what changed, and the tests "
+    "that do or do not cover it. The scout's brief above is that evidence; "
+    "cite it. When the brief did not reach what you needed, judge from the "
+    "diff alone and raise nothing about the missing evidence itself.",
+)
+CHANGE_INTENT = ReviewerSpec(
+    "change_intent",
+    (8, 9, 5, 10),
+    "Your evidence is what the change says it does versus what it does: the "
+    "PR description against the diff, dependency manifests, infrastructure "
+    "and workflow configuration, and the scale at which the touched IO runs.",
+)
+REVIEWERS: tuple[ReviewerSpec, ...] = (DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT)
+
+
+def reviewer_instructions(spec: ReviewerSpec) -> str:
+    """The per-reviewer suffix. It follows the shared, cached prefix (system
+    prompt, PR, scout brief) so the three reviewers differ only here."""
+    cats = ", ".join(spec.categories)
+    return (
+        f"You are the '{spec.name}' reviewer on a panel of three, each reading "
+        "the same change with a different kind of evidence. A scout has already "
+        "explored the repository; its brief is above. You have no tools in this "
+        "pass: judge from the diff, the description, and the brief, and do not "
+        "ask to read more.\n"
+        "\n"
+        f"Your evidence: {spec.evidence}\n"
+        "\n"
+        "Your dimensions of the rubric:\n"
+        "\n"
+        f"{spec.rubric()}\n"
+        "\n"
+        f"Raise findings ONLY in these categories: {cats} — plus 'general' for a "
+        "defect in your evidence that fits none of them. Every other dimension "
+        "belongs to another reviewer on the panel who has better evidence for "
+        "it; a finding outside your categories is discarded, so do not spend "
+        "words on one.\n"
+        "- Anchor each finding to a file and line whenever it refers to a "
+        "specific location; PR-level findings may omit the line.\n"
+        "- Give each finding a severity (blocker/warning/nit), a category from "
+        "your set, a message explaining the issue AND why it matters, and a "
+        "concrete suggested fix whenever one exists.\n"
+        "- Be concise: a message is at most three sentences and a suggestion "
+        "at most two. Two other reviewers are writing alongside you and the "
+        "author reads all three.\n"
+        "- The summary is one sentence on your dimensions only; leave it empty "
+        "if you found nothing. Do not invent problems to look thorough.\n"
+        "Call submit_review exactly once."
+    )
+
+
+SCOUT_INSTRUCTIONS = (
+    "You are the scout for a panel of three reviewers who will read this "
+    "change next. They have no tools; you do. Your job is to gather the "
+    "repository context they cannot see in the diff, then call submit_brief "
+    "exactly once. Do not write findings; that is their job.\n"
+    "\n"
+    "Use read_file, list_dir, and grep to establish, with file references:\n"
+    "1. The conventions the touched modules already follow — how they read "
+    "config, handle errors, type and name things, structure imports — and "
+    "whether the change matches them.\n"
+    "2. Callers of any function, class, config key, or contract the change "
+    "alters, and whether they still fit.\n"
+    "3. Existing tests for the changed paths, and whether the change adds or "
+    "updates any.\n"
+    "4. Anything else a reviewer would want that is not in the hunks: what a "
+    "changed manifest or workflow file feeds, the scale a touched query runs "
+    "at, a comment or docstring elsewhere that the change contradicts.\n"
+    "\n"
+    "Be brief and factual: at most about 250 words, facts before opinions, no "
+    "recommendations. If the tools return errors because no checkout is "
+    "available, say so in one line and submit."
+)
+
+SUBMIT_BRIEF_TOOL = {
+    "name": "submit_brief",
+    "description": (
+        "Submit the repository-context brief for the reviewers. Call this "
+        "exactly once, when you have finished exploring."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "brief": {
+                "type": "string",
+                "description": (
+                    "The brief: conventions, callers, tests, and anything else "
+                    "the reviewers cannot see in the diff. About 250 words at most."
+                ),
+            },
+        },
+        "required": ["brief"],
+    },
+}

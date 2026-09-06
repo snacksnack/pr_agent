@@ -75,6 +75,9 @@ class RemoteRepoTools:
         self._cache: dict[str, str | None] = {}
         self._tree: Any = _UNSET
 
+    # A live review always has the repository behind it (RC1-390).
+    explorable = True
+
     # -- accounting ------------------------------------------------------
 
     @property

@@ -49,6 +49,16 @@ $0.55. Two precision cases each plant a *decoy* — a pattern the rubric names
 as a defect, in a context where it is fine — and score the reviewer on leaving
 it alone.
 
+**Three reviewers cost the same as one loop, until they explore.** RC1-390
+split the loop into a scout, three reviewers scoped by the evidence each needs
+(the hunk; the repository; the PR's stated intent), a Python router and a
+Python merge, behind `REVIEW_MULTI_AGENT`. On the corpus it matched recall
+(13/13), read one shared cached prefix on every reviewer call, ran the
+diff-only cases in half the wall clock and 9% cheaper — and cost 2.8× on the
+one case with a repository to explore, which is every live PR. The flag is
+off; [the decision record](docs/rc1-390-multi-agent.md) has the stage-by-stage
+numbers and what would change the answer.
+
 **Only `leaked_secret` gates.** `block_on` is a category list, not a severity
 threshold, so a `blocker`-severity finding in any other category stays advisory.
 The corpus shows that is not hypothetical — the SQL-injection and PR-drift cases
@@ -246,6 +256,8 @@ All settings load from environment variables (and an optional `.env`). See
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
 | `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
 | `REVIEW_VERIFY_MODEL` | Model for the verifier pass; unset = `REVIEW_MODEL` | — |
+| `REVIEW_MULTI_AGENT` | Scout + three evidence-scoped reviewers on one cached prefix + Python merge, instead of the single loop (RC1-390; see `docs/rc1-390-multi-agent.md`) | `false` |
+| `REVIEW_SCOUT_MAX_TURNS` | Turn cap for the scout when `REVIEW_MULTI_AGENT` is on | `8` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |

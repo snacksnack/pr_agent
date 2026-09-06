@@ -50,3 +50,15 @@ def test_verifier_is_off_by_default_and_parses_env_booleans():
     assert Settings(_env_file=None).review_verify_findings is False
     assert Settings(_env_file=None, review_verify_findings="1").review_verify_findings is True
     assert Settings(_env_file=None, review_verify_model=None).review_verify_model is None
+
+
+def test_multi_agent_is_off_by_default_and_toggles_from_env(monkeypatch):
+    assert Settings(_env_file=None).review_multi_agent is False
+    monkeypatch.setenv("REVIEW_MULTI_AGENT", "1")
+    assert Settings(_env_file=None).review_multi_agent is True
+
+
+def test_scout_turn_cap_must_be_positive():
+    assert Settings(_env_file=None).review_scout_max_turns == 8
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, review_scout_max_turns=0)

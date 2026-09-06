@@ -173,12 +173,19 @@ def _create(
     messages: list,
     max_tokens: int,
     tool_choice: dict | None = None,
+    tools: list[dict] | None = None,
+    system: list[dict] | None = None,
 ):
+    """One model call with the loop's cache markers applied.
+
+    ``tools`` and ``system`` default to the single loop's; the scout
+    (RC1-390) passes its own tool list and otherwise runs the same loop.
+    """
     kwargs: dict[str, Any] = {
         "model": model,
-        "system": SYSTEM_BLOCKS,
+        "system": SYSTEM_BLOCKS if system is None else system,
         "messages": _with_cache_marker(messages),
-        "tools": ALL_TOOLS,
+        "tools": ALL_TOOLS if tools is None else tools,
         "max_tokens": max_tokens,
     }
     if tool_choice is not None:
@@ -202,15 +209,13 @@ def _tokens(response: Any) -> TokenUsage:
     )
 
 
-def _result_from_submission(
-    payload: dict,
-    *,
-    model: str,
-    tool_turns: int,
-    files_read: int,
-    truncated: bool,
-    usage: TokenUsage,
-) -> ReviewResult:
+def parse_findings(payload: dict) -> tuple[list[Finding], int, int]:
+    """Read a ``submit_review`` payload into findings.
+
+    Returns ``(findings, malformed, coerced)``: findings the loop could not
+    read are counted rather than silently skipped, and a severity outside
+    blocker/warning/nit is coerced to warning and counted (RC1-387).
+    """
     findings: list[Finding] = []
     malformed = 0
     coerced = 0
@@ -238,6 +243,19 @@ def _result_from_submission(
                 suggestion=item.get("suggestion"),
             )
         )
+    return findings, malformed, coerced
+
+
+def _result_from_submission(
+    payload: dict,
+    *,
+    model: str,
+    tool_turns: int,
+    files_read: int,
+    truncated: bool,
+    usage: TokenUsage,
+) -> ReviewResult:
+    findings, malformed, coerced = parse_findings(payload)
     return ReviewResult(
         summary=str(payload.get("summary") or ""),
         findings=findings,
@@ -265,6 +283,8 @@ def review_pull_request(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
     verify: bool | None = None,
+    multi: bool | None = None,
+    async_client: Any | None = None,
 ) -> ReviewResult:
     """Run the agentic review loop over a PR and return structured findings.
 
@@ -276,11 +296,33 @@ def review_pull_request(
     ``verify`` (RC1-387) runs the verifier pass over the loop's findings before
     returning; ``None`` defers to ``settings.review_verify_findings``. The
     deterministic findings are never verified — they are not the model's.
+
+    ``multi`` (RC1-390) routes the review through the scout, the three
+    evidence-scoped reviewers and the merge instead of this loop; ``None``
+    defers to ``settings.review_multi_agent``. ``async_client`` is that
+    path's fan-out client (``anthropic.AsyncAnthropic`` or a fake); unused
+    when ``multi`` is off.
     """
     model = model or settings.review_model
     verify = settings.review_verify_findings if verify is None else verify
+    multi = settings.review_multi_agent if multi is None else multi
     max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
+
+    if multi:
+        from app.agent.multi import review_pull_request_multi
+
+        return review_pull_request_multi(
+            pull_request,
+            repo_tools,
+            client=client,
+            async_client=async_client,
+            model=model,
+            max_files_read=max_files_read,
+            max_tokens=max_tokens,
+            precomputed_findings=precomputed_findings,
+            verify=verify,
+        )
 
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
