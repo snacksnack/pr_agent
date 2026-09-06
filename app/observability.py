@@ -208,7 +208,7 @@ def review_metric_points(
         cost = review_cost(result)
     except UnknownModelPrice:
         return []
-    at = at or int(time.time())
+    at = int(time.time()) if at is None else at
     tags = review_metric_tags(result, repo=repo)
     return [
         {"metric": COST_METRIC, "points": [[at, [float(cost.total)]]], "tags": tags},

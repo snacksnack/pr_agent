@@ -3,8 +3,13 @@ unconditionally, so an untraced environment (tests, CI, a laptop without
 DD_API_KEY) must go through it without side effects."""
 
 import os
+import re
+from decimal import Decimal
+
+import httpx
 
 from app import observability
+from app.models import ReviewResult, TokenUsage
 
 
 class FakeLLMObs:
@@ -75,13 +80,6 @@ def test_non_anthropic_integrations_are_defaulted_off(monkeypatch):
 
 
 # --- cost per review (RC1-395) ------------------------------------------------
-
-import re  # noqa: E402
-from decimal import Decimal  # noqa: E402
-
-import httpx  # noqa: E402
-
-from app.models import ReviewResult, TokenUsage  # noqa: E402
 
 
 class RecordingLLMObs(FakeLLMObs):
