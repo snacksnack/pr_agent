@@ -419,9 +419,18 @@ def _pr_changing_helper():
 
 
 def test_context_reaches_the_shared_prefix_and_the_scout_seed(tmp_path):
+    """With the scout kept on a complete context (the measurement arm,
+    `scout_complete_turns` above zero) the seed carries the context and the
+    note; the prefix carries the context and not the note."""
     sync = _sync(*SCOUT)
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
+    result = _run(
+        _pr_changing_helper(),
+        _repo_with_conventions(tmp_path),
+        sync,
+        async_client,
+        scout_complete_turns=3,
+    )
 
     seed = sync.messages.calls[0]["messages"][0]["content"][0]["text"]
     assert "Repository conventions, from CLAUDE.md" in seed
@@ -439,6 +448,9 @@ def test_context_reaches_the_shared_prefix_and_the_scout_seed(tmp_path):
     assert result.conventions_file == "CLAUDE.md"
     assert result.callers_found == 2
     assert result.stage_latency_ms["context"] >= 0
+    assert "tests touching the changed paths" in seed, "the scout is told tests are done too"
+    assert "Tests touching the changed paths" in prefix
+    assert result.context_complete and result.scout_ran
 
 
 def test_context_can_be_switched_off_for_measurement(tmp_path):
@@ -458,16 +470,28 @@ def test_context_can_be_switched_off_for_measurement(tmp_path):
     assert result.conventions_file is None and result.callers_found == 0
 
 
-def test_no_context_leaves_the_rc1_390_prefix_byte_identical(pr, repo):
-    """No conventions file and no symbols in the diff: nothing is added, so
-    the prefix is exactly what RC1-390 measured."""
+def test_no_context_leaves_the_rc1_390_prefix_plus_the_tests_line(pr, repo):
+    """No conventions file and no symbols in the diff: the conventions and
+    callers blocks are absent, so the prefix is what RC1-390 measured plus
+    the one tests block RC1-394 always renders for a source file — here,
+    that the repository has no tests. Without a conventions file the
+    context is not complete, so the scout still runs, with the full cap."""
     sync = _sync(*SCOUT)
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    _run(pr, repo, sync, async_client)
+    result = _run(pr, repo, sync, async_client)
     prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
-    assert prefix == multi.build_shared_prefix(pr, None, SCOUT[0][0]["input"]["brief"])
+    tests_block = (
+        "Tests touching the changed paths (found by grep by file name, no test "
+        "directory found; changed source files: app/x.py):\n"
+        "(no test files found in the repository)"
+    )
+    assert prefix == multi.build_shared_prefix(
+        pr, None, SCOUT[0][0]["input"]["brief"], tests_block
+    )
+    assert "Repository conventions" not in prefix and "Callers of what changed" not in prefix
     seed = sync.messages.calls[0]["messages"][0]["content"][0]["text"]
-    assert "Some of that work is already done" not in seed
+    assert "Some of that work is already done" in seed
+    assert result.scout_ran and not result.context_complete
 
 
 def test_context_is_not_gathered_when_the_scout_is_skipped(tmp_path):
@@ -504,11 +528,22 @@ def test_review_pull_request_threads_the_context_switch(pr, repo, monkeypatch):
     assert seen["repo_context"] is False
 
 
+class _NoFileList(RepoTools):
+    """A checkout whose file list cannot be read (the live path with the
+    tree call out of budget): conventions and callers are answered, the
+    tests search is not, so the context is answered but not complete and
+    the scout keeps the RC1-393 short cap."""
+
+    def paths(self):
+        return None
+
+
 def test_scout_turn_cap_shrinks_with_the_context_and_not_without(tmp_path, monkeypatch):
-    """With the conventions file and callers in hand the scout gets the short
-    cap: here 1 turn, so a scout that keeps exploring is forced to submit on
-    the next call. Without the context it keeps the full cap."""
-    repo = _repo_with_conventions(tmp_path)
+    """With the conventions file and callers in hand but the tests search
+    cut off, the scout gets the short cap: here 1 turn, so a scout that
+    keeps exploring is forced to submit on the next call. Without the
+    context it keeps the full cap."""
+    repo = _NoFileList(_repo_with_conventions(tmp_path).root)
     explore = [_use("read_file", path="app/x.py")]
     forced = [_use("submit_brief", brief="forced")]
     sync = _sync(explore, forced)
@@ -518,6 +553,7 @@ def test_scout_turn_cap_shrinks_with_the_context_and_not_without(tmp_path, monke
     )
     assert result.tool_turns == 1 and result.truncated and result.brief == "forced"
     assert sync.messages.calls[1]["tool_choice"] == {"type": "tool", "name": "submit_brief"}
+    assert not result.context_complete
 
     sync = _sync(explore, explore, forced)
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
@@ -537,8 +573,55 @@ def test_scout_context_turns_come_from_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_context_turns=1))
     sync = _sync([_use("read_file", path="app/x.py")], [_use("submit_brief", brief="b")])
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
+    repo = _NoFileList(_repo_with_conventions(tmp_path).root)
+    result = _run(_pr_changing_helper(), repo, sync, async_client)
     assert result.tool_turns == 1 and result.truncated
+
+
+def test_scout_complete_turns_come_from_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_complete_turns=1))
+    sync = _sync([_use("read_file", path="app/x.py")], [_use("submit_brief", brief="b")])
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
+    assert result.tool_turns == 1 and result.truncated and result.context_complete
+
+
+def test_a_complete_context_skips_the_scout_by_default(tmp_path):
+    """RC1-394: conventions, callers and tests answered by Python — no scout
+    call at all, the prefix carries all three, the brief says why."""
+    repo = _repo_with_conventions(tmp_path)
+    sync = _sync()
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(_pr_changing_helper(), repo, sync, async_client)
+    assert sync.messages.calls == [], "no scout call"
+    assert result.brief.startswith("(scout skipped: the conventions file, the callers")
+    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
+    assert result.context_complete and not result.scout_ran and result.tool_turns == 0
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Repository conventions, from CLAUDE.md" in prefix
+    assert "Callers of what changed" in prefix
+    assert "Tests touching the changed paths" in prefix
+    assert prefix.index("Tests touching") < prefix.index("Scout's brief:")
+    # Every reviewer's suffix carries the missing-evidence guard.
+    for call in async_client.messages.calls[1:]:
+        assert "raise nothing about the missing evidence itself" in (
+            call["messages"][0]["content"][1]["text"]
+        )
+
+
+def test_the_verifier_gets_the_absence_rule_on_this_path_only(tmp_path):
+    from app.agent.verifier import ABSENCE_RULE
+
+    repo = _repo_with_conventions(tmp_path)
+    finding = _finding("blocker", "general", "app/z.py does not exist in this repository")
+    sync = _sync([_use("verify_findings", verdicts=[])])
+    async_client = _async(
+        WARM, _submit("s", [finding]), _submit("", []), _submit("", [])
+    )
+    result = _run(_pr_changing_helper(), repo, sync, async_client, verify=True)
+    assert result.verified
+    suffix = sync.messages.calls[0]["messages"][0]["content"][1]["text"]
+    assert ABSENCE_RULE in suffix
 
 
 def test_a_zero_context_cap_skips_the_scout_when_the_context_is_complete(tmp_path):

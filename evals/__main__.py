@@ -139,9 +139,14 @@ def main(argv: list[str] | None = None) -> int:
             1 for r in multi_ran if r.observations["multi"]["context"]["conventions_file"]
         )
         callers = sum(r.observations["multi"]["context"]["callers"] for r in multi_ran)
+        tests = sum(r.observations["multi"]["context"].get("tests", 0) for r in multi_ran)
+        complete = sum(
+            1 for r in multi_ran if r.observations["multi"]["context"].get("complete")
+        )
         print(
             f"  scout ran on {len(scouted)} case(s) for ${scout_cost:.3f}; "
-            f"conventions file on {with_conventions}, {callers} caller row(s) by grep"
+            f"conventions file on {with_conventions}, {callers} caller row(s) and "
+            f"{tests} test row(s) by grep, context complete on {complete}"
         )
     print("  (never averaged — see evals/subject.py)")
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.agent import router
+from app.agent.context import RepoContext
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT
 from app.models import ChangedFile, PRRef, PullRequest
 
@@ -103,6 +104,26 @@ def test_scout_keeps_the_full_cap_when_the_context_is_incomplete():
         conventions_path="CLAUDE.md", conventions="rules", symbols=["f"], search_stopped=True
     )
     for ctx in (no_file, cut_off, RepoContext()):
+        assert router.scout_turns(ctx, full=8, with_context=3) == 8
+
+
+def test_a_complete_context_gets_the_complete_cap_which_skips_the_scout_by_default():
+    """RC1-394: conventions found, callers searched, tests searched."""
+    complete = RepoContext(conventions="rules", tests_searched=True)
+    assert complete.complete
+    assert router.scout_turns(complete, full=8, with_context=3) == 0
+    assert router.scout_turns(complete, full=8, with_context=3, when_complete=2) == 2
+    assert router.scout_turns(complete, full=1, with_context=3, when_complete=2) == 1
+
+    partial = RepoContext(conventions="rules", tests_searched=False, tests_stopped=True)
+    assert not partial.complete
+    assert router.scout_turns(partial, full=8, with_context=3) == 3, "the RC1-393 rule"
+
+    for ctx in (
+        RepoContext(conventions="", tests_searched=True),
+        RepoContext(conventions="rules", search_stopped=True, tests_searched=True),
+    ):
+        assert not ctx.complete
         assert router.scout_turns(ctx, full=8, with_context=3) == 8
 
 

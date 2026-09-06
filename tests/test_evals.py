@@ -424,7 +424,9 @@ def test_multi_observations_carry_the_context_and_the_checkout():
     )
     obs = subject._multi_observations(result, checkout=True)
     assert obs["checkout"] is True
-    assert obs["context"] == {"conventions_file": "CLAUDE.md", "callers": 5}
+    assert obs["context"] == {
+        "conventions_file": "CLAUDE.md", "callers": 5, "tests": 0, "complete": False
+    }
     assert subject._multi_observations(result)["checkout"] is False
 
 

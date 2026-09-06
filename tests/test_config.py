@@ -72,3 +72,11 @@ def test_scout_context_turns_default_and_validation():
     assert Settings(_env_file=None, review_scout_context_turns=0).review_scout_context_turns == 0
     with pytest.raises(ValidationError):
         Settings(_env_file=None, review_scout_context_turns=-1)
+
+
+def test_scout_complete_turns_default_to_zero_and_reject_negatives():
+    """RC1-394: a complete context skips the scout unless told otherwise."""
+    assert Settings(_env_file=None).review_scout_complete_turns == 0
+    assert Settings(_env_file=None, review_scout_complete_turns=3).review_scout_complete_turns == 3
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, review_scout_complete_turns=-1)

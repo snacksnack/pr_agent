@@ -3,14 +3,17 @@
 The single loop in :mod:`app.agent.reviewer` explores and judges in one
 conversation. This path makes the review's graph explicit in plain Python:
 
-    plan (router) -> context (Python) -> scout -> [warm cache] -> reviewers (gather)
+    plan (router) -> context (Python) -> [scout] -> [warm cache] -> reviewers (gather)
         -> merge -> verifier
 
-* **Context** (:mod:`app.agent.context`, RC1-393) is the repository's own
-  conventions file and a grep for callers of what the diff changed, put in
-  the shared prefix and the scout's seed by Python with no model turn. It
-  is the part of exploration that is a property of the repository, done
-  once and cheaply so the scout does not spend turns re-deriving it.
+* **Context** (:mod:`app.agent.context`, RC1-393, RC1-394) is the
+  repository's own conventions file, a grep for callers of what the diff
+  changed, and the tests touching the changed paths, put in the shared
+  prefix and the scout's seed by Python with no model turn. It is the part
+  of exploration that is a property of the repository, done once and
+  cheaply. When all three are answered the context is complete and the
+  router skips the scout (RC1-394): exploration is Python's alone, and the
+  review is one prefix write plus four cached reads.
 * **Router** (:mod:`app.agent.router`) decides from the file list which
   reviewers run and on which dimensions. The model never routes.
 * **Scout** (:mod:`app.agent.scout`) explores once, with tools, and writes a
@@ -272,6 +275,7 @@ def review_pull_request_multi(
     max_files_read: int | None = None,
     scout_max_turns: int | None = None,
     scout_context_turns: int | None = None,
+    scout_complete_turns: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
     verify: bool = False,
@@ -295,6 +299,11 @@ def review_pull_request_multi(
         scout_context_turns
         if scout_context_turns is not None
         else settings.review_scout_context_turns
+    )
+    scout_complete_turns = (
+        scout_complete_turns
+        if scout_complete_turns is not None
+        else settings.review_scout_complete_turns
     )
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
@@ -320,21 +329,31 @@ def review_pull_request_multi(
         with stage_span("task", "repo_context"):
             context = build_repo_context(pull_request, repo_tools)
     context_text = context.render()
-    turns = scout_turns(context, full=scout_max_turns, with_context=scout_context_turns)
+    turns = scout_turns(
+        context,
+        full=scout_max_turns,
+        with_context=scout_context_turns,
+        when_complete=scout_complete_turns,
+    )
     latency["context"] = _ms_since(started)
     logger.info(
-        "context conventions=%s callers=%d unsearched=%d scout_turns=%d",
+        "context conventions=%s callers=%d unsearched=%d tests=%d untested=%d "
+        "complete=%s scout_turns=%d",
         context.conventions_path,
         len(context.callers),
         len(context.symbols_unsearched),
+        len(context.tests),
+        len(context.untested),
+        context.complete,
         turns,
     )
 
     started = time.perf_counter()
     if plan.scout and turns == 0:
         brief = scouting.skipped_brief(
-            "the conventions file and the callers of what changed are above, "
-            "gathered without a model turn; nothing left to explore"
+            "the conventions file, the callers of what changed and the tests "
+            "touching the changed paths are above, gathered without a model "
+            "turn; nothing left to explore"
         )
     elif plan.scout:
         with stage_span("agent", "scout"):
@@ -393,6 +412,8 @@ def review_pull_request_multi(
         unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
         conventions_file=context.conventions_path,
         callers_found=len(context.callers),
+        tests_found=len(context.tests),
+        context_complete=context.complete,
         scout_ran=not brief.skipped,
     )
     logger.info(
@@ -412,11 +433,13 @@ def review_pull_request_multi(
             "scout": plan.scout,
             "reasons": list(plan.reasons),
             "conventions_file": context.conventions_path,
+            "context_complete": context.complete,
         },
         metrics={
             "findings": len(findings),
             "off_scope": off_scope,
             "callers_found": len(context.callers),
+            "tests_found": len(context.tests),
             "scout_turn_cap": turns,
         },
     )
@@ -431,6 +454,7 @@ def review_pull_request_multi(
                 shared_prefix=prefix,
                 tools=REVIEW_TOOLS,
                 tool_choice=TOOL_CHOICE_ANY,
+                absence_rule=True,
             )
         latency["verifier"] = _ms_since(started)
     logger.info(

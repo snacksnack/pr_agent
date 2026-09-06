@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from app.models import ReviewResult
+from app.models import PullRequest, ReviewResult
 from app.pricing import ReviewCost, UnknownModelPrice, review_cost
 
 try:  # documented optional-dep exception: ddtrace is absent in minimal envs
@@ -127,6 +127,29 @@ def annotate_span(**fields: Any) -> None:
         print(f"llmobs: annotate failed: {exc}", file=sys.stderr)
 
 
+# --- which PR (RC1-394) ---------------------------------------------------------
+
+def review_span_tags(pull_request: PullRequest) -> dict[str, str]:
+    """The tags that name the PR behind a ``pr_review`` span: ``repo``, ``pr``
+    and ``head_sha``. Tags on a span are free; the same three on the metric
+    would each be a billable custom metric, so they are here and not there,
+    and the trace explorer is the per-PR ledger (a PR's reviews across its
+    pushes share ``repo`` and ``pr`` and differ in ``head_sha``)."""
+    ref = pull_request.ref
+    return {
+        "repo": f"{ref.owner}/{ref.repo}",
+        "pr": str(ref.number),
+        "head_sha": pull_request.head_sha or "",
+    }
+
+
+def annotate_review_identity(pull_request: PullRequest) -> None:
+    """Tag the active ``pr_review`` span with the PR it reviews. Called by
+    the dispatcher as the span opens, so a review that fails part-way is
+    still findable by PR. A no-op when tracing is off."""
+    annotate_span(tags=review_span_tags(pull_request))
+
+
 # --- cost per review (RC1-395) ------------------------------------------------
 
 def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
@@ -163,6 +186,7 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
             "scout_turns": result.tool_turns if result.mode == "multi" else None,
             "verified": result.verified,
             "conventions_file": result.conventions_file,
+            "context_complete": result.context_complete,
         },
         metrics=metrics,
     )

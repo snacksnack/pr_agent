@@ -172,6 +172,26 @@ class RemoteRepoTools:
             return None  # budget exhausted: the context is optional, the review is not
         return text[:MAX_READ_BYTES] if text is not None else None
 
+    def paths(self) -> list[str] | None:
+        """Every blob path in the tree at the PR head, for Python callers
+        (RC1-394); ``None`` when there is no tree to read — not readable, or
+        the budget is spent before the one call it costs. The same filter
+        as ``grep``'s candidates: noise, secret and lock files left out."""
+        try:
+            entries = self._entries()
+        except ToolError:
+            return None
+        if entries is None:
+            return None
+        return [
+            e["path"]
+            for e in entries
+            if e.get("type") == "blob"
+            and not self._noise(e["path"])
+            and not is_secret_file(PurePosixPath(e["path"]).name)
+            and not is_lockfile(PurePosixPath(e["path"]).name)
+        ]
+
     def list_dir(self, path: str = ".") -> str:
         rel = self._normalize(path)
         entries = self._entries()

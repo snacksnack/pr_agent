@@ -17,17 +17,26 @@ answers Python can fetch with no model turn at all:
   :func:`callers` greps the repository for each, definition lines excluded,
   changed files first, capped. That is the repo-context reviewer's
   breaking-change question answered before any model runs.
+* **Which tests touch the changed paths?** (RC1-394) For each changed
+  source file, :func:`tests_for` finds the test file named for it
+  (``tests/test_<module>.py``, ``<module>_test.py``, ``<module>.test.*``)
+  in the repository's file list, then greps the test tree for the module's
+  name; the hits the callers grep made inside test files are moved here
+  too. That was the scout's last job after RC1-393, and with it answered
+  the context is complete on all three kinds of evidence and the router
+  skips the scout (:func:`app.agent.router.scout_turns`).
 
-:func:`build_repo_context` runs both and renders one block of text that
-:mod:`app.agent.multi` puts in the shared prefix and the scout's seed. The
-scout is then told to look only for what the block does not say. Nothing
-here raises: a repository with no conventions file and a diff with no
-symbols produce an empty context, and the review proceeds as it did before.
+:func:`build_repo_context` runs all three and renders one block of text
+that :mod:`app.agent.multi` puts in the shared prefix and the scout's seed.
+The scout, when one still runs, is told to look only for what the block
+does not say. Nothing here raises: a repository with no conventions file
+and a diff with no symbols produce an empty context, and the review
+proceeds as it did before.
 
-Both tool backends serve this module through the same two calls,
-``read_text`` and ``grep``; the live path pays for them out of the
-per-review API budget (RC1-364), and the files the grep fetches stay cached
-for the scout.
+Both tool backends serve this module through the same three calls,
+``read_text``, ``grep`` and ``paths``; the live path pays for them out of
+the per-review API budget (RC1-364), and the files the grep fetches stay
+cached for the scout.
 """
 from __future__ import annotations
 
@@ -74,6 +83,20 @@ MAX_SYMBOLS = 12
 MAX_CALLERS_PER_SYMBOL = 6
 MAX_CALLER_ROWS = 40
 
+# Bounds on the tests search (RC1-394): one grep per changed source file per
+# test root, rows capped per file and in total like the callers list.
+MAX_SOURCE_FILES = 12
+MAX_TESTS_PER_FILE = 6
+MAX_TEST_ROWS = 30
+MAX_TEST_ROOTS = 3
+# Directory names that hold tests, by the conventions the estate uses
+# (``tests/`` in the Python repos, ``__tests__`` in the Node ones).
+TEST_DIR_NAMES = frozenset({"tests", "test", "__tests__", "spec", "specs"})
+# Files that are tests by name, wherever they sit.
+_TEST_FILE = re.compile(r"^(?:test_.+\.py|.+_test\.py|.+\.(?:test|spec)\.\w+|conftest\.py)$")
+# Files a test would never reference by module name.
+_NOT_SOURCE_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+
 _HEADING = re.compile(r"^#{1,3}\s+(.+?)\s*$", re.MULTILINE)
 # Added or removed definition lines. Python first; the JS form is there
 # because the estate carries n8n and Node repositories too.
@@ -101,10 +124,28 @@ class RepoContext:
     callers_truncated: bool = False
     # The tool backend refused (budget spent) part way through the search.
     search_stopped: bool = False
+    # RC1-394: the tests search. ``tests_searched`` is whether it reached an
+    # answer — a list of test files and rows, or the fact that there are
+    # none — as opposed to not running or being cut off by the read budget.
+    source_files: list[str] = field(default_factory=list)
+    source_files_unsearched: list[str] = field(default_factory=list)
+    test_roots: list[str] = field(default_factory=list)
+    tests: list[str] = field(default_factory=list)
+    untested: list[str] = field(default_factory=list)
+    tests_truncated: bool = False
+    tests_searched: bool = False
+    tests_stopped: bool = False
 
     @property
     def empty(self) -> bool:
-        return not self.conventions and not self.symbols
+        return not self.conventions and not self.symbols and not self.source_files
+
+    @property
+    def complete(self) -> bool:
+        """Every evidence kind the scout used to gather is answered here:
+        the conventions file was found, and neither search was cut off.
+        The router skips the scout on a complete context (RC1-394)."""
+        return bool(self.conventions) and not self.search_stopped and self.tests_searched
 
     def render(self) -> str:
         """The block the reviewers and the scout read. Empty when there is
@@ -130,7 +171,41 @@ class RepoContext:
             if self.search_stopped:
                 lines.append("(the search stopped early: the repository read budget ran out)")
             parts.append("\n".join(lines))
+        if self.source_files or self.source_files_unsearched:
+            parts.append("\n".join(self._render_tests()))
         return "\n\n".join(parts)
+
+    def _render_tests(self) -> list[str]:
+        where = (
+            "under " + ", ".join(f"{r}/" for r in self.test_roots)
+            if self.test_roots
+            else "by file name, no test directory found"
+        )
+        sources = ", ".join(self.source_files + self.source_files_unsearched)
+        lines = [
+            f"Tests touching the changed paths (found by grep {where}; "
+            f"changed source files: {sources}):"
+        ]
+        if self.tests_stopped and not self.tests:
+            lines.append("(the tests search stopped early: the repository read budget ran out)")
+            if self.source_files_unsearched:
+                lines.append(f"(not searched: {', '.join(self.source_files_unsearched)})")
+            return lines
+        if self.tests:
+            lines.extend(self.tests)
+        elif self.untested and not self.source_files_unsearched and not self.test_roots:
+            lines.append("(no test files found in the repository)")
+        else:
+            lines.append("(no test references the changed paths)")
+        if self.untested and self.tests:
+            lines.append(f"(no test references: {', '.join(self.untested)})")
+        if self.tests_truncated:
+            lines.append(f"... [tests list capped at {MAX_TEST_ROWS} rows]")
+        if self.source_files_unsearched:
+            lines.append(f"(not searched: {', '.join(self.source_files_unsearched)})")
+        if self.tests_stopped:
+            lines.append("(the tests search stopped early: the repository read budget ran out)")
+        return lines
 
 
 # --- the conventions file ------------------------------------------------------
@@ -248,11 +323,21 @@ def callers(pr: PullRequest, tools: Any, symbols: list[str]) -> RepoContext:
             ctx.search_stopped = True
             ctx.symbols_unsearched.append(name)
             continue
-        rows = [
+        hits = [
             row
             for row in out.splitlines()
             if _is_hit(row) and not definition.search(row.split(": ", 1)[-1])
-        ][:MAX_CALLERS_PER_SYMBOL]
+        ]
+        # RC1-394: a hit inside a test file is a test touching the change,
+        # not a caller; it goes to the tests section, under that cap.
+        for row in hits:
+            if is_test_path(row.split(":", 1)[0]) and row not in ctx.tests:
+                if len(ctx.tests) < MAX_TEST_ROWS:
+                    ctx.tests.append(row)
+                else:
+                    ctx.tests_truncated = True
+        rows = [row for row in hits if not is_test_path(row.split(":", 1)[0])]
+        rows = rows[:MAX_CALLERS_PER_SYMBOL]
         if not rows:
             ctx.unresolved.append(name)
             continue
@@ -269,21 +354,179 @@ def _is_hit(row: str) -> bool:
     return bool(re.match(r"^[^\s(].*?:\d+: ", row))
 
 
+# --- tests for the changed paths (RC1-394) ----------------------------------------
+
+def is_test_path(path: str) -> bool:
+    """Whether ``path`` is a test file: it sits under a test directory, or
+    its name says so (``test_x.py``, ``x_test.py``, ``x.test.ts``,
+    ``conftest.py``)."""
+    parts = path.replace("\\", "/").split("/")
+    return any(p in TEST_DIR_NAMES for p in parts[:-1]) or bool(_TEST_FILE.match(parts[-1]))
+
+
+def changed_source_files(pr: PullRequest) -> list[str]:
+    """The changed files a test could reference: not tests themselves, not
+    lock files, not prose. Diff order."""
+    out: list[str] = []
+    for f in pr.files:
+        name = f.filename.rsplit("/", 1)[-1]
+        if is_test_path(f.filename) or is_lockfile(name):
+            continue
+        if f.filename.lower().endswith(_NOT_SOURCE_SUFFIXES):
+            continue
+        if f.filename not in out:
+            out.append(f.filename)
+    return out
+
+
+def module_stem(path: str) -> str:
+    """The name a test would import or mention: ``app/agent/context.py`` →
+    ``context``; a package's ``__init__.py`` is named for its directory."""
+    parts = path.replace("\\", "/").split("/")
+    name = parts[-1]
+    stem = name.split(".", 1)[0] if "." in name else name
+    if stem == "__init__" and len(parts) > 1:
+        return parts[-2]
+    return stem
+
+
+def test_roots(paths: list[str]) -> list[str]:
+    """The directories to grep for tests, most test files first, capped:
+    the shortest path prefix ending in a test directory name, for every
+    test file that sits under one. A repository whose tests are named but
+    not gathered in a directory has no roots; the search then covers the
+    whole tree and filters by name."""
+    counts: dict[str, int] = {}
+    for p in paths:
+        parts = p.split("/")
+        for i, part in enumerate(parts[:-1]):
+            if part in TEST_DIR_NAMES:
+                root = "/".join(parts[: i + 1])
+                counts[root] = counts.get(root, 0) + 1
+                break
+    ordered = sorted(counts, key=lambda r: (-counts[r], r))
+    return ordered[:MAX_TEST_ROOTS]
+
+
+def named_test_files(source: str, paths: list[str]) -> list[str]:
+    """Test files named for ``source`` by the usual conventions."""
+    stem = re.escape(module_stem(source))
+    pattern = re.compile(rf"^(?:test_{stem}\.\w+|{stem}_test\.\w+|{stem}\.(?:test|spec)\.\w+)$")
+    return sorted(p for p in paths if is_test_path(p) and pattern.match(p.rsplit("/", 1)[-1]))
+
+
+def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
+    """Fill the tests section of ``ctx``: the test files named for each
+    changed source file, then a grep of the test tree for the module's
+    name, bounded. Rows the callers grep already moved here stay.
+
+    ``tests_searched`` is set when the search reached an answer. A search
+    the read budget cut off before it reached anything is not an answer,
+    and the scout keeps its turns; one the caps cut short is, because the
+    scout has the same grep and the same budget and would do no better.
+    """
+    sources = changed_source_files(pr)
+    ctx.source_files = sources[:MAX_SOURCE_FILES]
+    ctx.source_files_unsearched = sources[MAX_SOURCE_FILES:]
+    if not ctx.source_files:
+        ctx.tests_searched = True  # nothing a test could reference: answered
+        return ctx
+
+    paths = tools.paths()
+    if paths is None:
+        # No file list to read (the remote tree is unreadable, or the
+        # budget is gone): the search cannot start, and the scout keeps
+        # its turns.
+        ctx.tests_stopped = True
+        ctx.source_files_unsearched = ctx.source_files + ctx.source_files_unsearched
+        ctx.source_files = []
+        return ctx
+    ctx.test_roots = test_roots(paths)
+    any_tests = any(is_test_path(p) for p in paths)
+
+    searched: list[str] = []
+    for source in ctx.source_files:
+        if ctx.tests_stopped:
+            ctx.source_files_unsearched.append(source)
+            continue
+        found = 0
+        for path in named_test_files(source, paths):
+            row = f"{path}: (test file named for {source})"
+            if _add_test_row(ctx, row):
+                found += 1
+        stem = module_stem(source)
+        if any_tests and len(stem) >= 3:
+            found += _grep_tests(tools, ctx, stem, source)
+        if ctx.tests_stopped:
+            # Cut off part-way through this file: what was found stays,
+            # but the file was not searched, and is listed as such.
+            ctx.source_files_unsearched.append(source)
+            continue
+        searched.append(source)
+        if not found:
+            ctx.untested.append(source)
+    if ctx.tests_stopped:
+        ctx.source_files = searched
+    ctx.tests_searched = not ctx.tests_stopped
+    return ctx
+
+
+def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> int:
+    """Grep each test root for ``stem`` as a whole word; rows into ``ctx``
+    up to the per-file cap. Returns how many rows were added."""
+    added = 0
+    for root in ctx.test_roots or ["."]:
+        try:
+            out = tools.grep(
+                rf"\b{re.escape(stem)}\b", path=root, max_results=MAX_TESTS_PER_FILE * 3
+            )
+        except ToolError as exc:
+            logger.info("tests_search_stopped file=%s reason=%s", source, exc)
+            ctx.tests_stopped = True
+            return added
+        for row in out.splitlines():
+            if not _is_hit(row) or not is_test_path(row.split(":", 1)[0]):
+                continue
+            if row.split(":", 1)[0].rsplit("/", 1)[-1] == source.rsplit("/", 1)[-1]:
+                continue  # the source is itself under a test root
+            if _add_test_row(ctx, row):
+                added += 1
+            if added >= MAX_TESTS_PER_FILE or ctx.tests_truncated:
+                return added
+    return added
+
+
+def _add_test_row(ctx: RepoContext, row: str) -> bool:
+    if row in ctx.tests:
+        return True  # already there (the callers grep put it there): still a find
+    if len(ctx.tests) >= MAX_TEST_ROWS:
+        ctx.tests_truncated = True
+        return False
+    ctx.tests.append(row)
+    return True
+
+
 # --- the whole context ---------------------------------------------------------
 
 def build_repo_context(pr: PullRequest, tools: Any) -> RepoContext:
-    """Conventions file plus callers, for ``pr``, from ``tools``. Never raises."""
+    """Conventions file, callers and tests, for ``pr``, from ``tools``.
+    Never raises."""
     symbols = changed_symbols(pr)
     ctx = callers(pr, tools, symbols) if symbols else RepoContext()
     ctx.conventions_path, ctx.conventions, ctx.conventions_truncated = conventions_file(tools)
+    tests_for(pr, tools, ctx)
     logger.info(
         "repo_context conventions=%s conventions_chars=%d symbols=%d callers=%d "
-        "unresolved=%d stopped=%s",
+        "unresolved=%d stopped=%s tests=%d untested=%d tests_searched=%s complete=%s",
         ctx.conventions_path,
         len(ctx.conventions),
         len(ctx.symbols),
         len(ctx.callers),
         len(ctx.unresolved),
         ctx.search_stopped,
+        len(ctx.tests),
+        len(ctx.untested),
+        ctx.tests_searched,
+        ctx.complete,
     )
     return ctx

@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # alone, and the reviewers read the conventions file and the callers list
     # with no brief.
     review_scout_context_turns: int = 3
+    # RC1-394: the scout's turn cap when the context is complete — the
+    # conventions file found, the callers search finished and the tests for
+    # the changed paths found by Python too. Zero, the default, skips the
+    # scout: exploration is then Python's alone and the review is one prefix
+    # write plus four cached reads. Set it to the context cap to measure
+    # what a scout still adds on top of a complete context.
+    review_scout_complete_turns: int = 0
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
@@ -113,7 +120,7 @@ class Settings(BaseSettings):
             raise ValueError("must be a positive integer")
         return v
 
-    @field_validator("review_scout_context_turns")
+    @field_validator("review_scout_context_turns", "review_scout_complete_turns")
     @classmethod
     def _must_not_be_negative(cls, v: int) -> int:
         if v < 0:

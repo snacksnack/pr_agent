@@ -222,3 +222,19 @@ def test_remote_grep_without_a_tree_still_skips_a_changed_lock_file():
     tools = RemoteRepoTools(gh, REF, "h", changed_files=["package-lock.json"])
     assert tools.grep("registry") == "(no matches)"
     assert [c for c in gh.calls if c[0] == "contents"] == []
+
+
+# --- paths (RC1-394) -----------------------------------------------------------------
+
+def test_remote_paths_come_from_the_tree_and_cost_the_one_tree_call(tools, gh):
+    paths = tools.paths()
+    assert sorted(paths) == [".env.example", "README.md", "src/app.py", "src/util.py"]
+    assert tools.paths() == paths and tools.api_calls == 1, "the tree is cached"
+    assert ".env" not in paths and "node_modules/x/index.js" not in paths
+
+
+def test_remote_paths_are_none_without_a_tree_or_without_budget():
+    assert RemoteRepoTools(FakeGitHub({}, tree=False), REF, "s", api_budget=5).paths() is None
+    spent = RemoteRepoTools(FakeGitHub(dict(FILES)), REF, "s", api_budget=1)
+    spent.read_file("src/app.py")
+    assert spent.paths() is None

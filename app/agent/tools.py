@@ -220,6 +220,13 @@ class RepoTools:
         except (OSError, UnicodeDecodeError):
             return None
 
+    def paths(self) -> list[str]:
+        """Every file path under the root the tools would serve, for Python
+        callers (RC1-394's tests search). Noise directories, secret and lock
+        files are left out, as ``grep`` leaves them out; order is the walk's.
+        Never raises."""
+        return [self._relpath(f) for f in self._walk_files(self.root)]
+
     def list_dir(self, path: str = ".") -> str:
         """List a directory (dirs first), excluding noise dirs like .git."""
         p = self._resolve(path)

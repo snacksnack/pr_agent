@@ -146,6 +146,30 @@ def test_annotate_multi_carries_the_scout_and_its_turns(monkeypatch):
     assert all(re.fullmatch(r"\w+", k) for k in annotation["metrics"])
 
 
+def test_annotate_carries_whether_the_context_was_complete(monkeypatch):
+    fake = RecordingLLMObs()
+    monkeypatch.setattr(observability, "LLMObs", fake)
+    observability.annotate_review_cost(_result(mode="multi", context_complete=True))
+    assert fake.annotations[0]["metadata"]["context_complete"] is True
+
+
+def test_review_identity_tags_the_span_with_repo_pr_and_head_sha(monkeypatch):
+    """RC1-394: the PR behind a review is on the span, never on the metric —
+    tags on a span are free, tags on the metric are billable per value."""
+    from app.models import PRRef, PullRequest
+
+    fake = RecordingLLMObs()
+    monkeypatch.setattr(observability, "LLMObs", fake)
+    pr = PullRequest(ref=PRRef("snacksnack", "pr_agent", 41), head_sha="abc123")
+    observability.annotate_review_identity(pr)
+    [annotation] = fake.annotations
+    assert annotation["tags"] == {"repo": "snacksnack/pr_agent", "pr": "41", "head_sha": "abc123"}
+    assert all(isinstance(v, str) for v in annotation["tags"].values())
+
+    monkeypatch.setattr(observability, "LLMObs", None)
+    observability.annotate_review_identity(pr)  # a no-op, never raises
+
+
 def test_unpriced_model_is_logged_and_not_annotated(monkeypatch, caplog):
     fake = RecordingLLMObs()
     monkeypatch.setattr(observability, "LLMObs", fake)

@@ -327,6 +327,25 @@ def test_shared_prefix_mode_reads_the_prefix_verbatim_and_sends_the_shared_tools
     assert "Call verify_findings exactly once" in suffix["text"]
 
 
+def test_the_absence_rule_is_appended_only_when_asked(pr):
+    """RC1-394: the multi-agent path's verifier drops a claim resting on
+    what the bounded context did not find; the single loop's request is
+    byte for byte what it was."""
+    result = ReviewResult(findings=[_finding()], model="m")
+    client = FakeClient([_verdicts()])
+    verifier.verify_findings(pr, result, client=client)
+    text = client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert verifier.ABSENCE_RULE not in text
+    assert text.endswith(verifier.VERIFIER_INSTRUCTIONS)
+
+    client = FakeClient([_verdicts()])
+    verifier.verify_findings(pr, result, client=client, absence_rule=True)
+    text = client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert text.endswith(verifier.VERIFIER_INSTRUCTIONS + " " + verifier.ABSENCE_RULE)
+    assert "absence from a bounded search is not evidence" in verifier.ABSENCE_RULE
+    assert "not a blocker" in verifier.ABSENCE_RULE
+
+
 def test_wrong_tool_from_the_verifier_keeps_everything(pr):
     """Under tool_choice 'any' the model could call submit_review instead;
     that reads as no verdicts, so nothing is dropped."""

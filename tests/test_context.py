@@ -7,10 +7,18 @@ from app.agent.context import (
     MAX_CALLER_ROWS,
     MAX_CALLERS_PER_SYMBOL,
     MAX_CONVENTIONS_CHARS,
+    MAX_SOURCE_FILES,
     MAX_SYMBOLS,
+    MAX_TEST_ROOTS,
+    MAX_TEST_ROWS,
+    MAX_TESTS_PER_FILE,
     RepoContext,
     build_repo_context,
+    changed_source_files,
     changed_symbols,
+    is_test_path,
+    module_stem,
+    named_test_files,
     select_sections,
 )
 from app.agent.remote_tools import RemoteRepoTools
@@ -171,16 +179,248 @@ def test_a_tool_error_stops_the_search_and_is_recorded(tmp_path):
         def grep(self, pattern, **kw):
             raise ToolError("GitHub API budget exhausted")
 
+        def paths(self):
+            return None
+
     pr = _pr(("app/a.py", "+def fetch():\n+def other():"))
     ctx = build_repo_context(pr, Refusing())
     assert ctx.search_stopped and ctx.symbols_unsearched == ["fetch", "other"]
     assert ctx.unresolved == []
     assert "read budget ran out" in ctx.render()
+    assert ctx.tests_stopped and not ctx.tests_searched and not ctx.complete
 
 
 def test_empty_context_renders_nothing():
     assert RepoContext().render() == "" and RepoContext().empty
     assert MAX_CALLER_ROWS >= MAX_CALLERS_PER_SYMBOL
+
+
+# --- tests for the changed paths (RC1-394) -------------------------------------------
+
+def test_is_test_path_by_directory_or_by_name():
+    for path in (
+        "tests/test_a.py",
+        "tests/helpers.py",
+        "packages/core/tests/test_x.py",
+        "apps/web/__tests__/x.test.ts",
+        "spec/x_spec.rb",
+        "app/a_test.py",
+        "src/x.spec.js",
+        "conftest.py",
+    ):
+        assert is_test_path(path), path
+    for path in ("app/a.py", "app/testing.py", "app/contest.py", "tests", "docs/tests.md"):
+        assert not is_test_path(path), path
+
+
+def test_changed_source_files_skips_tests_locks_and_prose():
+    pr = _pr(
+        ("app/a.py", "+x"),
+        ("tests/test_a.py", "+x"),
+        ("uv.lock", None),
+        ("README.md", "+x"),
+        ("workflows/w.json", "+x"),
+        ("app/a.py", "+y"),
+    )
+    assert changed_source_files(pr) == ["app/a.py", "workflows/w.json"]
+
+
+def test_module_stem_names_a_package_for_its_directory():
+    assert module_stem("app/agent/context.py") == "context"
+    assert module_stem("app/agent/__init__.py") == "agent"
+    assert module_stem("apps/web/src/Button.test.tsx") == "Button"
+    assert module_stem("Makefile") == "Makefile"
+
+
+def test_test_roots_are_the_shortest_test_directories_most_files_first():
+    paths = [
+        "packages/core/tests/test_a.py",
+        "packages/core/tests/test_b.py",
+        "packages/agents/tests/test_c.py",
+        "apps/web/__tests__/x.test.ts",
+        "tests/test_d.py",
+        "app/a.py",
+    ]
+    assert context.test_roots(paths) == [
+        "packages/core/tests", "apps/web/__tests__", "packages/agents/tests"
+    ]
+    assert len(context.test_roots(paths)) == MAX_TEST_ROOTS
+    assert context.test_roots(["app/a.py", "app/a_test.py"]) == [], "named tests, no directory"
+
+
+def test_named_test_files_follow_the_three_conventions():
+    paths = [
+        "tests/test_context.py",
+        "tests/test_context_extra.py",
+        "app/context_test.py",
+        "apps/web/__tests__/context.test.tsx",
+        "apps/web/context.spec.ts",
+        "app/context.py",
+    ]
+    assert named_test_files("app/context.py", paths) == [
+        "app/context_test.py",
+        "apps/web/__tests__/context.test.tsx",
+        "apps/web/context.spec.ts",
+        "tests/test_context.py",
+    ]
+
+
+def _checkout_with_tests(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "CLAUDE.md").write_text("## Conventions\nrules\n")
+    (tmp_path / "app" / "a.py").write_text("def fetch(path):\n    return path\n")
+    (tmp_path / "app" / "b.py").write_text("from app.a import fetch\n\nout = fetch('y')\n")
+    (tmp_path / "app" / "c.py").write_text("untested = 1\n")
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "from app.a import fetch\n\n\ndef test_fetch():\n    assert fetch('x') == 'x'\n"
+    )
+    (tmp_path / "tests" / "test_other.py").write_text("import app.b\n")
+    return RepoTools(tmp_path)
+
+
+def test_tests_section_names_the_test_file_greps_the_tree_and_lists_the_untested(tmp_path):
+    pr = _pr(
+        ("app/a.py", "-def fetch(path):\n+def fetch(path, retries):\n"),
+        ("app/c.py", "+untested = 2\n"),
+    )
+    ctx = build_repo_context(pr, _checkout_with_tests(tmp_path))
+    # The callers grep's hits inside tests/ moved to the tests section...
+    assert ctx.callers == ["app/b.py:1: from app.a import fetch", "app/b.py:3: out = fetch('y')"]
+    assert "tests/test_a.py:1: from app.a import fetch" in ctx.tests
+    assert "tests/test_a.py:5: assert fetch('x') == 'x'" in ctx.tests
+    # ...and the module search adds the named file and the rows for its stem.
+    assert "tests/test_a.py: (test file named for app/a.py)" in ctx.tests
+    assert ctx.test_roots == ["tests"]
+    assert ctx.source_files == ["app/a.py", "app/c.py"]
+    assert ctx.untested == ["app/c.py"]
+    assert ctx.tests_searched and ctx.complete
+    rendered = ctx.render()
+    tests_block = rendered[rendered.index("Tests touching the changed paths") :]
+    assert "found by grep under tests/" in tests_block
+    assert "(no test references: app/c.py)" in tests_block
+    assert rendered.index("Callers of what changed") < rendered.index("Tests touching")
+
+
+def test_a_repository_with_no_tests_says_so_and_still_counts_as_answered(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("## Conventions\nrules\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("x = 1\n")
+    pr = _pr(("app/a.py", "+x = 2\n"))
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert ctx.symbols == [] and ctx.untested == ["app/a.py"]
+    assert ctx.tests_searched and ctx.complete
+    assert "(no test files found in the repository)" in ctx.render()
+    assert "by file name, no test directory found" in ctx.render()
+
+
+def test_a_diff_with_no_source_file_is_answered_without_a_search(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("## Conventions\nrules\n")
+    pr = _pr(("tests/test_a.py", "+def test_x(): pass\n"), ("README.md", "+hi\n"))
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert ctx.source_files == [] and ctx.tests_searched and ctx.complete
+    assert "Tests touching" not in ctx.render()
+
+
+def test_complete_needs_the_conventions_file_too(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("x = 1\n")
+    ctx = build_repo_context(_pr(("app/a.py", "+x = 2\n")), RepoTools(tmp_path))
+    assert ctx.tests_searched and not ctx.complete
+
+
+def test_no_file_list_stops_the_tests_search_before_it_starts(tmp_path):
+    class NoTree(RepoTools):
+        def paths(self):
+            return None
+
+    pr = _pr(("app/a.py", "+def fetch():\n"))
+    ctx = build_repo_context(pr, NoTree(_checkout_with_tests(tmp_path).root))
+    assert ctx.tests_stopped and not ctx.tests_searched and not ctx.complete
+    assert ctx.source_files == [] and ctx.source_files_unsearched == ["app/a.py"]
+    assert ctx.conventions_path == "CLAUDE.md", "the rest of the context is unaffected"
+    assert "the tests search stopped early" in ctx.render()
+    assert "(not searched: app/a.py)" in ctx.render()
+
+
+def test_a_tool_error_in_the_tests_grep_stops_it_and_keeps_what_was_found(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "CLAUDE.md").write_text("## Conventions\nrules\n")
+    (tmp_path / "app" / "widget.py").write_text("x = 1\n")
+    (tmp_path / "app" / "gadget.py").write_text("y = 1\n")
+    (tmp_path / "tests" / "test_widget.py").write_text("from app import widget\n")
+    tools = RepoTools(tmp_path)
+    calls = []
+    real_grep = tools.grep
+
+    def grep(pattern, *args, **kw):
+        calls.append(pattern)
+        if "gadget" in pattern:
+            raise ToolError("GitHub API budget exhausted")
+        return real_grep(pattern, *args, **kw)
+
+    tools.grep = grep
+    pr = _pr(("app/widget.py", "+x = 2\n"), ("app/gadget.py", "+y = 2\n"))
+    ctx = build_repo_context(pr, tools)
+    assert ctx.tests_stopped and not ctx.tests_searched and not ctx.complete
+    assert ctx.source_files == ["app/widget.py"]
+    assert ctx.source_files_unsearched == ["app/gadget.py"]
+    assert ctx.tests == [
+        "tests/test_widget.py: (test file named for app/widget.py)",
+        "tests/test_widget.py:1: from app import widget",
+    ]
+    rendered = ctx.render()
+    assert "stopped early" in rendered and "(not searched: app/gadget.py)" in rendered
+    assert "changed source files: app/widget.py, app/gadget.py" in rendered
+
+
+def test_tests_rows_are_capped_per_file_and_in_total(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "widget.py").write_text("x = 1\n")
+    (tmp_path / "tests" / "test_many.py").write_text(
+        "\n".join(f"use_{i} = widget({i})" for i in range(40)) + "\n"
+    )
+    pr = _pr(("app/widget.py", "+x = 2\n"))
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert len(ctx.tests) == MAX_TESTS_PER_FILE and not ctx.tests_truncated
+
+    monkeypatch.setattr(context, "MAX_TEST_ROWS", 4)
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert len(ctx.tests) == 4 and ctx.tests_truncated and ctx.tests_searched
+    assert "tests list capped" in ctx.render()
+
+
+def test_source_files_are_capped():
+    pr = _pr(*((f"app/m{i}.py", "+x") for i in range(MAX_SOURCE_FILES + 2)))
+    assert len(changed_source_files(pr)) == MAX_SOURCE_FILES + 2
+
+    class Empty:
+        def read_text(self, path):
+            return None
+
+        def grep(self, pattern, **kw):
+            return "(no matches)"
+
+        def paths(self):
+            return ["app/m0.py"]
+
+    ctx = build_repo_context(pr, Empty())
+    assert len(ctx.source_files) == MAX_SOURCE_FILES
+    assert ctx.source_files_unsearched == [
+        f"app/m{MAX_SOURCE_FILES}.py", f"app/m{MAX_SOURCE_FILES + 1}.py"
+    ]
+    assert f"(not searched: app/m{MAX_SOURCE_FILES}.py" in ctx.render()
+    assert MAX_TEST_ROWS >= MAX_TESTS_PER_FILE
+
+
+def test_short_and_generic_stems_are_not_grepped_but_named_files_still_count(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_io.py").write_text("io = 1\n")
+    pr = _pr(("app/io.py", "+x = 1\n"))
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert ctx.tests == ["tests/test_io.py: (test file named for app/io.py)"]
 
 
 # --- the remote backend ------------------------------------------------------------
@@ -217,6 +457,34 @@ def test_remote_backend_serves_the_same_context_under_the_api_budget():
     assert tools.read_text(".env") is None
     assert tools.read_text("../CLAUDE.md") is None
     assert tools.read_text("uv.lock") is None
+    assert ctx.untested == ["app/a.py"] and ctx.tests_searched and ctx.complete
+
+
+def test_remote_backend_finds_tests_through_the_tree_and_the_budgeted_grep():
+    files = {
+        "CLAUDE.md": "## Conventions\nremote rules\n",
+        "app/a.py": "def fetch():\n    pass\n",
+        "tests/test_a.py": "from app.a import fetch\n",
+        "tests/test_z.py": "unrelated = 1\n",
+    }
+    gh = FakeGitHub(files)
+    tools = RemoteRepoTools(
+        gh, PRRef("o", "r", 1), "sha", changed_files=["app/a.py"], api_budget=10
+    )
+    ctx = build_repo_context(_pr(("app/a.py", "+def fetch():")), tools)
+    assert ctx.test_roots == ["tests"]
+    assert "tests/test_a.py: (test file named for app/a.py)" in ctx.tests
+    assert "tests/test_a.py:1: from app.a import fetch" in ctx.tests
+    assert ctx.callers == [] and ctx.unresolved == ["fetch"], "the test hit is not a caller"
+    assert ctx.complete
+
+
+def test_remote_tests_search_stops_when_the_tree_is_out_of_budget():
+    gh = FakeGitHub({"CLAUDE.md": "## Conventions\nx\n", "app/a.py": "x = 1\n"})
+    tools = RemoteRepoTools(gh, PRRef("o", "r", 1), "sha", api_budget=1)
+    ctx = build_repo_context(_pr(("app/a.py", "+x = 2")), tools)
+    assert ctx.conventions_path == "CLAUDE.md"
+    assert ctx.tests_stopped and not ctx.complete, "the scout keeps its turns"
 
 
 def test_remote_read_text_is_none_once_the_budget_is_spent():
