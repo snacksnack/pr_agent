@@ -212,13 +212,16 @@ def _result_from_submission(
     usage: TokenUsage,
 ) -> ReviewResult:
     findings: list[Finding] = []
+    malformed = 0
     for item in payload.get("findings") or []:
         if not isinstance(item, dict):
+            malformed += 1
             continue
         severity = item.get("severity")
         message = item.get("message")
         if not severity or not message:
-            continue  # skip malformed findings rather than crash
+            malformed += 1  # skip malformed findings rather than crash, but count them
+            continue
         line = item.get("line")
         findings.append(
             Finding(
@@ -237,6 +240,7 @@ def _result_from_submission(
         tool_turns=tool_turns,
         files_read=files_read,
         truncated=truncated,
+        malformed_findings=malformed,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,

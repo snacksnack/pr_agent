@@ -290,6 +290,17 @@ def run(case: Case) -> CaseResult:
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
             # RC1-387: the four token counts, so cache behaviour is visible.
             "tokens": _token_breakdown(result.usage) if result else {},
+            # RC1-387: how the loop ended, so a zero-finding miss can be read
+            # as "the model submitted nothing" versus "it ran out of turns"
+            # versus "it submitted findings the loop could not parse".
+            "loop": {
+                "tool_turns": result.tool_turns,
+                "files_read": result.files_read,
+                "truncated": result.truncated,
+                "malformed_findings": result.malformed_findings,
+            }
+            if result
+            else {},
             # RC1-387: what the decoy drew, by severity, on a precision case.
             "decoy_by_severity": {
                 s: sum(

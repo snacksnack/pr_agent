@@ -132,6 +132,12 @@ class ReviewResult:
     files_read: int = 0
     # True if the run hit a guardrail (turn or file-read cap) before finishing.
     truncated: bool = False
+    # Findings the model submitted that the loop could not read (missing
+    # severity or message) and skipped. Counted rather than silently dropped
+    # (RC1-387): three corpus misses in a row returned zero findings on a diff
+    # with an obvious defect, and the record could not say whether the model
+    # found nothing or the loop threw its answer away.
+    malformed_findings: int = 0
     # Token spend summed across every model call in the loop, forced
     # submission included, so a caller can price the review (RC1-269). The
     # verifier pass (RC1-387), when it ran, is included in these totals and

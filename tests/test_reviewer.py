@@ -306,6 +306,19 @@ def test_forced_submit_nudge_carries_the_moving_breakpoint(repo, pr):
 
 # --- malformed findings are skipped, not fatal ---------------------------
 
+def test_malformed_findings_are_counted_not_just_skipped(repo, pr):
+    """RC1-387: a silent skip left three zero-finding corpus misses unexplainable."""
+    client = FakeClient([[_submit("t1", "s", [
+        {"severity": "warning", "category": "docs", "message": "fine"},
+        {"severity": "warning"},              # no message
+        {"category": "docs", "message": "m"},  # no severity
+        "not a dict",
+    ])]])
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=5, max_files_read=5)
+    assert len(result.findings) == 1
+    assert result.malformed_findings == 3
+
+
 def test_malformed_findings_are_skipped(repo, pr):
     scripted = [
         [_submit("t1", "mixed", [
