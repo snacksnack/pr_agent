@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -281,12 +282,14 @@ def review_pull_request_multi(
 
         async_client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
 
-    plan = plan or plan_review(pull_request)
+    plan = plan or plan_review(pull_request, explorable=getattr(repo_tools, "explorable", True))
     logger.info(
         "plan scout=%s reviewers=%s reasons=%s", plan.scout, ",".join(plan.names), plan.reasons
     )
 
+    latency: dict[str, float] = {}
     with stage_span("workflow", "pr_review"):
+        started = time.perf_counter()
         if plan.scout:
             with stage_span("agent", "scout"):
                 brief = scouting.explore(
@@ -303,10 +306,14 @@ def review_pull_request_multi(
             reason = plan.reasons[0] if plan.reasons else "nothing to explore"
             brief = scouting.skipped_brief(reason)
 
+        latency["scout"] = _ms_since(started)
+
         prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text)
+        started = time.perf_counter()
         warm, outputs = asyncio.run(
             fan_out(async_client, plan.reviewers, model, prefix, max_tokens)
         )
+        latency["fan_out"] = _ms_since(started)
         findings, off_scope, deduplicated = merge_findings(outputs)
 
         stage_usage = {"scout": brief.usage, "warm_cache": warm}
@@ -333,6 +340,7 @@ def review_pull_request_multi(
             reviewers_run=plan.names,
             brief=brief.text,
             stage_usage=stage_usage,
+            stage_latency_ms=latency,
             off_scope_findings=off_scope,
             deduplicated_findings=deduplicated,
             unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
@@ -354,6 +362,7 @@ def review_pull_request_multi(
         )
 
         if verify and result.findings:
+            started = time.perf_counter()
             with stage_span("agent", "verifier"):
                 result = verify_findings(
                     pull_request,
@@ -363,4 +372,13 @@ def review_pull_request_multi(
                     tools=REVIEW_TOOLS,
                     tool_choice=TOOL_CHOICE_ANY,
                 )
+            latency["verifier"] = _ms_since(started)
+        logger.info(
+            "multi_latency %s",
+            " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
+        )
         return result
+
+
+def _ms_since(started: float) -> float:
+    return (time.perf_counter() - started) * 1000

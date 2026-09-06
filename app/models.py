@@ -169,6 +169,10 @@ class ReviewResult:
     # ``verifier`` — so the cache premise (reviewers read the prefix, they do
     # not write it) is checkable per call, not inferred from the total.
     stage_usage: dict[str, TokenUsage] = field(default_factory=dict)
+    # Wall clock per stage (``scout``, ``fan_out``, ``verifier``), so the
+    # latency claim — three reviewers cost one reviewer's wall clock, not
+    # three — is a number in the record.
+    stage_latency_ms: dict[str, float] = field(default_factory=dict)
     # Findings a reviewer raised outside its categories and the merge
     # discarded; findings the merge folded into an earlier one at the same
     # file, line and category; reviewer calls that came back without a

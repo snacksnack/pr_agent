@@ -278,6 +278,7 @@ def verify_findings(
         reviewers_run=result.reviewers_run,
         brief=result.brief,
         stage_usage={**result.stage_usage, "verifier": used} if result.stage_usage else {},
+        stage_latency_ms=result.stage_latency_ms,
         off_scope_findings=result.off_scope_findings,
         deduplicated_findings=result.deduplicated_findings,
         unusable_reviewer_calls=result.unusable_reviewer_calls,

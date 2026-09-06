@@ -353,6 +353,7 @@ def _multi_observations(result: ReviewResult | None) -> dict:
         # The design's premise: every reviewer read the shared prefix from
         # cache. Zero on any of them means it was written, not read.
         "min_reviewer_cache_read": min(reviewer_reads, default=0),
+        "latency_ms": {k: round(v) for k, v in result.stage_latency_ms.items()},
         "off_scope": result.off_scope_findings,
         "deduplicated": result.deduplicated_findings,
         "unusable_reviewer_calls": result.unusable_reviewer_calls,

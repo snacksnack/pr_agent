@@ -368,3 +368,25 @@ def test_review_pull_request_flag_off_never_touches_the_async_client(pr, repo):
     assert result.mode == "single" and result.summary == "single loop"
     assert async_client.messages.calls == []
     assert result.stage_usage == {} and result.reviewers_run == []
+
+
+def test_empty_checkout_skips_the_scout_and_the_reviewers_still_run(pr, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    sync = _sync()
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(pr, RepoTools(empty), sync, async_client)
+    assert sync.messages.calls == []
+    assert result.brief.startswith("(scout skipped: no repository checkout")
+    assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
+    assert set(result.stage_latency_ms) == {"scout", "fan_out"}
+
+
+def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
+    sync = _sync(*SCOUT, [_use("verify_findings", verdicts=[])])
+    async_client = _async(
+        WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
+    )
+    result = _run(pr, repo, sync, async_client, verify=True)
+    assert set(result.stage_latency_ms) == {"scout", "fan_out", "verifier"}
+    assert all(v >= 0 for v in result.stage_latency_ms.values())

@@ -87,7 +87,12 @@ def looks_like_workflow(f: ChangedFile) -> bool:
     return "n8n-nodes-base" in patch or '"nodes"' in patch
 
 
-def plan_review(pr: PullRequest) -> ReviewPlan:
+def plan_review(pr: PullRequest, *, explorable: bool = True) -> ReviewPlan:
+    """The plan for ``pr``. ``explorable`` is whether the repo tools have a
+    repository behind them; without one (the dry-run CLI with no
+    ``--repo-path``) the scout would spend its turns learning that every
+    tool call fails, so Python skips it and the reviewers work from the
+    diff, which is what they would have got anyway."""
     files = list(pr.files)
     docs_only = bool(files) and all(is_doc(f.filename) for f in files)
     manifests = [f.filename for f in files if is_manifest(f.filename)]
@@ -100,6 +105,10 @@ def plan_review(pr: PullRequest) -> ReviewPlan:
         reasons.append("documentation-only change: scout and repo_context skipped")
     else:
         reviewers.append(REPO_CONTEXT)
+    scout = not docs_only
+    if scout and not explorable:
+        scout = False
+        reasons.append("no repository checkout to explore: scout skipped")
 
     dimensions = list(CHANGE_INTENT.dimensions)
     if manifests:
@@ -112,4 +121,4 @@ def plan_review(pr: PullRequest) -> ReviewPlan:
         dimensions.remove(_N8N)
     reviewers.append(CHANGE_INTENT.narrowed(tuple(dimensions)))
 
-    return ReviewPlan(scout=not docs_only, reviewers=tuple(reviewers), reasons=tuple(reasons))
+    return ReviewPlan(scout=scout, reviewers=tuple(reviewers), reasons=tuple(reasons))

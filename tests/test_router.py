@@ -75,3 +75,10 @@ def test_empty_pr_still_gets_the_toolless_reviewers():
     plan = router.plan_review(_pr())
     assert plan.scout is True  # nothing says it is docs-only; the scout will find nothing
     assert "diff_local" in plan.names and "change_intent" in plan.names
+
+
+def test_nothing_to_explore_skips_the_scout_but_keeps_every_reviewer():
+    plan = router.plan_review(_pr(ChangedFile("app/x.py", "modified")), explorable=False)
+    assert plan.scout is False
+    assert plan.names == ["diff_local", "repo_context", "change_intent"]
+    assert any("no repository checkout" in r for r in plan.reasons)

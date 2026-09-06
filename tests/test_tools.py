@@ -255,3 +255,17 @@ def test_grep_and_list_dir_skip_lock_files(repo_with_lock):
 def test_the_read_file_schema_tells_the_model_lock_files_are_off_limits():
     read_tool = next(t for t in TOOL_SCHEMAS if t["name"] == "read_file")
     assert "lock files" in read_tool["description"]
+
+
+def test_explorable_is_false_for_an_empty_root(tmp_path):
+    """RC1-390: the dry-run CLI hands the agent an empty directory when it
+    has no checkout; the router skips the scout on it."""
+    from app.agent.tools import RepoTools
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert RepoTools(empty).explorable is False
+    (empty / ".git").mkdir()
+    assert RepoTools(empty).explorable is False  # noise dirs do not count
+    (empty / "a.py").write_text("x = 1\n")
+    assert RepoTools(empty).explorable is True

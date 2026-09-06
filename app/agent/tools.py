@@ -141,6 +141,12 @@ class RepoTools:
         if not self.root.is_dir():
             raise ToolError(f"repo root is not a directory: {root}")
 
+    @property
+    def explorable(self) -> bool:
+        """Whether there is anything here to explore (RC1-390). The dry-run
+        CLI hands the agent an empty directory when it has no checkout."""
+        return any(child.name not in IGNORED_DIRS for child in self.root.iterdir())
+
     # -- path safety -----------------------------------------------------
 
     def _resolve(self, rel: str) -> Path:
