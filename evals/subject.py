@@ -12,6 +12,8 @@ than the GitHub round-trip would mean scoring a pipeline nobody runs.
 * **severity** — did it meet the corpus's floor
 * **noise** — how much else came back, and (on the clean case) whether anything
   came back at all
+* **precision** (RC1-387) — on a case with a planted decoy, whether the decoy
+  drew a `warning` or worse. A `nit` on it is recorded, not failed.
 
 They are separate because the fixes are separate. A missed defect is a rubric
 gap; a defect found and mislabelled `general` is a taxonomy problem; a defect
@@ -65,9 +67,10 @@ CASES: tuple[Case, ...] = tuple(
             ("finds-the-planted-defect", "categorises-it-correctly", "severity-is-calibrated")
             if case.category
             else ("raises-no-blocker-on-a-clean-diff",)
+            + (("does-not-flag-the-decoy",) if case.trap else ())
         )
         + ("exit-code-matches-the-verdict-policy",),
-        tags=("pr-review", case.category or "clean"),
+        tags=("pr-review", case.category or ("precision" if case.trap else "clean")),
     )
     for case in corpus.CASES
 )
@@ -88,7 +91,15 @@ def prompt_version() -> str:
     import hashlib
 
     material = (prompts.REVIEW_RUBRIC + prompts.SEVERITY_GUIDANCE + prompts.SYSTEM_PROMPT).encode()
-    return f"rubric-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    version = f"rubric-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    if settings.review_verify_findings:
+        # RC1-387: a run with the verifier on is a different subject version —
+        # the two are compared against each other, never averaged together.
+        from app.agent import verifier
+
+        material = (verifier.VERIFIER_INSTRUCTIONS).encode()
+        version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    return version
 
 
 def version() -> SubjectVersion:
@@ -124,6 +135,36 @@ def _about_the_plant(finding: Finding, case: corpus.PlantedCase) -> bool:
     if case.evidence:
         return any(token.lower() in haystack for token in case.evidence)
     return any(name.split("/")[-1].lower() in haystack for name, _ in case.files)
+
+
+def _about_the_decoy(finding: Finding, case: corpus.PlantedCase) -> bool:
+    """Is this finding about the planted decoy? Same generous matching as
+    `_about_the_plant`, over `trap` tokens instead of `evidence`."""
+    haystack = f"{finding.message} {finding.suggestion or ''}".lower()
+    return any(token.lower() in haystack for token in case.trap)
+
+
+def _score_decoy(case: corpus.PlantedCase, findings: list[Finding]) -> CharacteristicResult:
+    """The decoy drew nothing at `warning` or above (RC1-387).
+
+    A `nit` is tolerated and counted in the observations. The rubric's own
+    warning is that over-flagging trains people to ignore reviews, and the
+    thing people learn to ignore is a warning that was wrong — a hedged nit
+    on a deliberate pattern is a smaller cost, and failing it would push the
+    reviewer toward silence rather than calibration.
+    """
+    on_decoy = [f for f in findings if _about_the_decoy(f, case)]
+    raised = [f for f in on_decoy if _rank(f.severity) >= _SEVERITY_RANK["warning"]]
+    if raised:
+        detail = (
+            f"{len(raised)} finding(s) at warning or above on the decoy: "
+            f"[{raised[0].severity}/{raised[0].category}] {raised[0].message[:90]!r}"
+        )
+    elif on_decoy:
+        detail = f"decoy drew {len(on_decoy)} nit(s) only, tolerated"
+    else:
+        detail = "decoy drew nothing"
+    return CharacteristicResult(name="does-not-flag-the-decoy", passed=not raised, detail=detail)
 
 
 def _score_planted(case: corpus.PlantedCase, findings: list[Finding]) -> list[CharacteristicResult]:
@@ -216,6 +257,8 @@ def run(case: Case) -> CaseResult:
                 ),
             )
         ]
+        if planted.trap:
+            results.append(_score_decoy(planted, findings))
 
     results.append(_verdict(planted, exit_code, findings))
     if planted.category == "n8n":
@@ -244,8 +287,35 @@ def run(case: Case) -> CaseResult:
                 if f.severity == "blocker" and f.category not in settings.block_on
             ),
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
+            # RC1-387: what the decoy drew, by severity, on a precision case.
+            "decoy_by_severity": {
+                s: sum(
+                    1 for f in findings if _about_the_decoy(f, planted) and f.severity == s
+                )
+                for s in _SEVERITY_RANK
+            }
+            if planted.trap
+            else {},
+            # RC1-387: what the verifier did, when it ran. Zero and false when
+            # the flag is off, so a flag-off run reads as such in the record.
+            "verifier": _verifier_observations(result),
         },
     )
+
+
+def _verifier_observations(result: ReviewResult | None) -> dict:
+    if result is None:
+        return {"ran": False}
+    return {
+        "ran": result.verified,
+        "dropped": len(result.verifier_dropped),
+        "downgraded": result.verifier_downgraded,
+        "input_tokens": result.verifier_input_tokens,
+        "output_tokens": result.verifier_output_tokens,
+        "dropped_messages": [
+            f"[{f.severity}/{f.category}] {f.message[:120]}" for f in result.verifier_dropped
+        ],
+    }
 
 
 def _verdict(
