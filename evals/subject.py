@@ -12,6 +12,8 @@ than the GitHub round-trip would mean scoring a pipeline nobody runs.
 * **severity** — did it meet the corpus's floor
 * **noise** — how much else came back, and (on the clean case) whether anything
   came back at all
+* **precision** (RC1-387) — on a case with a planted decoy, whether the decoy
+  drew a `warning` or worse. A `nit` on it is recorded, not failed.
 
 They are separate because the fixes are separate. A missed defect is a rubric
 gap; a defect found and mislabelled `general` is a taxonomy problem; a defect
@@ -35,6 +37,7 @@ from __future__ import annotations
 import io
 import tempfile
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from agent_evals import pricing
@@ -44,7 +47,7 @@ from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion,
 from app import review as review_cli
 from app.agent import prompts
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult
+from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 from evals import corpus
 
 NAME = "pr-review"
@@ -65,9 +68,10 @@ CASES: tuple[Case, ...] = tuple(
             ("finds-the-planted-defect", "categorises-it-correctly", "severity-is-calibrated")
             if case.category
             else ("raises-no-blocker-on-a-clean-diff",)
+            + (("does-not-flag-the-decoy",) if case.trap else ())
         )
         + ("exit-code-matches-the-verdict-policy",),
-        tags=("pr-review", case.category or "clean"),
+        tags=("pr-review", case.category or ("precision" if case.trap else "clean")),
     )
     for case in corpus.CASES
 )
@@ -88,7 +92,15 @@ def prompt_version() -> str:
     import hashlib
 
     material = (prompts.REVIEW_RUBRIC + prompts.SEVERITY_GUIDANCE + prompts.SYSTEM_PROMPT).encode()
-    return f"rubric-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    version = f"rubric-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    if settings.review_verify_findings:
+        # RC1-387: a run with the verifier on is a different subject version —
+        # the two are compared against each other, never averaged together.
+        from app.agent import verifier
+
+        material = (verifier.VERIFIER_INSTRUCTIONS).encode()
+        version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    return version
 
 
 def version() -> SubjectVersion:
@@ -124,6 +136,36 @@ def _about_the_plant(finding: Finding, case: corpus.PlantedCase) -> bool:
     if case.evidence:
         return any(token.lower() in haystack for token in case.evidence)
     return any(name.split("/")[-1].lower() in haystack for name, _ in case.files)
+
+
+def _about_the_decoy(finding: Finding, case: corpus.PlantedCase) -> bool:
+    """Is this finding about the planted decoy? Same generous matching as
+    `_about_the_plant`, over `trap` tokens instead of `evidence`."""
+    haystack = f"{finding.message} {finding.suggestion or ''}".lower()
+    return any(token.lower() in haystack for token in case.trap)
+
+
+def _score_decoy(case: corpus.PlantedCase, findings: list[Finding]) -> CharacteristicResult:
+    """The decoy drew nothing at `warning` or above (RC1-387).
+
+    A `nit` is tolerated and counted in the observations. The rubric's own
+    warning is that over-flagging trains people to ignore reviews, and the
+    thing people learn to ignore is a warning that was wrong — a hedged nit
+    on a deliberate pattern is a smaller cost, and failing it would push the
+    reviewer toward silence rather than calibration.
+    """
+    on_decoy = [f for f in findings if _about_the_decoy(f, case)]
+    raised = [f for f in on_decoy if _rank(f.severity) >= _SEVERITY_RANK["warning"]]
+    if raised:
+        detail = (
+            f"{len(raised)} finding(s) at warning or above on the decoy: "
+            f"[{raised[0].severity}/{raised[0].category}] {raised[0].message[:90]!r}"
+        )
+    elif on_decoy:
+        detail = f"decoy drew {len(on_decoy)} nit(s) only, tolerated"
+    else:
+        detail = "decoy drew nothing"
+    return CharacteristicResult(name="does-not-flag-the-decoy", passed=not raised, detail=detail)
 
 
 def _score_planted(case: corpus.PlantedCase, findings: list[Finding]) -> list[CharacteristicResult]:
@@ -216,6 +258,8 @@ def run(case: Case) -> CaseResult:
                 ),
             )
         ]
+        if planted.trap:
+            results.append(_score_decoy(planted, findings))
 
     results.append(_verdict(planted, exit_code, findings))
     if planted.category == "n8n":
@@ -244,8 +288,49 @@ def run(case: Case) -> CaseResult:
                 if f.severity == "blocker" and f.category not in settings.block_on
             ),
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
+            # RC1-387: the four token counts, so cache behaviour is visible.
+            "tokens": _token_breakdown(result.usage) if result else {},
+            # RC1-387: how the loop ended, so a zero-finding miss can be read
+            # as "the model submitted nothing" versus "it ran out of turns"
+            # versus "it submitted findings the loop could not parse".
+            "loop": {
+                "tool_turns": result.tool_turns,
+                "files_read": result.files_read,
+                "truncated": result.truncated,
+                "malformed_findings": result.malformed_findings,
+                "coerced_findings": result.coerced_findings,
+            }
+            if result
+            else {},
+            # RC1-387: what the decoy drew, by severity, on a precision case.
+            "decoy_by_severity": {
+                s: sum(
+                    1 for f in findings if _about_the_decoy(f, planted) and f.severity == s
+                )
+                for s in _SEVERITY_RANK
+            }
+            if planted.trap
+            else {},
+            # RC1-387: what the verifier did, when it ran. Zero and false when
+            # the flag is off, so a flag-off run reads as such in the record.
+            "verifier": _verifier_observations(result),
         },
     )
+
+
+def _verifier_observations(result: ReviewResult | None) -> dict:
+    if result is None:
+        return {"ran": False}
+    return {
+        "ran": result.verified,
+        "dropped": len(result.verifier_dropped),
+        "downgraded": result.verifier_downgraded,
+        "tokens": _token_breakdown(result.verifier_usage),
+        "cost_usd": str(_cost_usd(result.model, result.verifier_usage)) if result.verified else "0",
+        "dropped_messages": [
+            f"[{f.severity}/{f.category}] {f.message[:120]}" for f in result.verifier_dropped
+        ],
+    }
 
 
 def _verdict(
@@ -327,18 +412,55 @@ def _merged_once(
     )
 
 
+#: Prompt-cache multipliers on the input price (5-minute cache): a write costs
+#: 1.25x, a read 0.1x. Same on every current model.
+_CACHE_WRITE = Decimal("1.25")
+_CACHE_READ = Decimal("0.1")
+
+
+def _cost_usd(model: str, usage: TokenUsage) -> Decimal:
+    """Cache-aware price of a review (RC1-387).
+
+    `pricing.cost_usd` knows input and output only. After prompt caching
+    (RC1-350) the bulk of a review's context is billed as cache reads and
+    writes, so pricing the uncached `input_tokens` alone undercounted every
+    run since 2026-08-31 by roughly 2.5x. Priced here from the library's
+    per-model input price until the library learns the two cache rates.
+    """
+    base = pricing.cost_usd(model, usage.input_tokens, usage.output_tokens)  # raises on unknown
+    price = pricing.PRICES[model]
+    cached = (
+        Decimal(usage.cache_creation_input_tokens) * price.input_per_mtok * _CACHE_WRITE
+        + Decimal(usage.cache_read_input_tokens) * price.input_per_mtok * _CACHE_READ
+    ) / Decimal(1_000_000)
+    return base + cached
+
+
+def _token_breakdown(usage: TokenUsage) -> dict[str, int]:
+    return {
+        "input": usage.input_tokens,
+        "cache_creation": usage.cache_creation_input_tokens,
+        "cache_read": usage.cache_read_input_tokens,
+        "output": usage.output_tokens,
+    }
+
+
 def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
-    """Priced from the loop's summed token counts (RC1-269).
+    """Priced from the loop's summed token counts (RC1-269), cache included.
 
     Recording $0 for a billed suite is RC1-254's exact finding; the guard stays
     honest when nothing was captured — no measured tokens, no invented cost.
+    `input_tokens` on the record is the whole context the model read (uncached
+    plus cache writes plus cache reads), which is what the pre-caching runs
+    reported and so what the trend compares against.
     """
     if result is None:
         return Usage(latency_ms=latency_ms)
+    usage = result.usage
     return Usage(
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-        cost_usd=pricing.cost_usd(result.model, result.input_tokens, result.output_tokens),
+        input_tokens=usage.context_tokens,
+        output_tokens=usage.output_tokens,
+        cost_usd=_cost_usd(result.model, usage),
         latency_ms=latency_ms,
     )
 

@@ -59,6 +59,13 @@ Milestone 3 — deploy:
       `github.py` + `auth.py`; `GITHUB_MAX_ATTEMPTS`) and log visibility
       (`configure_logging()` in `webhook.py`). Runbook: `docs/rc1-120-golive.md`.
 
+Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
+- [x] RC1-387 verifier pass + precision cases + baseline corpus run
+      (`app/agent/verifier.py`, `REVIEW_VERIFY_FINDINGS`; decision record
+      with the flag-off/flag-on numbers in `docs/rc1-387-verifier.md`)
+- [ ] RC1-390 scout + three evidence-scoped reviewers + Python router
+- [ ] RC1-391 spike: port the same graph to LangGraph and compare
+
 ## Layout
 
 ```
@@ -77,6 +84,7 @@ app/
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
     reviewer.py the loop: review_pull_request(...)
+    verifier.py second pass over the loop's findings, flag-gated (RC1-387)
     prompts.py  rubric/system prompt (RC1-111)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
@@ -99,7 +107,9 @@ tests/          pytest, offline
   turns, and files read are all capped (cost/context guardrails).
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
-  (`["leaked_secret"]`), `max_tool_turns`, `max_files_read`.
+  (`["leaked_secret"]`), `max_tool_turns`, `max_files_read`,
+  `review_verify_findings` (off; RC1-387 experiment, see
+  docs/rc1-387-verifier.md before turning it on).
 
 ## Testing
 

@@ -26,9 +26,124 @@ def test_every_category_has_a_planted_case():
 
 
 def test_there_is_exactly_one_clean_case_and_it_expects_no_defect():
-    clean = [c for c in corpus.CASES if c.category is None]
+    clean = [c for c in corpus.CASES if c.category is None and not c.trap]
     assert len(clean) == 1, "the precision proxy is one case, not a mode"
     assert clean[0].min_severity is None
+
+
+# --- RC1-387: precision cases carry a decoy ----------------------------------
+
+
+def test_precision_cases_have_a_trap_and_no_category():
+    precision = [c for c in corpus.CASES if c.trap]
+    assert len(precision) >= 2, "two decoys: the gating category and the deliberate catch-all"
+    for case in precision:
+        assert case.category is None and case.min_severity is None, case.id
+        assert case.evidence == (), f"{case.id}: a decoy is scored on trap, not evidence"
+    decoys = {c.id for c in precision}
+    assert {"benign-test-secret", "deliberate-broad-except"} <= decoys
+
+
+def test_a_planted_case_never_carries_a_trap():
+    assert not [c.id for c in corpus.CASES if c.category and c.trap]
+
+
+def test_decoy_scoring_tolerates_a_nit_and_fails_a_warning():
+    secret = corpus.BY_ID["benign-test-secret"]
+
+    nothing = subject._score_decoy(secret, [_finding(message="Consider a docstring")])
+    assert nothing.passed and "drew nothing" in nothing.detail
+
+    nit = subject._score_decoy(
+        secret, [_finding(severity="nit", message="Hardcoded key in test; fine, but note it")]
+    )
+    assert nit.passed and "tolerated" in nit.detail
+
+    warning = subject._score_decoy(
+        secret,
+        [_finding(severity="warning", category="leaked_secret", message="Committed secret")],
+    )
+    assert not warning.passed and "leaked_secret" in warning.detail
+
+    blocker = subject._score_decoy(
+        secret, [_finding(severity="blocker", message="Hardcoded credential")]
+    )
+    assert not blocker.passed
+
+
+def test_precision_cases_expect_the_decoy_characteristic():
+    by_id = {c.id: c for c in subject.CASES}
+    assert "does-not-flag-the-decoy" in by_id["benign-test-secret"].expect
+    assert "raises-no-blocker-on-a-clean-diff" in by_id["benign-test-secret"].expect
+    assert "does-not-flag-the-decoy" not in by_id["clean"].expect
+    assert "precision" in by_id["deliberate-broad-except"].tags
+
+
+def test_verifier_observations_read_false_when_it_did_not_run():
+    from app.models import ReviewResult
+
+    assert subject._verifier_observations(None) == {"ran": False}
+    off = subject._verifier_observations(ReviewResult())
+    assert off["ran"] is False and off["dropped"] == 0
+    on = subject._verifier_observations(
+        ReviewResult(
+            model="claude-sonnet-4-6",
+            verified=True,
+            verifier_dropped=[_finding(message="gone")],
+            verifier_downgraded=2,
+        )
+    )
+    assert on["ran"] and on["dropped"] == 1 and on["downgraded"] == 2
+    assert on["dropped_messages"] == ["[warning/security] gone"]
+
+
+def test_cost_prices_cache_writes_and_reads_not_just_uncached_input():
+    """RC1-387: every run since prompt caching (RC1-350, 2026-08-31) priced only
+    the uncached `input_tokens` — 5 to 8 per case where the context was ~10K —
+    and reported a review at ~40% of its real cost. Cache writes are 1.25x
+    the input price, reads 0.1x; both have to be in the number."""
+    from decimal import Decimal
+
+    from app.models import TokenUsage
+
+    price = subject.pricing.PRICES["claude-sonnet-4-6"]
+    usage = TokenUsage(
+        input_tokens=8, output_tokens=1000,
+        cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+    )
+    cost = subject._cost_usd("claude-sonnet-4-6", usage)
+    expected = (
+        Decimal(8) * price.input_per_mtok
+        + Decimal(1000) * price.output_per_mtok
+        + Decimal(4000) * price.input_per_mtok * Decimal("1.25")
+        + Decimal(6000) * price.input_per_mtok * Decimal("0.1")
+    ) / Decimal(1_000_000)
+    assert cost == expected
+    uncached_only = subject.pricing.cost_usd("claude-sonnet-4-6", 8, 1000)
+    assert cost > uncached_only, "the cache tokens are not free"
+
+    from app.models import ReviewResult
+
+    recorded = subject._usage(
+        1.0,
+        ReviewResult(
+            model="claude-sonnet-4-6", input_tokens=8, output_tokens=1000,
+            cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+        ),
+    )
+    assert recorded.input_tokens == 10008, "the record carries the whole context read"
+    assert recorded.cost_usd == expected
+
+
+def test_prompt_version_changes_when_the_verifier_is_on(monkeypatch):
+    """A flag-on run is a different subject version, never averaged with flag-off."""
+    from app.config import Settings
+
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
+    off = subject.prompt_version()
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_verify_findings=True))
+    on = subject.prompt_version()
+    assert on.startswith(off) and "+verify-sha256:" in on
 
 
 def test_case_ids_are_unique():

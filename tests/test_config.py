@@ -43,3 +43,10 @@ def test_skip_authors_empty_reviews_everyone():
 def test_limits_must_be_positive():
     with pytest.raises(ValueError):
         Settings(_env_file=None, max_tool_turns=0)
+
+
+def test_verifier_is_off_by_default_and_parses_env_booleans():
+    """RC1-387: the verifier is an experiment behind a flag until the ADR says otherwise."""
+    assert Settings(_env_file=None).review_verify_findings is False
+    assert Settings(_env_file=None, review_verify_findings="1").review_verify_findings is True
+    assert Settings(_env_file=None, review_verify_model=None).review_verify_model is None

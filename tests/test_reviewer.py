@@ -115,6 +115,36 @@ def test_token_usage_is_summed_across_every_turn(repo, pr):
     assert result.output_tokens == 30
 
 
+def test_cache_tokens_are_summed_across_turns(repo, pr):
+    """RC1-387: since RC1-350 most of the context is cache reads, which the API
+    reports outside `input_tokens`; a review's cost needs all four counts."""
+    scripted = [
+        [_use("t1", "grep", pattern="TODO")],
+        [_submit("t2", "fine", [])],
+    ]
+    client = FakeClient(scripted)
+    usages = iter([(10, 5, 2000, 0), (12, 6, 0, 2000)])
+
+    def create(**kwargs):
+        content = client.messages._scripted.pop(0)
+        i, o, w, r = next(usages)
+        return SimpleNamespace(
+            content=content,
+            usage=SimpleNamespace(
+                input_tokens=i, output_tokens=o,
+                cache_creation_input_tokens=w, cache_read_input_tokens=r,
+            ),
+        )
+
+    client.messages.create = create
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=10, max_files_read=10)
+
+    assert (result.input_tokens, result.output_tokens) == (22, 11)
+    assert result.cache_creation_input_tokens == 2000
+    assert result.cache_read_input_tokens == 2000
+    assert result.usage.context_tokens == 4022
+
+
 def test_a_fake_without_usage_records_zero_tokens(repo, pr):
     """Fakes and older SDK shapes omit usage; the loop records zero, not a crash."""
     client = FakeClient([[_submit("t1", "fine", [])]])
@@ -275,6 +305,31 @@ def test_forced_submit_nudge_carries_the_moving_breakpoint(repo, pr):
 
 
 # --- malformed findings are skipped, not fatal ---------------------------
+
+def test_malformed_findings_are_counted_not_just_skipped(repo, pr):
+    """RC1-387: a silent skip left three zero-finding corpus misses unexplainable."""
+    client = FakeClient([[_submit("t1", "s", [
+        {"severity": "warning", "category": "docs", "message": "fine"},
+        {"severity": "warning"},              # no message
+        {"category": "docs", "message": "m"},  # no severity
+        "not a dict",
+    ])]])
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=5, max_files_read=5)
+    assert len(result.findings) == 1
+    assert result.malformed_findings == 3
+
+
+def test_an_unknown_severity_is_coerced_to_warning_and_counted(repo, pr):
+    """RC1-387: the schema enum does not bind the model; one live review came
+    back with severity 'breaking_change' and would have been posted as such."""
+    client = FakeClient([[_submit("t1", "s", [
+        {"severity": "breaking_change", "category": "breaking_change", "message": "m"},
+        {"severity": "nit", "category": "docs", "message": "n"},
+    ])]])
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=5, max_files_read=5)
+    assert [f.severity for f in result.findings] == ["warning", "nit"]
+    assert result.coerced_findings == 1
+
 
 def test_malformed_findings_are_skipped(repo, pr):
     scripted = [

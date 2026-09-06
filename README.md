@@ -16,7 +16,8 @@ risk, and PR-description-vs-diff drift.
 ## How we know the reviews are any good
 
 `evals/` scores the reviewer against diffs with defects planted on purpose — one
-per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff. It runs
+per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff and two
+diffs with a planted *decoy* (RC1-387). It runs
 through the real dry-run CLI with only the GitHub fetch stubbed, so the prompts,
 the loop, the deterministic n8n check, the merge and the verdict policy are all
 the shipped ones. Harness:
@@ -39,8 +40,14 @@ for all three and point at none of them.
 
 **The clean diff is the load-bearing case.** Recall alone is gamed by flagging
 everything, which is the failure this agent's own prompt warns about:
-*"over-flagging trains people to ignore reviews."* Latest run: **13/13 planted
-defects found, 1 advisory finding on the clean diff, 0 blockers.**
+*"over-flagging trains people to ignore reviews."* Recall is **12–13 of 13 per
+run** — four consecutive baselines each missed at most one case, a different one
+each time — so a single run cannot show a one-case change. Latest pair
+(2026-09-06, [decision record](docs/rc1-387-verifier.md)): flag off 12/13,
+2 nits on the clean diff, 1/2 decoys held, $0.44; flag on 13/13, 1 nit, 2/2,
+$0.55. Two precision cases each plant a *decoy* — a pattern the rubric names
+as a defect, in a context where it is fine — and score the reviewer on leaving
+it alone.
 
 **Only `leaked_secret` gates.** `block_on` is a category list, not a severity
 threshold, so a `blocker`-severity finding in any other category stays advisory.
@@ -237,6 +244,8 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
+| `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
+| `REVIEW_VERIFY_MODEL` | Model for the verifier pass; unset = `REVIEW_MODEL` | — |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |

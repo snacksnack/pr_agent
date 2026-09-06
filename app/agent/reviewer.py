@@ -27,12 +27,17 @@ from app.agent.prompts import (
 )
 from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult
+from app.models import SEVERITY_ORDER, Finding, PullRequest, ReviewResult, TokenUsage
 
 # Max characters of inline diff to put in the seed prompt; the agent can read
 # full files via tools if it needs more than this.
 MAX_DIFF_CHARS = 50_000
 DEFAULT_MAX_TOKENS = 4096
+# Per-request ceiling for the SDK client the loop builds itself (RC1-387). The
+# SDK default is ten minutes with two retries, so one stalled response held a
+# corpus case for half an hour; a review turn that has not answered in this
+# long is not going to. Retries still apply on top of it.
+REQUEST_TIMEOUT_S = 180
 
 ALL_TOOLS = [*TOOL_SCHEMAS, SUBMIT_TOOL]
 
@@ -88,6 +93,15 @@ def format_pr_for_review(
     checks that ran first), they are listed as already-recorded so the model
     builds on them rather than duplicating them.
     """
+    return "\n".join([*render_pr(pr, precomputed_findings), "", INSTRUCTIONS])
+
+
+def render_pr(
+    pr: PullRequest, precomputed_findings: list[Finding] | None = None
+) -> list[str]:
+    """The PR as the model sees it — metadata, description, bounded diff —
+    without the procedural instructions. Shared with the verifier (RC1-387)
+    so both passes read the same rendering of the same change."""
     parts = [
         f"Pull request: {pr.slug}",
         f"Title: {pr.title}",
@@ -128,9 +142,7 @@ def format_pr_for_review(
     precomputed = format_precomputed_findings(precomputed_findings)
     if precomputed:
         parts.append(precomputed)
-
-    parts.extend(["", INSTRUCTIONS])
-    return "\n".join(parts)
+    return parts
 
 
 def _user_text(text: str) -> dict:
@@ -174,12 +186,19 @@ def _create(
     return client.messages.create(**kwargs)
 
 
-def _tokens(response: Any) -> tuple[int, int]:
-    """Input/output token counts of one response, zero when a fake omits them."""
+def _tokens(response: Any) -> TokenUsage:
+    """One response's token counts, zero when a fake omits them.
+
+    All four fields: since RC1-350 most of the context is served from the
+    prompt cache and reported as ``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``, not ``input_tokens``.
+    """
     usage = _get(response, "usage")
-    return (
-        _get(usage, "input_tokens", 0) or 0,
-        _get(usage, "output_tokens", 0) or 0,
+    return TokenUsage(
+        input_tokens=_get(usage, "input_tokens", 0) or 0,
+        output_tokens=_get(usage, "output_tokens", 0) or 0,
+        cache_creation_input_tokens=_get(usage, "cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=_get(usage, "cache_read_input_tokens", 0) or 0,
     )
 
 
@@ -190,17 +209,24 @@ def _result_from_submission(
     tool_turns: int,
     files_read: int,
     truncated: bool,
-    input_tokens: int,
-    output_tokens: int,
+    usage: TokenUsage,
 ) -> ReviewResult:
     findings: list[Finding] = []
+    malformed = 0
+    coerced = 0
     for item in payload.get("findings") or []:
         if not isinstance(item, dict):
+            malformed += 1
             continue
         severity = item.get("severity")
         message = item.get("message")
         if not severity or not message:
-            continue  # skip malformed findings rather than crash
+            malformed += 1  # skip malformed findings rather than crash, but count them
+            continue
+        if str(severity) not in SEVERITY_ORDER:
+            # The enum in the tool schema guides the model; it does not bind it.
+            coerced += 1
+            severity = "warning"
         line = item.get("line")
         findings.append(
             Finding(
@@ -219,8 +245,12 @@ def _result_from_submission(
         tool_turns=tool_turns,
         files_read=files_read,
         truncated=truncated,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        malformed_findings=malformed,
+        coerced_findings=coerced,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
     )
 
 
@@ -234,6 +264,7 @@ def review_pull_request(
     max_files_read: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
+    verify: bool | None = None,
 ) -> ReviewResult:
     """Run the agentic review loop over a PR and return structured findings.
 
@@ -241,15 +272,20 @@ def review_pull_request(
     ran before the loop; they are shown to the model as already-recorded (so it
     doesn't duplicate them) but are NOT merged here — the caller owns merging
     them into the final result, keeping this function's output the model's own.
+
+    ``verify`` (RC1-387) runs the verifier pass over the loop's findings before
+    returning; ``None`` defers to ``settings.review_verify_findings``. The
+    deterministic findings are never verified — they are not the model's.
     """
     model = model or settings.review_model
+    verify = settings.review_verify_findings if verify is None else verify
     max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
 
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
 
     messages: list[dict] = [
         _user_text(format_pr_for_review(pull_request, precomputed_findings))
@@ -257,15 +293,12 @@ def review_pull_request(
     files_read = 0
     turns = 0
     truncated = False
-    input_tokens = 0
-    output_tokens = 0
+    usage = TokenUsage()
 
     for _ in range(max_tool_turns):
         turns += 1
         response = _create(client, model=model, messages=messages, max_tokens=max_tokens)
-        used_in, used_out = _tokens(response)
-        input_tokens += used_in
-        output_tokens += used_out
+        usage = usage + _tokens(response)
         blocks = _normalize_blocks(_get(response, "content"))
         messages.append({"role": "assistant", "content": blocks})
 
@@ -294,37 +327,47 @@ def review_pull_request(
         messages.append({"role": "user", "content": tool_results})
 
         if submission is not None:
-            return _result_from_submission(
+            result = _result_from_submission(
                 submission,
                 model=model,
                 tool_turns=turns,
                 files_read=files_read,
                 truncated=truncated,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                usage=usage,
             )
+            return _maybe_verify(result, pull_request, client, verify=verify)
     else:
         # Ran the full turn budget without submitting.
         truncated = True
 
     # Force a final structured submission.
-    submission, (used_in, used_out) = _force_submit(
-        client, messages, model=model, max_tokens=max_tokens
-    )
-    return _result_from_submission(
+    submission, forced_usage = _force_submit(client, messages, model=model, max_tokens=max_tokens)
+    result = _result_from_submission(
         submission,
         model=model,
         tool_turns=turns,
         files_read=files_read,
         truncated=truncated,
-        input_tokens=input_tokens + used_in,
-        output_tokens=output_tokens + used_out,
+        usage=usage + forced_usage,
     )
+    return _maybe_verify(result, pull_request, client, verify=verify)
+
+
+def _maybe_verify(
+    result: ReviewResult, pull_request: PullRequest, client: Any, *, verify: bool
+) -> ReviewResult:
+    """Run the verifier pass (RC1-387) when it is on and there is something
+    to verify. A clean review pays nothing extra."""
+    if not verify or not result.findings:
+        return result
+    from app.agent.verifier import verify_findings
+
+    return verify_findings(pull_request, result, client=client)
 
 
 def _force_submit(
     client: Any, messages: list, *, model: str, max_tokens: int
-) -> tuple[dict, tuple[int, int]]:
+) -> tuple[dict, TokenUsage]:
     """Make one final call that must call submit_review.
 
     Returns the submission's input plus the call's token counts, so the forced

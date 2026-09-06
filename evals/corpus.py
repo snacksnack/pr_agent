@@ -28,6 +28,20 @@ flags everything is the failure mode this repo exists to avoid — its own syste
 prompt says *"over-flagging trains people to ignore reviews"*. The clean case is
 a real, ordinary change: it must draw no blocker, and the number of findings it
 does draw is reported as the noise figure.
+
+## The precision cases carry a decoy (RC1-387)
+
+The clean case measures noise on a diff with nothing to say. It cannot measure
+the harder failure: a diff that *looks* like it has a defect and does not. Each
+precision case plants a decoy — a pattern the rubric names as a defect, in a
+context where a competent reviewer would agree it is fine — and asserts the
+reviewer does not raise it at `warning` or above. A `nit` on the decoy is
+recorded, not failed: the harm the rubric warns about is warnings people learn
+to ignore, and a hedged nit is a different, smaller cost. The decoys are drawn
+from the two categories where a false positive costs the most: `leaked_secret`,
+because it is the only category that blocks a merge, and `error_handling`,
+because a deliberate catch-all in a worker is the pattern this repo's own
+webhook uses.
 """
 
 from __future__ import annotations
@@ -55,6 +69,11 @@ class PlantedCase:
     #: Substrings, any of which shows the finding is about the planted defect
     #: rather than something else in the same diff.
     evidence: tuple[str, ...] = ()
+    #: Precision cases only (RC1-387): substrings that show a finding is about
+    #: the *decoy* — the pattern that looks like a defect and is not. A case
+    #: with a trap and no category is scored on not raising it, the opposite
+    #: of `evidence`.
+    trap: tuple[str, ...] = ()
     notes: str = ""
     extra_files: tuple[ChangedFile, ...] = field(default=())
     #: Files materialised into a temporary checkout for this case, as
@@ -392,6 +411,91 @@ CASES: tuple[PlantedCase, ...] = (
   }
 }
 ''',
+            ),
+        ),
+    ),
+    # Precision cases (RC1-387). Each plants a decoy that the rubric would
+    # name as a defect out of context, in a context where it is not one.
+    PlantedCase(
+        id="benign-test-secret",
+        category=None,
+        min_severity=None,
+        title="Cover the webhook signature check",
+        body=(
+            "Adds a test for verify_signature using a throwaway signing key. "
+            "The value is a test fixture, not a credential: it is not used "
+            "anywhere outside this test and matches no provider's key format."
+        ),
+        trap=("secret", "credential", "hardcod", "leak", "signing key", "committed"),
+        notes=(
+            "Decoy: leaked_secret. A placeholder HMAC key in a test file, used "
+            "only to compute the expected signature the test asserts against. "
+            "The one category that blocks a merge is the one where a false "
+            "positive costs the most, so it gets the first precision case."
+        ),
+        files=(
+            (
+                "tests/test_signature.py",
+                "@@ -0,0 +1,16 @@\n"
+                "+import hashlib\n"
+                "+import hmac\n"
+                "+\n"
+                "+from app.signature import verify_signature\n"
+                "+\n"
+                "+# Throwaway key for this test only; see the PR description.\n"
+                '+TEST_SIGNING_KEY = b"not-a-real-key-test-fixture-only"\n'
+                "+\n"
+                "+\n"
+                "+def test_verify_signature_accepts_a_matching_digest():\n"
+                '+    body = b\'{"ok": true}\'\n'
+                "+    digest = hmac.new(TEST_SIGNING_KEY, body, hashlib.sha256).hexdigest()\n"
+                '+    assert verify_signature(body, f"sha256={digest}", key=TEST_SIGNING_KEY)\n'
+                "+\n"
+                "+\n"
+                "+def test_verify_signature_rejects_a_wrong_digest():\n"
+                '+    assert not verify_signature(b"x", "sha256=00", key=TEST_SIGNING_KEY)\n',
+            ),
+        ),
+    ),
+    PlantedCase(
+        id="deliberate-broad-except",
+        category=None,
+        min_severity=None,
+        title="Keep the delivery worker alive across bad events",
+        body=(
+            "One malformed delivery was taking the background worker down with "
+            "it. The worker now catches everything at the top of the loop, logs "
+            "the traceback with the delivery id, and moves on. Narrower "
+            "exception types are not possible here: the handlers are plugins "
+            "and can raise anything."
+        ),
+        trap=("broad", "except Exception", "catch-all", "generic exception", "swallow", "bare"),
+        notes=(
+            "Decoy: error_handling. A catch-all at the top of a background "
+            "worker that logs with the traceback and continues is the pattern "
+            "this repo's own webhook uses, and the diff says why in a comment "
+            "and in the description. The swallowed-exception case is the same "
+            "construct with `pass`; the difference is the whole point.\n\n"
+            "The first version dispatched through `handlers[delivery.kind]`, "
+            "and the baseline run flagged, fairly, that the catch-all would "
+            "now mask a KeyError on an unknown kind. That is a real point "
+            "about a second construct, not about the decoy, so the dispatch "
+            "is a plain call and the fixture tests one thing."
+        ),
+        files=(
+            (
+                "app/worker.py",
+                "@@ -18,8 +18,13 @@ def run_forever(queue, dispatch):\n"
+                "     while True:\n"
+                "         delivery = queue.get()\n"
+                "-        dispatch(delivery)\n"
+                "+        # Last line of defense for a background worker: a handler\n"
+                "+        # is a plugin and may raise anything, and one bad delivery\n"
+                "+        # must not stop the rest from being processed.\n"
+                "+        try:\n"
+                "+            dispatch(delivery)\n"
+                "+        except Exception:  # noqa: BLE001\n"
+                '+            log.exception("delivery_failed id=%s", delivery.id)\n',
             ),
         ),
     ),

@@ -46,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
 
-    print(f"{len(cases)} case(s) against {settings.review_model} — this spends money.\n")
+    verify = "on" if settings.review_verify_findings else "off"
+    print(
+        f"{len(cases)} case(s) against {settings.review_model}, verifier {verify} "
+        "— this spends money.\n"
+    )
     # RC1-322: billed spend is traced spend; a no-op without DD_API_KEY.
     llmobs.enable("pr-review-agent", service="evals")
     started = datetime.now(UTC)
@@ -61,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
         extra = "" if result.error else f"{obs['findings']} finding(s), {obs['noise']} off-target"
         print_result(result, extra=extra)
 
-    planted = [r for r in results if r.case_id != "clean" and not r.error]
+    by_id = {c.id: c for c in corpus.CASES}
+    planted = [r for r in results if by_id[r.case_id].category and not r.error]
+    precision = [r for r in results if by_id[r.case_id].trap and not r.error]
     found = sum(
         1
         for r in planted
@@ -74,6 +80,22 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"  noise    {clean.observations['findings']} finding(s) on the clean diff, "
             f"{clean.observations['by_severity']['blocker']} blocker(s)"
+        )
+    if precision:
+        held = sum(
+            1
+            for r in precision
+            for c in r.characteristics
+            if c.name == "does-not-flag-the-decoy" and c.passed
+        )
+        print(f"  precision {held}/{len(precision)} decoy(s) left alone at warning or above")
+    verified = [r for r in results if not r.error and r.observations["verifier"]["ran"]]
+    if verified:
+        dropped = sum(r.observations["verifier"]["dropped"] for r in verified)
+        downgraded = sum(r.observations["verifier"]["downgraded"] for r in verified)
+        print(
+            f"  verifier ran on {len(verified)} case(s): "
+            f"{dropped} dropped, {downgraded} downgraded"
         )
     print("  (never averaged — see evals/subject.py)")
 
