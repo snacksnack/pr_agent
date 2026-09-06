@@ -298,6 +298,7 @@ def run(case: Case) -> CaseResult:
                 "files_read": result.files_read,
                 "truncated": result.truncated,
                 "malformed_findings": result.malformed_findings,
+                "coerced_findings": result.coerced_findings,
             }
             if result
             else {},

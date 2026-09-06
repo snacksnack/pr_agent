@@ -319,6 +319,18 @@ def test_malformed_findings_are_counted_not_just_skipped(repo, pr):
     assert result.malformed_findings == 3
 
 
+def test_an_unknown_severity_is_coerced_to_warning_and_counted(repo, pr):
+    """RC1-387: the schema enum does not bind the model; one live review came
+    back with severity 'breaking_change' and would have been posted as such."""
+    client = FakeClient([[_submit("t1", "s", [
+        {"severity": "breaking_change", "category": "breaking_change", "message": "m"},
+        {"severity": "nit", "category": "docs", "message": "n"},
+    ])]])
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=5, max_files_read=5)
+    assert [f.severity for f in result.findings] == ["warning", "nit"]
+    assert result.coerced_findings == 1
+
+
 def test_malformed_findings_are_skipped(repo, pr):
     scripted = [
         [_submit("t1", "mixed", [

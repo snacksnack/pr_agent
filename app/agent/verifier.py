@@ -257,6 +257,7 @@ def verify_findings(
         files_read=result.files_read,
         truncated=result.truncated,
         malformed_findings=result.malformed_findings,
+        coerced_findings=result.coerced_findings,
         input_tokens=total.input_tokens,
         output_tokens=total.output_tokens,
         cache_creation_input_tokens=total.cache_creation_input_tokens,

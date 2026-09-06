@@ -138,6 +138,11 @@ class ReviewResult:
     # with an obvious defect, and the record could not say whether the model
     # found nothing or the loop threw its answer away.
     malformed_findings: int = 0
+    # Findings whose severity was not one of blocker/warning/nit and was
+    # coerced to warning (RC1-387: the corrected flag-on run returned one
+    # with severity "breaking_change" — the tool schema's enum is advisory to
+    # the model, not enforced — and the loop would have posted it as-is).
+    coerced_findings: int = 0
     # Token spend summed across every model call in the loop, forced
     # submission included, so a caller can price the review (RC1-269). The
     # verifier pass (RC1-387), when it ran, is included in these totals and

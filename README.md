@@ -40,8 +40,14 @@ for all three and point at none of them.
 
 **The clean diff is the load-bearing case.** Recall alone is gamed by flagging
 everything, which is the failure this agent's own prompt warns about:
-*"over-flagging trains people to ignore reviews."* Latest run: **13/13 planted
-defects found, 1 advisory finding on the clean diff, 0 blockers.**
+*"over-flagging trains people to ignore reviews."* Recall is **12–13 of 13 per
+run** — four consecutive baselines each missed at most one case, a different one
+each time — so a single run cannot show a one-case change. Latest pair
+(2026-09-06, [decision record](docs/rc1-387-verifier.md)): flag off 12/13,
+2 nits on the clean diff, 1/2 decoys held, $0.44; flag on 13/13, 1 nit, 2/2,
+$0.55. Two precision cases each plant a *decoy* — a pattern the rubric names
+as a defect, in a context where it is fine — and score the reviewer on leaving
+it alone.
 
 **Only `leaked_secret` gates.** `block_on` is a category list, not a severity
 threshold, so a `blocker`-severity finding in any other category stays advisory.

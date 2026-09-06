@@ -27,7 +27,7 @@ from app.agent.prompts import (
 )
 from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult, TokenUsage
+from app.models import SEVERITY_ORDER, Finding, PullRequest, ReviewResult, TokenUsage
 
 # Max characters of inline diff to put in the seed prompt; the agent can read
 # full files via tools if it needs more than this.
@@ -213,6 +213,7 @@ def _result_from_submission(
 ) -> ReviewResult:
     findings: list[Finding] = []
     malformed = 0
+    coerced = 0
     for item in payload.get("findings") or []:
         if not isinstance(item, dict):
             malformed += 1
@@ -222,6 +223,10 @@ def _result_from_submission(
         if not severity or not message:
             malformed += 1  # skip malformed findings rather than crash, but count them
             continue
+        if str(severity) not in SEVERITY_ORDER:
+            # The enum in the tool schema guides the model; it does not bind it.
+            coerced += 1
+            severity = "warning"
         line = item.get("line")
         findings.append(
             Finding(
@@ -241,6 +246,7 @@ def _result_from_submission(
         files_read=files_read,
         truncated=truncated,
         malformed_findings=malformed,
+        coerced_findings=coerced,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,

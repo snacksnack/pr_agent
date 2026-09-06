@@ -76,10 +76,10 @@ cost signal here; the run record's per-case `cost_usd` is.
 
 ## Results
 
-Status as of 2026-09-06 11:00 ET: **the baseline is recorded; the flag-on run
-stopped after six cases when the Anthropic workspace ran out of credits.** The
-corrected pair (both flag states with cache-aware accounting and the tightened
-decoy fixture) is pending a top-up. Nothing below is averaged across runs.
+Four runs on 2026-09-06: a baseline, a flag-on run that the Anthropic
+workspace's credit balance cut off after six cases, and then — after the
+accounting fix and the fixture change below — the corrected pair. Nothing
+below is averaged across runs.
 
 ### Run 1 — flag off, baseline (`pr-review-20260906T134001`)
 
@@ -144,28 +144,113 @@ between nothing and about 25 s. The finding counts differ between runs by one
 or two on most cases with the flag *off* as well, so the finding-count column
 is run-to-run variance more than verifier effect.
 
-### Pending — the corrected pair
+### Runs 3 and 4 — the corrected pair
 
-Two more runs, flag off then flag on, with the accounting fix and the decoy
-fixture change, back to back. They give the cost comparison (the only number
-this record cannot yet state), a second sample of recall per flag state, and
-the precision result on the tightened decoy.
+Same corpus, same model, cache-aware accounting, tightened decoy fixture,
+back to back (flag off `pr-review-20260906T140338`, flag on
+`pr-review-20260906T141141`).
 
-Two runs in the store are artifacts of the outage and should be read as such
-on the trend page: `pr-review-20260906T134425` (flag on, 6 cases then 10
+| | Flag off | Flag on |
+| --- | --- | --- |
+| Recall | 12 / 13 (missed `unpinned-dependency`, zero findings) | **13 / 13** |
+| Categorized correctly | 12 / 13 (`convention-break` filed as `pr_drift`) | 13 / 13 |
+| Clean diff | 2 nits, 0 blockers | **1 nit**, 0 blockers |
+| Precision | 1 / 2 (`deliberate-broad-except` drew two warnings) | **2 / 2** |
+| Cases passing | 13 / 16 | **16 / 16** |
+| Cost, 16 cases | $0.442 | $0.546 (**+$0.104**, +23%) |
+| of which verifier calls | — | $0.134 (0.84 ¢ per call) |
+| Wall clock, 16 cases | 430 s | 482 s (**+52 s**, +3 s per case on average; range −9 s to +18 s) |
+| Verifier actions | — | 2 dropped, 5 downgraded, across 55 findings |
+
+**What the verifier did, finding by finding.** The five downgrades were all
+`warning → nit` on soft findings: a raw connection returned without error
+handling, a missing return annotation, a docstring point, and two of that
+kind. The two drops:
+
+- `benign-test-secret`: a nit that the hunk header said `+17` while the patch
+  body had 16 lines. True of the fixture, and not a review finding. A good
+  drop.
+- `breaking-signature`: *"A new required parameter `verify_tls` is added with
+  no default value. Any existing caller…"* This is a **real finding**. Two
+  other `breaking_change` findings on the same signature were kept and the
+  case still passed, so the verifier most likely read it as redundant with
+  them. It is the one action in 55 I would not have taken, and it is the
+  reason drops are logged with the model's reason rather than applied
+  silently.
+
+**What the verifier did not do.** No planted defect was dropped or
+downgraded on either the six-case partial run or this one. The recall gain
+(12 → 13) and the precision gain (1 / 2 → 2 / 2) are **not** the verifier's
+doing: it cannot add a finding, and on `deliberate-broad-except` it took no
+action at all — the first pass simply produced nits on the decoy this time
+where the previous run produced warnings. Both gains are first-pass
+run-to-run variance, which the three earlier baselines already showed
+spans one case in either direction. The verifier's measurable effect is the
+row of drops and downgrades and the noise line (2 → 1 on the clean diff,
+where it also took no action). Read the recall and precision rows as "not
+harmed", not as "improved by the verifier".
+
+**Cache behavior, as predicted.** Every verifier call after the first read
+1,596 tokens from cache (the system prompt) and wrote 1,000–1,700 (the diff
+plus the findings). The verifier's prefix is its own, shared across verifier
+calls within the TTL, and the cost of not sharing the loop's prefix is those
+~1.5K write tokens per call — about 0.6 ¢ of the 0.84 ¢.
+
+**Two defects the pair surfaced in the loop itself, both fixed here:**
+
+- One flag-on finding came back with `severity: "breaking_change"`. The tool
+  schema's enum guides the model but does not bind it, and
+  `_result_from_submission` only checked the field was non-empty, so the
+  finding would have been posted with a nonsense severity and sorted last.
+  Unknown severities are now coerced to `warning` and counted
+  (`coerced_findings`).
+- Three of the four flag-off runs on record missed exactly one case with
+  **zero findings** on a diff with an obvious defect, and the record could
+  not say whether the model submitted nothing, ran out of turns, or
+  submitted findings the loop threw away as malformed. The loop now counts
+  malformed findings instead of skipping them silently, and the run record
+  carries `tool_turns`, `files_read`, `truncated`, `malformed_findings` and
+  `coerced_findings` per case. The next zero-finding miss is diagnosable.
+
+Two runs in the store are artifacts of the credit outage and read as such on
+the trend page: `pr-review-20260906T134425` (flag on, 6 cases then 10
 errors) and `pr-review-20260906T134436` (flag off, 16 errors). The store is
 append-only by design.
 
 ## Decision
 
-**Deferred to the corrected pair.** Nothing so far argues against the flag:
-no planted finding was dropped or downgraded on the six verified cases, the
-one drop was the right one, and the pass is bounded to reviews that produced
-findings. What is missing is the number the story was scoped around — cost
-per review, flag off against flag on, measured correctly — and a second recall
-sample so a one-case difference is not mistaken for an effect.
+**Recommend turning the flag on in production, as a logged trial.** The
+grounds, in the order the ticket set them:
 
-The flag stays **off** in production until that section is filled in.
+1. **No recall harm.** 19 of 19 planted defects across the two flag-on runs
+   survived at their original severity.
+2. **Precision moved in the right direction where the verifier acted:** five
+   overstated warnings became nits and two low-value findings were removed.
+   It did not act on the decoy this run, so the precision *row* is variance;
+   the *actions* are the evidence.
+3. **Cost is inside the guardrail.** +0.65 ¢ per review (+23%) against
+   RC1-377's warn threshold of $6 and a real-review cost around 3–4 ¢.
+   The RC1-377 price monitor is cost per *call* and will read lower with the
+   flag on, because the verifier call is cheap; it is not the signal here.
+4. **Latency is +3 s per review on average,** on a background worker nobody
+   waits for.
+
+The one questionable drop in 55 argues for the trial being *logged*: every
+drop and downgrade goes to the webhook log with the model's reason
+(`verifier_drop`, `verifier_downgrade`), so a week of live reviews will show
+whether the `verify_tls` case was a one-off. If real findings are being
+dropped, the prompt gets a "do not drop a finding for being similar to
+another" line, or the flag comes back off — both are a one-line change.
+
+The flag is off in this branch. Turning it on is a Fly secret
+(`REVIEW_VERIFY_FINDINGS=1`) and is Reid's call, not this PR's.
+
+**Not decided by this story:** whether the reviewer should be split further.
+That is RC1-390, and it now starts from a corrected baseline: recall 12–13 of
+13 per run, cost $0.44 per 16-case corpus, and a precision score that the
+first pass alone reaches on a good run. RC1-390's cost claim has to be made
+against the *flag-on* number if the verifier ships, since the split keeps the
+verifier.
 
 ## What this story changed regardless of the flag
 
