@@ -27,7 +27,7 @@ from app.agent.prompts import (
 )
 from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult
+from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 
 # Max characters of inline diff to put in the seed prompt; the agent can read
 # full files via tools if it needs more than this.
@@ -186,12 +186,19 @@ def _create(
     return client.messages.create(**kwargs)
 
 
-def _tokens(response: Any) -> tuple[int, int]:
-    """Input/output token counts of one response, zero when a fake omits them."""
+def _tokens(response: Any) -> TokenUsage:
+    """One response's token counts, zero when a fake omits them.
+
+    All four fields: since RC1-350 most of the context is served from the
+    prompt cache and reported as ``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``, not ``input_tokens``.
+    """
     usage = _get(response, "usage")
-    return (
-        _get(usage, "input_tokens", 0) or 0,
-        _get(usage, "output_tokens", 0) or 0,
+    return TokenUsage(
+        input_tokens=_get(usage, "input_tokens", 0) or 0,
+        output_tokens=_get(usage, "output_tokens", 0) or 0,
+        cache_creation_input_tokens=_get(usage, "cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=_get(usage, "cache_read_input_tokens", 0) or 0,
     )
 
 
@@ -202,8 +209,7 @@ def _result_from_submission(
     tool_turns: int,
     files_read: int,
     truncated: bool,
-    input_tokens: int,
-    output_tokens: int,
+    usage: TokenUsage,
 ) -> ReviewResult:
     findings: list[Finding] = []
     for item in payload.get("findings") or []:
@@ -231,8 +237,10 @@ def _result_from_submission(
         tool_turns=tool_turns,
         files_read=files_read,
         truncated=truncated,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
     )
 
 
@@ -275,15 +283,12 @@ def review_pull_request(
     files_read = 0
     turns = 0
     truncated = False
-    input_tokens = 0
-    output_tokens = 0
+    usage = TokenUsage()
 
     for _ in range(max_tool_turns):
         turns += 1
         response = _create(client, model=model, messages=messages, max_tokens=max_tokens)
-        used_in, used_out = _tokens(response)
-        input_tokens += used_in
-        output_tokens += used_out
+        usage = usage + _tokens(response)
         blocks = _normalize_blocks(_get(response, "content"))
         messages.append({"role": "assistant", "content": blocks})
 
@@ -318,8 +323,7 @@ def review_pull_request(
                 tool_turns=turns,
                 files_read=files_read,
                 truncated=truncated,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                usage=usage,
             )
             return _maybe_verify(result, pull_request, client, verify=verify)
     else:
@@ -327,17 +331,14 @@ def review_pull_request(
         truncated = True
 
     # Force a final structured submission.
-    submission, (used_in, used_out) = _force_submit(
-        client, messages, model=model, max_tokens=max_tokens
-    )
+    submission, forced_usage = _force_submit(client, messages, model=model, max_tokens=max_tokens)
     result = _result_from_submission(
         submission,
         model=model,
         tool_turns=turns,
         files_read=files_read,
         truncated=truncated,
-        input_tokens=input_tokens + used_in,
-        output_tokens=output_tokens + used_out,
+        usage=usage + forced_usage,
     )
     return _maybe_verify(result, pull_request, client, verify=verify)
 
@@ -356,7 +357,7 @@ def _maybe_verify(
 
 def _force_submit(
     client: Any, messages: list, *, model: str, max_tokens: int
-) -> tuple[dict, tuple[int, int]]:
+) -> tuple[dict, TokenUsage]:
     """Make one final call that must call submit_review.
 
     Returns the submission's input plus the call's token counts, so the forced

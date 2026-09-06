@@ -144,7 +144,7 @@ def test_verify_findings_returns_a_new_result_with_the_pass_metered(pr):
     assert [f.message for f in after.findings] == ["real"]
     assert [f.message for f in after.verifier_dropped] == ["decoy"]
     assert after.verified is True
-    assert (after.verifier_input_tokens, after.verifier_output_tokens) == (500, 50)
+    assert (after.verifier_usage.input_tokens, after.verifier_usage.output_tokens) == (500, 50)
     assert (after.input_tokens, after.output_tokens) == (600, 60), "folded into the totals"
     assert before.findings[1].message == "decoy", "the input result is not mutated"
     assert after.model == "m", "the review's model, not the verifier's, names the result"
@@ -190,6 +190,32 @@ def test_model_falls_back_to_the_review_model_then_settings(pr, monkeypatch):
     client = FakeClient([_verdicts()])
     verifier.verify_findings(pr, _result(_finding()), client=client)
     assert client.messages.calls[0]["model"] == "m", "the result's model when nothing is configured"
+
+
+def test_cache_tokens_are_counted_on_the_verifier_call(pr):
+    """RC1-387: the verifier's call is mostly a fresh cache write; pricing
+    the uncached input alone would make it look nearly free."""
+    client = FakeClient([_verdicts()])
+    client.messages._usages = []
+
+    def create(**kwargs):
+        client.messages.calls.append(kwargs)
+        return SimpleNamespace(
+            content=_verdicts(),
+            usage=SimpleNamespace(
+                input_tokens=10,
+                output_tokens=5,
+                cache_creation_input_tokens=3000,
+                cache_read_input_tokens=200,
+            ),
+        )
+
+    client.messages.create = create
+    after = verifier.verify_findings(pr, _result(_finding()), client=client)
+    assert after.verifier_usage.cache_creation_input_tokens == 3000
+    assert after.verifier_usage.cache_read_input_tokens == 200
+    assert after.verifier_usage.context_tokens == 3210
+    assert after.cache_creation_input_tokens == 3000, "folded into the review's totals"
 
 
 # --- wiring into the loop -----------------------------------------------------

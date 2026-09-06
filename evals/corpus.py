@@ -475,23 +475,27 @@ CASES: tuple[PlantedCase, ...] = (
             "worker that logs with the traceback and continues is the pattern "
             "this repo's own webhook uses, and the diff says why in a comment "
             "and in the description. The swallowed-exception case is the same "
-            "construct with `pass`; the difference is the whole point."
+            "construct with `pass`; the difference is the whole point.\n\n"
+            "The first version dispatched through `handlers[delivery.kind]`, "
+            "and the baseline run flagged, fairly, that the catch-all would "
+            "now mask a KeyError on an unknown kind. That is a real point "
+            "about a second construct, not about the decoy, so the dispatch "
+            "is a plain call and the fixture tests one thing."
         ),
         files=(
             (
                 "app/worker.py",
-                "@@ -18,8 +18,14 @@ def run_forever(queue, handlers):\n"
+                "@@ -18,8 +18,13 @@ def run_forever(queue, dispatch):\n"
                 "     while True:\n"
                 "         delivery = queue.get()\n"
-                "-        handlers[delivery.kind](delivery)\n"
+                "-        dispatch(delivery)\n"
                 "+        # Last line of defense for a background worker: a handler\n"
                 "+        # is a plugin and may raise anything, and one bad delivery\n"
                 "+        # must not stop the rest from being processed.\n"
                 "+        try:\n"
-                "+            handlers[delivery.kind](delivery)\n"
+                "+            dispatch(delivery)\n"
                 "+        except Exception:  # noqa: BLE001\n"
-                '+            log.exception("delivery_failed id=%s", delivery.id)\n'
-                "+            continue\n",
+                '+            log.exception("delivery_failed id=%s", delivery.id)\n',
             ),
         ),
     ),

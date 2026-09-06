@@ -87,11 +87,52 @@ def test_verifier_observations_read_false_when_it_did_not_run():
     assert off["ran"] is False and off["dropped"] == 0
     on = subject._verifier_observations(
         ReviewResult(
-            verified=True, verifier_dropped=[_finding(message="gone")], verifier_downgraded=2
+            model="claude-sonnet-4-6",
+            verified=True,
+            verifier_dropped=[_finding(message="gone")],
+            verifier_downgraded=2,
         )
     )
     assert on["ran"] and on["dropped"] == 1 and on["downgraded"] == 2
     assert on["dropped_messages"] == ["[warning/security] gone"]
+
+
+def test_cost_prices_cache_writes_and_reads_not_just_uncached_input():
+    """RC1-387: every run since prompt caching (RC1-350, 2026-08-31) priced only
+    the uncached `input_tokens` — 5 to 8 per case where the context was ~10K —
+    and reported a review at ~40% of its real cost. Cache writes are 1.25x
+    the input price, reads 0.1x; both have to be in the number."""
+    from decimal import Decimal
+
+    from app.models import TokenUsage
+
+    price = subject.pricing.PRICES["claude-sonnet-4-6"]
+    usage = TokenUsage(
+        input_tokens=8, output_tokens=1000,
+        cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+    )
+    cost = subject._cost_usd("claude-sonnet-4-6", usage)
+    expected = (
+        Decimal(8) * price.input_per_mtok
+        + Decimal(1000) * price.output_per_mtok
+        + Decimal(4000) * price.input_per_mtok * Decimal("1.25")
+        + Decimal(6000) * price.input_per_mtok * Decimal("0.1")
+    ) / Decimal(1_000_000)
+    assert cost == expected
+    uncached_only = subject.pricing.cost_usd("claude-sonnet-4-6", 8, 1000)
+    assert cost > uncached_only, "the cache tokens are not free"
+
+    from app.models import ReviewResult
+
+    recorded = subject._usage(
+        1.0,
+        ReviewResult(
+            model="claude-sonnet-4-6", input_tokens=8, output_tokens=1000,
+            cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+        ),
+    )
+    assert recorded.input_tokens == 10008, "the record carries the whole context read"
+    assert recorded.cost_usd == expected
 
 
 def test_prompt_version_changes_when_the_verifier_is_on(monkeypatch):

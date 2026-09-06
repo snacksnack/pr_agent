@@ -37,6 +37,7 @@ from __future__ import annotations
 import io
 import tempfile
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from agent_evals import pricing
@@ -46,7 +47,7 @@ from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion,
 from app import review as review_cli
 from app.agent import prompts
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult
+from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 from evals import corpus
 
 NAME = "pr-review"
@@ -287,6 +288,8 @@ def run(case: Case) -> CaseResult:
                 if f.severity == "blocker" and f.category not in settings.block_on
             ),
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
+            # RC1-387: the four token counts, so cache behaviour is visible.
+            "tokens": _token_breakdown(result.usage) if result else {},
             # RC1-387: what the decoy drew, by severity, on a precision case.
             "decoy_by_severity": {
                 s: sum(
@@ -310,8 +313,8 @@ def _verifier_observations(result: ReviewResult | None) -> dict:
         "ran": result.verified,
         "dropped": len(result.verifier_dropped),
         "downgraded": result.verifier_downgraded,
-        "input_tokens": result.verifier_input_tokens,
-        "output_tokens": result.verifier_output_tokens,
+        "tokens": _token_breakdown(result.verifier_usage),
+        "cost_usd": str(_cost_usd(result.model, result.verifier_usage)) if result.verified else "0",
         "dropped_messages": [
             f"[{f.severity}/{f.category}] {f.message[:120]}" for f in result.verifier_dropped
         ],
@@ -397,18 +400,55 @@ def _merged_once(
     )
 
 
+#: Prompt-cache multipliers on the input price (5-minute cache): a write costs
+#: 1.25x, a read 0.1x. Same on every current model.
+_CACHE_WRITE = Decimal("1.25")
+_CACHE_READ = Decimal("0.1")
+
+
+def _cost_usd(model: str, usage: TokenUsage) -> Decimal:
+    """Cache-aware price of a review (RC1-387).
+
+    `pricing.cost_usd` knows input and output only. After prompt caching
+    (RC1-350) the bulk of a review's context is billed as cache reads and
+    writes, so pricing the uncached `input_tokens` alone undercounted every
+    run since 2026-08-31 by roughly 2.5x. Priced here from the library's
+    per-model input price until the library learns the two cache rates.
+    """
+    base = pricing.cost_usd(model, usage.input_tokens, usage.output_tokens)  # raises on unknown
+    price = pricing.PRICES[model]
+    cached = (
+        Decimal(usage.cache_creation_input_tokens) * price.input_per_mtok * _CACHE_WRITE
+        + Decimal(usage.cache_read_input_tokens) * price.input_per_mtok * _CACHE_READ
+    ) / Decimal(1_000_000)
+    return base + cached
+
+
+def _token_breakdown(usage: TokenUsage) -> dict[str, int]:
+    return {
+        "input": usage.input_tokens,
+        "cache_creation": usage.cache_creation_input_tokens,
+        "cache_read": usage.cache_read_input_tokens,
+        "output": usage.output_tokens,
+    }
+
+
 def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
-    """Priced from the loop's summed token counts (RC1-269).
+    """Priced from the loop's summed token counts (RC1-269), cache included.
 
     Recording $0 for a billed suite is RC1-254's exact finding; the guard stays
     honest when nothing was captured — no measured tokens, no invented cost.
+    `input_tokens` on the record is the whole context the model read (uncached
+    plus cache writes plus cache reads), which is what the pre-caching runs
+    reported and so what the trend compares against.
     """
     if result is None:
         return Usage(latency_ms=latency_ms)
+    usage = result.usage
     return Usage(
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-        cost_usd=pricing.cost_usd(result.model, result.input_tokens, result.output_tokens),
+        input_tokens=usage.context_tokens,
+        output_tokens=usage.output_tokens,
+        cost_usd=_cost_usd(result.model, usage),
         latency_ms=latency_ms,
     )
 

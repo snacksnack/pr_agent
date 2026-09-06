@@ -115,6 +115,36 @@ def test_token_usage_is_summed_across_every_turn(repo, pr):
     assert result.output_tokens == 30
 
 
+def test_cache_tokens_are_summed_across_turns(repo, pr):
+    """RC1-387: since RC1-350 most of the context is cache reads, which the API
+    reports outside `input_tokens`; a review's cost needs all four counts."""
+    scripted = [
+        [_use("t1", "grep", pattern="TODO")],
+        [_submit("t2", "fine", [])],
+    ]
+    client = FakeClient(scripted)
+    usages = iter([(10, 5, 2000, 0), (12, 6, 0, 2000)])
+
+    def create(**kwargs):
+        content = client.messages._scripted.pop(0)
+        i, o, w, r = next(usages)
+        return SimpleNamespace(
+            content=content,
+            usage=SimpleNamespace(
+                input_tokens=i, output_tokens=o,
+                cache_creation_input_tokens=w, cache_read_input_tokens=r,
+            ),
+        )
+
+    client.messages.create = create
+    result = review_pull_request(pr, repo, client=client, max_tool_turns=10, max_files_read=10)
+
+    assert (result.input_tokens, result.output_tokens) == (22, 11)
+    assert result.cache_creation_input_tokens == 2000
+    assert result.cache_read_input_tokens == 2000
+    assert result.usage.context_tokens == 4022
+
+
 def test_a_fake_without_usage_records_zero_tokens(repo, pr):
     """Fakes and older SDK shapes omit usage; the loop records zero, not a crash."""
     client = FakeClient([[_submit("t1", "fine", [])]])

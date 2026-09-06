@@ -28,7 +28,7 @@ from typing import Any
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult
+from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 
 logger = logging.getLogger("app.agent.verifier")
 
@@ -121,9 +121,14 @@ def _get(block: Any, key: str, default: Any = None) -> Any:
     return getattr(block, key, default)
 
 
-def _tokens(response: Any) -> tuple[int, int]:
+def _tokens(response: Any) -> TokenUsage:
     usage = _get(response, "usage")
-    return (_get(usage, "input_tokens", 0) or 0, _get(usage, "output_tokens", 0) or 0)
+    return TokenUsage(
+        input_tokens=_get(usage, "input_tokens", 0) or 0,
+        output_tokens=_get(usage, "output_tokens", 0) or 0,
+        cache_creation_input_tokens=_get(usage, "cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=_get(usage, "cache_read_input_tokens", 0) or 0,
+    )
 
 
 def _verdicts(response: Any) -> list[dict]:
@@ -232,17 +237,18 @@ def verify_findings(
         tool_choice={"type": "tool", "name": VERIFY_TOOL["name"]},
         max_tokens=max_tokens,
     )
-    used_in, used_out = _tokens(response)
+    used = _tokens(response)
     kept, dropped, downgraded = apply_verdicts(result.findings, _verdicts(response))
     logger.info(
-        "verifier_done findings=%d kept=%d dropped=%d downgraded=%d tokens=%d/%d",
+        "verifier_done findings=%d kept=%d dropped=%d downgraded=%d context=%d out=%d",
         len(result.findings),
         len(kept),
         len(dropped),
         downgraded,
-        used_in,
-        used_out,
+        used.context_tokens,
+        used.output_tokens,
     )
+    total = result.usage + used
     return ReviewResult(
         summary=result.summary,
         findings=kept,
@@ -250,11 +256,12 @@ def verify_findings(
         tool_turns=result.tool_turns,
         files_read=result.files_read,
         truncated=result.truncated,
-        input_tokens=result.input_tokens + used_in,
-        output_tokens=result.output_tokens + used_out,
+        input_tokens=total.input_tokens,
+        output_tokens=total.output_tokens,
+        cache_creation_input_tokens=total.cache_creation_input_tokens,
+        cache_read_input_tokens=total.cache_read_input_tokens,
         verified=True,
         verifier_dropped=dropped,
         verifier_downgraded=downgraded,
-        verifier_input_tokens=used_in,
-        verifier_output_tokens=used_out,
+        verifier_usage=used,
     )

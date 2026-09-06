@@ -89,6 +89,37 @@ class Finding:
         return SEVERITY_ORDER.get(self.severity, 99)
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """One or more model calls' token counts, as the API reports them.
+
+    ``input_tokens`` is the *uncached* input only — since prompt caching
+    (RC1-350) most of a review's context arrives as ``cache_read`` or
+    ``cache_creation`` tokens, which the API bills at 0.1x and 1.25x the
+    input price and reports separately. Summing only ``input_tokens`` after
+    RC1-350 undercounted a review's cost by roughly 2.5x (found by RC1-387's
+    baseline run); anything pricing a review must use all four.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    @property
+    def context_tokens(self) -> int:
+        """Everything the model read: uncached + cache writes + cache reads."""
+        return self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cache_creation_input_tokens + other.cache_creation_input_tokens,
+            self.cache_read_input_tokens + other.cache_read_input_tokens,
+        )
+
+
 @dataclass
 class ReviewResult:
     """The structured outcome of a review, ready for downstream formatting."""
@@ -104,16 +135,28 @@ class ReviewResult:
     # Token spend summed across every model call in the loop, forced
     # submission included, so a caller can price the review (RC1-269). The
     # verifier pass (RC1-387), when it ran, is included in these totals and
-    # also broken out below so the two can be compared.
+    # also broken out in ``verifier_usage`` so the two can be compared.
+    # ``input_tokens`` is the uncached input only; see :class:`TokenUsage`.
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     # RC1-387: what the verifier pass did. ``verified`` is False when the pass
     # did not run (flag off, or nothing to verify); the rest are then empty.
     verified: bool = False
     verifier_dropped: list[Finding] = field(default_factory=list)
     verifier_downgraded: int = 0
-    verifier_input_tokens: int = 0
-    verifier_output_tokens: int = 0
+    verifier_usage: TokenUsage = field(default_factory=TokenUsage)
+
+    @property
+    def usage(self) -> TokenUsage:
+        """The whole review's token counts, verifier included."""
+        return TokenUsage(
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_creation_input_tokens,
+            self.cache_read_input_tokens,
+        )
 
     @property
     def sorted_findings(self) -> list[Finding]:
