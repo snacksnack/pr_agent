@@ -278,6 +278,7 @@ def verify_findings(
         verifier_dropped=dropped,
         verifier_downgraded=downgraded,
         verifier_usage=used,
+        verifier_model=model,
         mode=result.mode,
         reviewers_run=result.reviewers_run,
         brief=result.brief,
@@ -288,4 +289,5 @@ def verify_findings(
         unusable_reviewer_calls=result.unusable_reviewer_calls,
         conventions_file=result.conventions_file,
         callers_found=result.callers_found,
+        scout_ran=result.scout_ran,
     )

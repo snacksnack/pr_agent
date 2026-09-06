@@ -71,6 +71,11 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       (`app/agent/context.py`, `router.scout_turns`; `REVIEW_SCOUT_CONTEXT_TURNS`;
       corpus run with `--repo-path` and the decision in
       `docs/rc1-393-cheap-exploration.md`)
+- [x] RC1-395 cost per review in Datadog: priced at the end of the trace from
+      the token counts the result already carries, one `pr_agent.review.cost_usd`
+      point per review from the webhook, widget + p95 monitor as code in the
+      platform (`app/pricing.py`, `observability.annotate_review_cost` /
+      `ship_review_metrics`; record in `docs/rc1-395-cost-per-review.md`)
 - [ ] RC1-391 spike: port the same graph to LangGraph and compare
 
 ## Layout
@@ -88,6 +93,10 @@ app/
   dedup.py      re-push/redelivery dedup store (RC1-118)
   retry.py      GitHub-API retry/backoff helper (RC1-120)
   review.py     dry-run CLI (RC1-113)
+  pricing.py    RC1-395: model prices + cache rates, a copy of the eval harness's
+                (the image cannot import it); review_cost() prices a ReviewResult
+  observability.py  LLM Obs enable + spans (RC1-322/390); cost per review onto the
+                workflow span and the per-review metric (RC1-395)
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
     reviewer.py the loop: review_pull_request(...)

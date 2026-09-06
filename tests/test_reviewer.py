@@ -378,3 +378,56 @@ def test_seed_diff_omits_lock_file_patches_but_keeps_their_header():
     assert "generated lock file; patch omitted" in seed
     assert "registry.npmjs.org" not in seed
     assert '+"a": "2"' in seed
+
+
+# --- one workflow span, both paths (RC1-395) -------------------------------------
+
+def _record_spans(monkeypatch, module):
+    from contextlib import contextmanager
+
+    opened = []
+
+    @contextmanager
+    def fake_span(kind, name):
+        opened.append((kind, name))
+        yield
+
+    monkeypatch.setattr(module, "stage_span", fake_span)
+    return opened
+
+
+def test_single_loop_runs_inside_a_workflow_span_and_records_latency(repo, pr, monkeypatch):
+    import app.agent.reviewer as reviewer_module
+
+    opened = _record_spans(monkeypatch, reviewer_module)
+    client = FakeClient([[_submit("t1", "fine", [])]], usages=[(10, 5)])
+
+    result = review_pull_request(pr, repo, client=client, model="claude-sonnet-4-6", verify=False)
+
+    assert opened == [("workflow", "pr_review")]
+    assert result.latency_ms > 0
+    assert result.verifier_model == ""
+
+
+def test_the_review_is_priced_while_the_span_is_open(repo, pr, monkeypatch):
+    """The cost annotation must land on the workflow span, so it has to run
+    before the span closes — inside the `with`, not after it."""
+    from contextlib import contextmanager
+
+    import app.agent.reviewer as reviewer_module
+
+    events = []
+
+    @contextmanager
+    def fake_span(kind, name):
+        events.append("open")
+        yield
+        events.append("close")
+
+    monkeypatch.setattr(reviewer_module, "stage_span", fake_span)
+    monkeypatch.setattr(
+        reviewer_module, "annotate_review_cost", lambda result: events.append("priced")
+    )
+    client = FakeClient([[_submit("t1", "fine", [])]], usages=[(10, 5)])
+    review_pull_request(pr, repo, client=client, model="claude-sonnet-4-6", verify=False)
+    assert events == ["open", "priced", "close"]

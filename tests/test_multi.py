@@ -559,3 +559,57 @@ def test_a_zero_context_cap_skips_the_scout_when_the_context_is_complete(tmp_pat
         _pr_changing_helper(), repo, sync, async_client, scout_context_turns=0, repo_context=False
     )
     assert len(sync.messages.calls) == 1 and result.brief == SCOUT[0][0]["input"]["brief"]
+
+
+# --- what the cost metric needs from this path (RC1-395) -------------------------
+
+def test_scout_ran_is_recorded_when_the_scout_made_calls(pr, repo):
+    result = _run(
+        pr, repo, _sync(*SCOUT), _async(WARM, _submit("a", []), _submit("b", []), _submit("c", [])),
+        verify=False,
+    )
+    assert result.scout_ran is True
+
+
+def test_scout_ran_is_false_when_the_plan_skipped_it(repo):
+    docs = PullRequest(
+        ref=PRRef("o", "r", 9), title="Docs", body="",
+        files=[ChangedFile("README.md", "modified", patch="@@ -1 +1 @@\n-a\n+b")],
+    )
+    result = _run(
+        docs, repo, _sync(), _async(WARM, _submit("a", []), _submit("c", [])), verify=False
+    )
+    assert result.scout_ran is False and result.mode == "multi"
+
+
+def test_scout_ran_survives_the_verifier(pr, repo):
+    finding = _finding("warning", "security", "x")
+    sync = _sync(*SCOUT, [_use("verify_findings", verdicts=[])])
+    result = _run(
+        pr, repo, sync,
+        _async(WARM, _submit("a", [finding]), _submit("b", []), _submit("c", [])),
+        verify=True,
+    )
+    assert result.verified and result.scout_ran is True
+    assert result.verifier_model == "m"
+
+
+def test_the_workflow_span_is_opened_by_the_dispatcher_not_here(pr, repo, monkeypatch):
+    """One `pr_review` span per review, opened in `review_pull_request` so both
+    paths get the same root; this module opens only the stage spans."""
+    from contextlib import contextmanager
+
+    opened = []
+
+    @contextmanager
+    def fake_span(kind, name):
+        opened.append((kind, name))
+        yield
+
+    monkeypatch.setattr(multi, "stage_span", fake_span)
+    _run(
+        pr, repo, _sync(*SCOUT), _async(WARM, _submit("a", []), _submit("b", []), _submit("c", [])),
+        verify=False,
+    )
+    assert ("workflow", "pr_review") not in opened
+    assert ("agent", "scout") in opened

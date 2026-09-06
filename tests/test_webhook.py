@@ -522,3 +522,25 @@ def test_configure_logging_attaches_one_handler_and_is_idempotent():
     # INFO lifecycle lines must be emittable, and we don't double-print via root.
     assert app_logger.level <= logging.INFO
     assert app_logger.propagate is False
+
+
+def test_process_event_ships_one_cost_point_per_review(monkeypatch):
+    """RC1-395: the metric leaves from the webhook only, tagged with the repo."""
+    import app.webhook
+    from app.dedup import DedupStore
+    from app.models import PRRef, PullRequest
+
+    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
+    posted: dict = {}
+    _wire_fakes(monkeypatch, pr, posted)
+    shipped = []
+    monkeypatch.setattr(
+        app.webhook, "ship_review_metrics", lambda result, *, repo: shipped.append((result, repo))
+    )
+
+    process_event(WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999),
+                  store=DedupStore())
+
+    assert len(shipped) == 1
+    result, repo = shipped[0]
+    assert repo == "octo/hello" and result.summary == "ok"

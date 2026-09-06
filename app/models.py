@@ -186,6 +186,17 @@ class ReviewResult:
     # whether the scout had the cheap context or re-derived it.
     conventions_file: str | None = None
     callers_found: int = 0
+    # RC1-395: the three facts pricing and the per-review metric need that
+    # the fields above do not carry. ``verifier_model`` is the model the
+    # verifier pass actually ran on (``review_verify_model`` may differ from
+    # the review model, and its tokens are priced at its own rate); empty
+    # when the pass did not run. ``scout_ran`` is whether the multi path's
+    # scout made model calls — a skipped scout and a scout that ran both
+    # leave a brief, and only the second cost anything. ``latency_ms`` is the
+    # wall clock of the whole review, both paths, set by the dispatcher.
+    verifier_model: str = ""
+    scout_ran: bool = False
+    latency_ms: float = 0.0
 
     @property
     def usage(self) -> TokenUsage:
