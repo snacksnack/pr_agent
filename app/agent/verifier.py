@@ -203,38 +203,46 @@ def verify_findings(
     client: Any,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    shared_prefix: str | None = None,
+    tools: list[dict] | None = None,
+    tool_choice: dict | None = None,
 ) -> ReviewResult:
     """Run the verifier over ``result.findings`` and return a new result.
 
     The returned result carries the kept findings, the dropped ones, the
     downgrade count, and the pass's own token spend both folded into the
     totals and broken out. A result with no findings is returned unchanged.
+
+    By default the pass renders the PR itself and sends its one tool, which
+    is the RC1-387 request byte for byte. The multi-agent path (RC1-390)
+    passes ``shared_prefix`` — the PR and scout brief exactly as the
+    reviewers saw them — with the reviewers' ``tools`` and ``tool_choice``,
+    so this call reads their cached prefix instead of writing its own.
     """
     if not result.findings:
         return result
     from app.agent.reviewer import render_pr  # noqa: PLC0415 — sibling module; avoids a cycle
 
     model = model or settings.review_verify_model or result.model or settings.review_model
-    text = "\n".join(
-        [
-            *render_pr(pull_request),
-            "",
-            format_findings_for_verification(result.findings),
-            "",
-            VERIFIER_INSTRUCTIONS,
-        ]
+    suffix = "\n".join(
+        [format_findings_for_verification(result.findings), "", VERIFIER_INSTRUCTIONS]
     )
+    if shared_prefix is None:
+        text = "\n".join([*render_pr(pull_request), "", suffix])
+        content = [{"type": "text", "text": text, "cache_control": CACHE_CONTROL}]
+    else:
+        content = [
+            {"type": "text", "text": shared_prefix, "cache_control": CACHE_CONTROL},
+            {"type": "text", "text": suffix},
+        ]
     response = client.messages.create(
         model=model,
         system=SYSTEM_BLOCKS,
-        messages=[
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": text, "cache_control": CACHE_CONTROL}],
-            }
-        ],
-        tools=[VERIFY_TOOL],
-        tool_choice={"type": "tool", "name": VERIFY_TOOL["name"]},
+        messages=[{"role": "user", "content": content}],
+        tools=[VERIFY_TOOL] if tools is None else tools,
+        tool_choice=(
+            {"type": "tool", "name": VERIFY_TOOL["name"]} if tool_choice is None else tool_choice
+        ),
         max_tokens=max_tokens,
     )
     used = _tokens(response)
@@ -266,4 +274,11 @@ def verify_findings(
         verifier_dropped=dropped,
         verifier_downgraded=downgraded,
         verifier_usage=used,
+        mode=result.mode,
+        reviewers_run=result.reviewers_run,
+        brief=result.brief,
+        stage_usage={**result.stage_usage, "verifier": used} if result.stage_usage else {},
+        off_scope_findings=result.off_scope_findings,
+        deduplicated_findings=result.deduplicated_findings,
+        unusable_reviewer_calls=result.unusable_reviewer_calls,
     )

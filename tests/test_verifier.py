@@ -289,3 +289,50 @@ def test_settings_flag_turns_the_verifier_on(repo, pr, monkeypatch):
     ])
     result = review_pull_request(pr, repo, client=client)
     assert result.verified and len(client.messages.calls) == 2
+
+
+# --- RC1-390: the shared-prefix mode -------------------------------------------
+
+def test_default_request_is_the_rc1_387_shape(pr):
+    """One text block with everything, one tool, forced tool choice."""
+    client = FakeClient([_verdicts()])
+    result = ReviewResult(findings=[_finding()], model="m")
+    verifier.verify_findings(pr, result, client=client)
+    call = client.messages.calls[0]
+    assert [t["name"] for t in call["tools"]] == ["verify_findings"]
+    assert call["tool_choice"] == {"type": "tool", "name": "verify_findings"}
+    content = call["messages"][0]["content"]
+    assert len(content) == 1 and content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "Pull request:" in content[0]["text"] and "First-pass findings:" in content[0]["text"]
+
+
+def test_shared_prefix_mode_reads_the_prefix_verbatim_and_sends_the_shared_tools(pr):
+    client = FakeClient([_verdicts()])
+    result = ReviewResult(findings=[_finding()], model="m")
+    tools = [{"name": "submit_review"}, verifier.VERIFY_TOOL]
+    verifier.verify_findings(
+        pr,
+        result,
+        client=client,
+        shared_prefix="THE PREFIX",
+        tools=tools,
+        tool_choice={"type": "any"},
+    )
+    call = client.messages.calls[0]
+    assert call["tools"] == tools and call["tool_choice"] == {"type": "any"}
+    prefix, suffix = call["messages"][0]["content"]
+    assert prefix == {"type": "text", "text": "THE PREFIX", "cache_control": {"type": "ephemeral"}}
+    assert "cache_control" not in suffix
+    assert suffix["text"].startswith("First-pass findings:")
+    assert "Call verify_findings exactly once" in suffix["text"]
+
+
+def test_wrong_tool_from_the_verifier_keeps_everything(pr):
+    """Under tool_choice 'any' the model could call submit_review instead;
+    that reads as no verdicts, so nothing is dropped."""
+    client = FakeClient([[_submit("v1", "oops", [])]])
+    result = ReviewResult(findings=[_finding(), _finding(message="two")], model="m")
+    out = verifier.verify_findings(
+        pr, result, client=client, shared_prefix="p", tools=[], tool_choice={"type": "any"}
+    )
+    assert out.verified is True and len(out.findings) == 2 and out.verifier_dropped == []

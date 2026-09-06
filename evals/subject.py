@@ -100,6 +100,14 @@ def prompt_version() -> str:
 
         material = (verifier.VERIFIER_INSTRUCTIONS).encode()
         version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    if settings.review_multi_agent:
+        # RC1-390: the scout's and reviewers' instructions are the multi-agent
+        # path's prompt; a run with the flag on is its own subject version.
+        material = (
+            prompts.SCOUT_INSTRUCTIONS
+            + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
+        ).encode()
+        version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
     return version
 
 
@@ -314,8 +322,41 @@ def run(case: Case) -> CaseResult:
             # RC1-387: what the verifier did, when it ran. Zero and false when
             # the flag is off, so a flag-off run reads as such in the record.
             "verifier": _verifier_observations(result),
+            # RC1-390: which path ran and, when it was the multi-agent one,
+            # what each stage cost — the cache premise is read per reviewer
+            # call here, not inferred from the case total.
+            "multi": _multi_observations(result),
         },
     )
+
+
+def _multi_observations(result: ReviewResult | None) -> dict:
+    if result is None or result.mode != "multi":
+        return {"ran": False}
+    reviewer_reads = [
+        usage.cache_read_input_tokens
+        for stage, usage in result.stage_usage.items()
+        if stage.startswith("reviewer:")
+    ]
+    return {
+        "ran": True,
+        "reviewers": list(result.reviewers_run),
+        "scout_skipped": result.brief.startswith("(scout skipped"),
+        "brief_chars": len(result.brief),
+        "stages": {
+            stage: {
+                **_token_breakdown(usage),
+                "cost_usd": str(_cost_usd(result.model, usage)),
+            }
+            for stage, usage in result.stage_usage.items()
+        },
+        # The design's premise: every reviewer read the shared prefix from
+        # cache. Zero on any of them means it was written, not read.
+        "min_reviewer_cache_read": min(reviewer_reads, default=0),
+        "off_scope": result.off_scope_findings,
+        "deduplicated": result.deduplicated_findings,
+        "unusable_reviewer_calls": result.unusable_reviewer_calls,
+    }
 
 
 def _verifier_observations(result: ReviewResult | None) -> dict:

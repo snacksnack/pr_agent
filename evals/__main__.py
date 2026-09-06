@@ -47,9 +47,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     verify = "on" if settings.review_verify_findings else "off"
+    multi = "on" if settings.review_multi_agent else "off"
     print(
-        f"{len(cases)} case(s) against {settings.review_model}, verifier {verify} "
-        "— this spends money.\n"
+        f"{len(cases)} case(s) against {settings.review_model}, verifier {verify}, "
+        f"multi-agent {multi} — this spends money.\n"
     )
     # RC1-322: billed spend is traced spend; a no-op without DD_API_KEY.
     llmobs.enable("pr-review-agent", service="evals")
@@ -96,6 +97,21 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"  verifier ran on {len(verified)} case(s): "
             f"{dropped} dropped, {downgraded} downgraded"
+        )
+    multi_ran = [r for r in results if not r.error and r.observations["multi"]["ran"]]
+    if multi_ran:
+        # RC1-390: the cache premise, checked per reviewer call across the run.
+        cold = [
+            r.case_id
+            for r in multi_ran
+            if r.observations["multi"]["min_reviewer_cache_read"] == 0
+        ]
+        off_scope = sum(r.observations["multi"]["off_scope"] for r in multi_ran)
+        print(
+            f"  multi-agent ran on {len(multi_ran)} case(s): "
+            f"{len(multi_ran) - len(cold)} with every reviewer reading the prefix from cache, "
+            f"{off_scope} off-scope finding(s) discarded"
+            + (f"; cold on {', '.join(cold)}" if cold else "")
         )
     print("  (never averaged — see evals/subject.py)")
 

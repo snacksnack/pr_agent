@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import nullcontext
+from typing import Any
 
 try:  # documented optional-dep exception: ddtrace is absent in minimal envs
     from ddtrace.llmobs import LLMObs
@@ -76,3 +78,30 @@ def _restrict_patching_to_anthropic() -> None:
         if module == "anthropic":
             continue
         os.environ.setdefault(f"DD_TRACE_{module.upper().replace('-', '_')}_ENABLED", "false")
+
+
+def stage_span(kind: str, name: str):
+    """A context manager for one stage of a multi-agent review (RC1-390).
+
+    ``kind`` is an LLM Observability span kind — ``workflow`` for the review
+    as a whole, ``agent`` for the scout, each reviewer and the verifier,
+    ``task`` for a step with no model of its own. The auto-instrumented
+    Anthropic calls made inside become its children, which is what turns a
+    review from N unrelated root spans into one tree. A no-op when tracing
+    is off, so the review code never checks.
+    """
+    if LLMObs is None or not LLMObs.enabled:
+        return nullcontext()
+    starter = getattr(LLMObs, kind)
+    return starter(name=name)
+
+
+def annotate_span(**fields: Any) -> None:
+    """Attach ``metadata``/``metrics``/``output_data`` to the active LLM
+    Observability span; a no-op when tracing is off."""
+    if LLMObs is None or not LLMObs.enabled:
+        return
+    try:
+        LLMObs.annotate(**fields)
+    except Exception as exc:  # noqa: BLE001 — decoration must never fail a review
+        print(f"llmobs: annotate failed: {exc}", file=sys.stderr)

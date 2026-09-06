@@ -1,0 +1,370 @@
+"""Tests for the multi-agent review path (RC1-390). Offline: scripted fakes
+for the sync client (scout, verifier) and the async client (warm call,
+reviewers)."""
+from __future__ import annotations
+
+import copy
+from types import SimpleNamespace
+
+import pytest
+
+from app.agent import multi
+from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT
+from app.agent.reviewer import review_pull_request
+from app.agent.router import ReviewPlan
+from app.agent.tools import RepoTools
+from app.config import Settings
+from app.models import ChangedFile, Finding, PRRef, PullRequest, TokenUsage
+
+
+def _usage(uncached=3, out=4, write=0, read=900):
+    return SimpleNamespace(
+        input_tokens=uncached,
+        output_tokens=out,
+        cache_creation_input_tokens=write,
+        cache_read_input_tokens=read,
+    )
+
+
+class SyncMessages:
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(copy.deepcopy(kwargs))
+        if not self._scripted:
+            raise AssertionError("sync fake ran out of scripted responses")
+        return SimpleNamespace(content=self._scripted.pop(0), usage=_usage(10, 5, 100, 0))
+
+
+class AsyncMessages:
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(copy.deepcopy(kwargs))
+        if not self._scripted:
+            raise AssertionError("async fake ran out of scripted responses")
+        content = self._scripted.pop(0)
+        # The warm call is the first request and writes the prefix; the rest read it.
+        usage = _usage(0, 1, 900, 0) if len(self.calls) == 1 else _usage()
+        return SimpleNamespace(content=content, usage=usage)
+
+
+def _sync(*scripted):
+    return SimpleNamespace(messages=SyncMessages(scripted))
+
+
+def _async(*scripted):
+    return SimpleNamespace(messages=AsyncMessages(scripted))
+
+
+def _use(name, **inp):
+    return {"type": "tool_use", "id": "t", "name": name, "input": inp}
+
+
+def _submit(summary, findings):
+    return [_use("submit_review", summary=summary, findings=findings)]
+
+
+def _finding(severity, category, message, file="app/x.py", line=3):
+    return {
+        "severity": severity, "category": category, "message": message, "file": file, "line": line
+    }
+
+
+@pytest.fixture()
+def repo(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "x.py").write_text("x = 1\n")
+    return RepoTools(root)
+
+
+@pytest.fixture()
+def pr():
+    return PullRequest(
+        ref=PRRef("o", "r", 9),
+        title="Change x",
+        body="changes x",
+        files=[ChangedFile("app/x.py", "modified", patch="@@ -1 +1 @@\n-x = 0\n+x = 1")],
+    )
+
+
+SCOUT = [[_use("submit_brief", brief="Config is read through settings everywhere.")]]
+WARM = []
+
+
+def _run(pr, repo, sync, async_client, **kw):
+    kw.setdefault("model", "m")
+    return multi.review_pull_request_multi(pr, repo, client=sync, async_client=async_client, **kw)
+
+
+# --- the happy path -----------------------------------------------------------
+
+def test_scout_then_three_reviewers_then_merge(pr, repo):
+    sync = _sync(*SCOUT)
+    async_client = _async(
+        WARM,
+        _submit("A secret is committed.", [_finding("blocker", "leaked_secret", "key in code")]),
+        _submit("No tests cover x.", [_finding("warning", "tests", "untested", line=9)]),
+        _submit("", []),
+    )
+    result = _run(pr, repo, sync, async_client)
+
+    assert result.mode == "multi"
+    assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
+    assert result.brief == "Config is read through settings everywhere."
+    assert [(f.severity, f.category) for f in result.findings] == [
+        ("blocker", "leaked_secret"),
+        ("warning", "tests"),
+    ]
+    assert result.summary == "A secret is committed. No tests cover x."
+    assert result.tool_turns == 1 and result.files_read == 0  # the scout's
+    assert result.verified is False
+    assert set(result.stage_usage) == {
+        "scout", "warm_cache", "reviewer:diff_local", "reviewer:repo_context",
+        "reviewer:change_intent",
+    }
+
+
+def test_every_call_that_shares_the_prefix_sends_it_identically(pr, repo):
+    """The design's premise: warm call, reviewers and verifier send the same
+    tools, system, tool_choice and first content block, so the API serves
+    one cache entry to all of them."""
+    sync = _sync(
+        *SCOUT,
+        [_use("verify_findings", verdicts=[])],
+    )
+    async_client = _async(
+        WARM,
+        _submit("s", [_finding("warning", "security", "injection")]),
+        _submit("", []),
+        _submit("", []),
+    )
+    _run(pr, repo, sync, async_client, verify=True)
+
+    calls = async_client.messages.calls + [sync.messages.calls[-1]]
+    assert len(calls) == 5
+    first = calls[0]
+    for call in calls:
+        assert call["tools"] == first["tools"]
+        assert call["system"] == first["system"]
+        assert call["tool_choice"] == {"type": "any"}
+        prefix = call["messages"][0]["content"][0]
+        assert prefix == first["messages"][0]["content"][0]
+        assert prefix["cache_control"] == {"type": "ephemeral"}
+    assert [t["name"] for t in first["tools"]] == ["submit_review", "verify_findings"]
+    # The prefix carries the PR and the brief; the suffix is per call.
+    prefix_text = first["messages"][0]["content"][0]["text"]
+    assert "Pull request: o/r#9" in prefix_text and "Scout's brief:" in prefix_text
+    assert len(first["messages"][0]["content"]) == 1 and first["max_tokens"] == 1  # warm call
+    suffixes = [c["messages"][0]["content"][1]["text"] for c in calls[1:]]
+    assert "'diff_local' reviewer" in suffixes[0]
+    assert "'repo_context' reviewer" in suffixes[1]
+    assert "'change_intent' reviewer" in suffixes[2]
+    assert "verifying a first-pass review" in suffixes[3]
+
+
+def test_reviewer_suffix_carries_only_its_rubric_slice(pr, repo):
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    _run(pr, repo, _sync(*SCOUT), async_client)
+    diff_local = async_client.messages.calls[1]["messages"][0]["content"][1]["text"]
+    assert "3. Security & secrets" in diff_local and "2. Pythonic-ness" in diff_local
+    assert "1. Convention consistency" not in diff_local
+    assert "leaked_secret, security, pythonic, error_handling, docs" in diff_local
+    intent = async_client.messages.calls[3]["messages"][0]["content"][1]["text"]
+    assert "8. PR-description" in intent and "5. Dependency" not in intent
+
+
+def test_token_usage_is_summed_across_every_stage(pr, repo):
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(pr, repo, _sync(*SCOUT), async_client)
+    # scout (10,5,100,0) + warm (0,1,900,0) + 3 reviewers (3,4,0,900)
+    assert result.usage == TokenUsage(19, 18, 1000, 2700)
+    assert result.stage_usage["warm_cache"].cache_creation_input_tokens == 900
+    assert all(
+        result.stage_usage[f"reviewer:{n}"].cache_read_input_tokens == 900
+        for n in ("diff_local", "repo_context", "change_intent")
+    )
+
+
+# --- the merge ----------------------------------------------------------------
+
+def _out(spec, findings, summary=""):
+    return multi.ReviewerOutput(spec, summary=summary, findings=findings)
+
+
+def test_merge_discards_findings_outside_the_reviewers_categories():
+    outputs = [
+        _out(DIFF_LOCAL, [Finding("warning", "tests", "not mine", "a.py", 1)]),
+        _out(REPO_CONTEXT, [Finding("warning", "tests", "mine", "a.py", 1)]),
+    ]
+    merged, off_scope, deduplicated = multi.merge_findings(outputs)
+    assert [f.message for f in merged] == ["mine"]
+    assert off_scope == 1 and deduplicated == 0
+
+
+def test_merge_allows_general_from_any_reviewer():
+    outputs = [_out(CHANGE_INTENT, [Finding("nit", "general", "dead code", "a.py", 4)])]
+    merged, off_scope, _ = multi.merge_findings(outputs)
+    assert len(merged) == 1 and off_scope == 0
+
+
+def test_merge_folds_same_file_line_category_keeping_the_more_severe():
+    outputs = [
+        _out(DIFF_LOCAL, [Finding("nit", "general", "first", "a.py", 4)]),
+        _out(REPO_CONTEXT, [Finding("warning", "general", "second", "a.py", 4)]),
+        _out(CHANGE_INTENT, [Finding("nit", "general", "third", "a.py", 4)]),
+    ]
+    merged, _, deduplicated = multi.merge_findings(outputs)
+    assert [(f.severity, f.message) for f in merged] == [("warning", "second")]
+    assert deduplicated == 2
+
+
+def test_merge_never_folds_pr_level_findings():
+    outputs = [
+        _out(CHANGE_INTENT, [Finding("nit", "pr_drift", "a"), Finding("nit", "pr_drift", "b")]),
+    ]
+    merged, _, deduplicated = multi.merge_findings(outputs)
+    assert len(merged) == 2 and deduplicated == 0
+
+
+def test_summary_leads_with_the_reviewer_holding_the_most_serious_finding():
+    outputs = [
+        _out(DIFF_LOCAL, [Finding("nit", "docs", "d")], summary="Docs nit."),
+        _out(REPO_CONTEXT, [Finding("warning", "tests", "t")], summary="Untested."),
+        _out(CHANGE_INTENT, [], summary="   "),
+    ]
+    assert multi.compose_summary(outputs) == "Untested. Docs nit."
+
+
+def test_summary_when_nobody_found_anything():
+    outputs = [_out(DIFF_LOCAL, []), _out(CHANGE_INTENT, [])]
+    assert multi.compose_summary(outputs) == (
+        "No issues found by the diff_local, change_intent reviewers."
+    )
+
+
+# --- degraded reviewer answers ----------------------------------------------
+
+def test_reviewer_calling_the_wrong_tool_is_counted_not_crashed(pr, repo):
+    async_client = _async(
+        WARM,
+        [_use("verify_findings", verdicts=[])],  # the wrong tool
+        [{"type": "text", "text": "no tool at all"}],
+        _submit("fine", [_finding("nit", "pr_drift", "d", file=None, line=None)]),
+    )
+    result = _run(pr, repo, _sync(*SCOUT), async_client)
+    assert result.unusable_reviewer_calls == 2
+    assert [f.category for f in result.findings] == ["pr_drift"]
+    assert result.summary == "fine"
+
+
+def test_malformed_and_coerced_findings_are_counted_across_reviewers(pr, repo):
+    async_client = _async(
+        WARM,
+        _submit("", [{"severity": "breaking_change", "category": "security", "message": "m"}]),
+        _submit("", [{"category": "tests"}]),  # no severity or message
+        _submit("", []),
+    )
+    result = _run(pr, repo, _sync(*SCOUT), async_client)
+    assert result.coerced_findings == 1 and result.malformed_findings == 1
+    assert result.findings[0].severity == "warning"
+
+
+# --- routing and the scout --------------------------------------------------------
+
+def test_documentation_only_change_skips_the_scout(repo):
+    pr = PullRequest(
+        ref=PRRef("o", "r", 2),
+        title="Docs",
+        files=[ChangedFile("README.md", "modified", patch="+hello")],
+    )
+    sync = _sync()  # no scripted scout call: it must not be made
+    async_client = _async(WARM, _submit("", []), _submit("", []))
+    result = _run(pr, repo, sync, async_client)
+    assert result.reviewers_run == ["diff_local", "change_intent"]
+    assert result.brief.startswith("(scout skipped: documentation-only")
+    assert sync.messages.calls == []
+    assert result.stage_usage["scout"].context_tokens == 0
+
+
+def test_an_explicit_plan_is_honoured(pr, repo):
+    plan = ReviewPlan(scout=False, reviewers=(DIFF_LOCAL,), reasons=("test",))
+    async_client = _async(WARM, _submit("only me", []))
+    result = _run(pr, repo, _sync(), async_client, plan=plan)
+    assert result.reviewers_run == ["diff_local"] and result.summary == "only me"
+
+
+def test_scout_turn_cap_comes_from_settings(pr, repo, monkeypatch):
+    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_max_turns=1))
+    sync = _sync(
+        [_use("grep", pattern="x")],  # turn 1, the cap
+        [_use("submit_brief", brief="forced")],
+    )
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(pr, repo, sync, async_client)
+    assert result.brief == "forced" and result.truncated is True
+
+
+def test_precomputed_findings_reach_the_shared_prefix_and_the_scout(pr, repo):
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    _run(pr, repo, sync, async_client, precomputed_findings=[Finding("warning", "n8n", "hot cron")])
+    assert "hot cron" in sync.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "hot cron" in async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+
+
+# --- the verifier ------------------------------------------------------------------
+
+def test_verifier_runs_on_the_merged_findings_and_reads_the_shared_prefix(pr, repo):
+    sync = _sync(
+        *SCOUT,
+        [_use("verify_findings", verdicts=[{"index": 0, "decision": "drop", "reason": "fixture"}])],
+    )
+    async_client = _async(
+        WARM,
+        _submit("", [_finding("blocker", "leaked_secret", "test key")]),
+        _submit("", [_finding("warning", "tests", "untested", line=9)]),
+        _submit("", []),
+    )
+    result = _run(pr, repo, sync, async_client, verify=True)
+
+    assert result.verified is True
+    assert [f.category for f in result.findings] == ["tests"]
+    assert [f.category for f in result.verifier_dropped] == ["leaked_secret"]
+    # RC1-390 bookkeeping survives the verifier's copy, and its stage is added.
+    assert result.mode == "multi" and result.reviewers_run[0] == "diff_local"
+    assert "verifier" in result.stage_usage
+    assert result.usage.cache_creation_input_tokens == 1100  # scout 100 + warm 900 + verifier 100
+
+
+def test_verifier_is_skipped_when_there_is_nothing_to_verify(pr, repo):
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(pr, repo, sync, async_client, verify=True)
+    assert result.verified is False and len(sync.messages.calls) == 1
+
+
+# --- dispatch from the single entry point --------------------------------------
+
+def test_review_pull_request_dispatches_on_the_flag(pr, repo, monkeypatch):
+    from app.agent import reviewer
+
+    monkeypatch.setattr(reviewer, "settings", Settings(_env_file=None, review_multi_agent=True))
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("via flag", []), _submit("", []), _submit("", []))
+    result = review_pull_request(pr, repo, client=sync, async_client=async_client)
+    assert result.mode == "multi" and result.summary == "via flag"
+
+
+def test_review_pull_request_flag_off_never_touches_the_async_client(pr, repo):
+    sync = _sync(_submit("single loop", []))
+    async_client = _async()
+    result = review_pull_request(pr, repo, client=sync, async_client=async_client, multi=False)
+    assert result.mode == "single" and result.summary == "single loop"
+    assert async_client.messages.calls == []
+    assert result.stage_usage == {} and result.reviewers_run == []

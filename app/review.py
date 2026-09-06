@@ -166,6 +166,14 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
     )
     if result.truncated:
         meta += "  (truncated: hit a turn/file budget)"
+    if result.mode == "multi":
+        # RC1-390: turns/files above are the scout's; the reviewers ran once each.
+        meta += f"  mode=multi reviewers={','.join(result.reviewers_run)}"
+        if result.off_scope_findings or result.deduplicated_findings:
+            meta += (
+                f"  merged(off_scope={result.off_scope_findings},"
+                f" deduplicated={result.deduplicated_findings})"
+            )
     lines.append(meta)
     return "\n".join(lines)
 

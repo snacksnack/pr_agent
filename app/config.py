@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     review_verify_findings: bool = False
     # Model for the verifier pass; unset means the same model as the review.
     review_verify_model: str | None = None
+    # RC1-390: split the review into a scout, three evidence-scoped reviewers
+    # fanned out on one shared cached prefix, a Python merge, and the verifier.
+    # Off by default: off is the single loop above, byte for byte. The corpus
+    # is run both ways and docs/rc1-390-multi-agent.md records the numbers.
+    review_multi_agent: bool = False
+    # Turn cap for the scout (RC1-390). It writes a brief, not findings, so it
+    # needs fewer turns than the single loop; every turn re-sends the growing
+    # conversation, so the cap is the scout's cost ceiling.
+    review_scout_max_turns: int = 8
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
@@ -82,7 +91,11 @@ class Settings(BaseSettings):
         return [item.strip() for item in self.review_skip_authors.split(",") if item.strip()]
 
     @field_validator(
-        "max_tool_turns", "max_files_read", "remote_api_budget", "github_max_attempts"
+        "max_tool_turns",
+        "max_files_read",
+        "remote_api_budget",
+        "github_max_attempts",
+        "review_scout_max_turns",
     )
     @classmethod
     def _must_be_positive(cls, v: int) -> int:

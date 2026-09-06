@@ -158,6 +158,24 @@ class ReviewResult:
     verifier_dropped: list[Finding] = field(default_factory=list)
     verifier_downgraded: int = 0
     verifier_usage: TokenUsage = field(default_factory=TokenUsage)
+    # RC1-390: which path produced the review. ``single`` is the one loop;
+    # ``multi`` is scout + routed reviewers + merge + verifier, and the rest
+    # of these fields are then filled in (``tool_turns`` and ``files_read``
+    # above are the scout's).
+    mode: str = "single"
+    reviewers_run: list[str] = field(default_factory=list)
+    brief: str = ""
+    # Token spend per stage — ``scout``, ``warm_cache``, ``reviewer:<name>``,
+    # ``verifier`` — so the cache premise (reviewers read the prefix, they do
+    # not write it) is checkable per call, not inferred from the total.
+    stage_usage: dict[str, TokenUsage] = field(default_factory=dict)
+    # Findings a reviewer raised outside its categories and the merge
+    # discarded; findings the merge folded into an earlier one at the same
+    # file, line and category; reviewer calls that came back without a
+    # usable submit_review.
+    off_scope_findings: int = 0
+    deduplicated_findings: int = 0
+    unusable_reviewer_calls: int = 0
 
     @property
     def usage(self) -> TokenUsage:
