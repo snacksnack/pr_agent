@@ -33,6 +33,11 @@ from app.models import Finding, PullRequest, ReviewResult
 # full files via tools if it needs more than this.
 MAX_DIFF_CHARS = 50_000
 DEFAULT_MAX_TOKENS = 4096
+# Per-request ceiling for the SDK client the loop builds itself (RC1-387). The
+# SDK default is ten minutes with two retries, so one stalled response held a
+# corpus case for half an hour; a review turn that has not answered in this
+# long is not going to. Retries still apply on top of it.
+REQUEST_TIMEOUT_S = 180
 
 ALL_TOOLS = [*TOOL_SCHEMAS, SUBMIT_TOOL]
 
@@ -262,7 +267,7 @@ def review_pull_request(
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
 
     messages: list[dict] = [
         _user_text(format_pr_for_review(pull_request, precomputed_findings))
