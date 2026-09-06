@@ -16,7 +16,8 @@ risk, and PR-description-vs-diff drift.
 ## How we know the reviews are any good
 
 `evals/` scores the reviewer against diffs with defects planted on purpose — one
-per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff. It runs
+per entry in the rubric's `CATEGORIES`, plus a deliberately clean diff and two
+diffs with a planted *decoy* (RC1-387). It runs
 through the real dry-run CLI with only the GitHub fetch stubbed, so the prompts,
 the loop, the deterministic n8n check, the merge and the verdict policy are all
 the shipped ones. Harness:
@@ -237,6 +238,8 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
 | `MAX_TOOL_TURNS` / `MAX_FILES_READ` | Agent-loop guardrails | `20` / `40` |
+| `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
+| `REVIEW_VERIFY_MODEL` | Model for the verifier pass; unset = `REVIEW_MODEL` | — |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |
