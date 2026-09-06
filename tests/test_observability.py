@@ -76,6 +76,7 @@ def test_non_anthropic_integrations_are_defaulted_off(monkeypatch):
 
 # --- cost per review (RC1-395) ------------------------------------------------
 
+import re  # noqa: E402
 from decimal import Decimal  # noqa: E402
 
 import httpx  # noqa: E402
@@ -119,8 +120,8 @@ def test_annotate_puts_cost_stages_and_latency_on_the_span(monkeypatch):
     metrics = annotation["metrics"]
     assert metrics["cost_usd"] == float(cost.total)
     assert metrics["latency_s"] == 12.5
-    assert metrics["stage_cost_usd.loop"] == float(cost.stages["loop"])
-    assert metrics["stage_cost_usd.verifier"] == float(cost.stages["verifier"])
+    assert metrics["stage_cost_usd_loop"] == float(cost.stages["loop"])
+    assert metrics["stage_cost_usd_verifier"] == float(cost.stages["verifier"])
     assert all(isinstance(v, float) for v in metrics.values()), "LLMObs rejects Decimal"
     meta = annotation["metadata"]
     assert meta["mode"] == "single" and meta["scout"] == "none" and meta["verified"] is True
@@ -131,14 +132,20 @@ def test_annotate_multi_carries_the_scout_and_its_turns(monkeypatch):
     monkeypatch.setattr(observability, "LLMObs", fake)
     result = _result(
         mode="multi", scout_ran=True, tool_turns=3, conventions_file="CLAUDE.md",
-        stage_usage={"scout": TokenUsage(output_tokens=50), "warm_cache": TokenUsage()},
+        stage_usage={
+            "scout": TokenUsage(output_tokens=50),
+            "reviewer:diff_local": TokenUsage(output_tokens=50),
+        },
     )
     observability.annotate_review_cost(result)
     [annotation] = fake.annotations
     assert annotation["metadata"]["scout"] == "ran"
     assert annotation["metadata"]["scout_turns"] == 3
     assert annotation["metadata"]["conventions_file"] == "CLAUDE.md"
-    assert "stage_cost_usd.scout" in annotation["metrics"]
+    # LLM Obs drops a span whose metric key has a dot; stage names carry colons.
+    assert "stage_cost_usd_scout" in annotation["metrics"]
+    assert "stage_cost_usd_reviewer_diff_local" in annotation["metrics"]
+    assert all(re.fullmatch(r"\w+", k) for k in annotation["metrics"])
 
 
 def test_unpriced_model_is_logged_and_not_annotated(monkeypatch, caplog):

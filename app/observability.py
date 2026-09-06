@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 from contextlib import nullcontext
@@ -130,7 +131,7 @@ def annotate_span(**fields: Any) -> None:
 
 def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
     """Price a finished review and write the price onto the active workflow
-    span: ``cost_usd``, one ``stage_cost_usd.<stage>`` per stage, and
+    span: ``cost_usd``, one ``stage_cost_usd_<stage>`` per stage, and
     ``latency_s`` as metrics; the path, the scout and the conventions file
     as metadata. Called by the dispatcher while the span is open, so the
     numbers land on the trace's root rather than on any one call.
@@ -154,7 +155,7 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
     )
     metrics: dict[str, float] = {"cost_usd": float(cost.total), "latency_s": latency_s}
     for stage, usd in cost.stages.items():
-        metrics[f"stage_cost_usd.{stage}"] = float(usd)
+        metrics[stage_metric_key(stage)] = float(usd)
     annotate_span(
         metadata={
             "mode": result.mode,
@@ -166,6 +167,14 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
         metrics=metrics,
     )
     return cost
+
+
+def stage_metric_key(stage: str) -> str:
+    """``reviewer:diff_local`` → ``stage_cost_usd_reviewer_diff_local``. LLM
+    Observability drops a span whose metric key contains a dot (found on the
+    first live run: ddtrace warns and rewrites it), so the stage names, which
+    carry colons, are folded to word characters before they become keys."""
+    return "stage_cost_usd_" + re.sub(r"[^A-Za-z0-9_]", "_", stage)
 
 
 def _scout_tag(result: ReviewResult) -> str:
