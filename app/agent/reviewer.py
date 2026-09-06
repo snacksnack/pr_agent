@@ -17,6 +17,7 @@ this module composes them into the loop.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.agent.prompts import (
@@ -28,6 +29,7 @@ from app.agent.prompts import (
 from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
 from app.models import SEVERITY_ORDER, Finding, PullRequest, ReviewResult, TokenUsage
+from app.observability import annotate_review_cost, stage_span
 
 # Max characters of inline diff to put in the seed prompt; the agent can read
 # full files via tools if it needs more than this.
@@ -306,6 +308,12 @@ def review_pull_request(
     puts the conventions file and the callers list in the shared prefix
     before the scout runs; the eval turns it off to measure it, nothing
     else does.
+
+    Either path runs inside one ``pr_review`` workflow span (RC1-395; before
+    this only the multi path opened one), and the finished review is priced
+    while that span is still open, so the trace carries the review's cost
+    and latency as metrics on its root. Pricing reads the result; it changes
+    no request.
     """
     model = model or settings.review_model
     verify = settings.review_verify_findings if verify is None else verify
@@ -313,22 +321,55 @@ def review_pull_request(
     max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
 
-    if multi:
-        from app.agent.multi import review_pull_request_multi
+    started = time.perf_counter()
+    with stage_span("workflow", "pr_review"):
+        if multi:
+            from app.agent.multi import review_pull_request_multi
 
-        return review_pull_request_multi(
-            pull_request,
-            repo_tools,
-            client=client,
-            async_client=async_client,
-            model=model,
-            max_files_read=max_files_read,
-            max_tokens=max_tokens,
-            precomputed_findings=precomputed_findings,
-            verify=verify,
-            repo_context=repo_context,
-        )
+            result = review_pull_request_multi(
+                pull_request,
+                repo_tools,
+                client=client,
+                async_client=async_client,
+                model=model,
+                max_files_read=max_files_read,
+                max_tokens=max_tokens,
+                precomputed_findings=precomputed_findings,
+                verify=verify,
+                repo_context=repo_context,
+            )
+        else:
+            result = _review_single(
+                pull_request,
+                repo_tools,
+                client=client,
+                model=model,
+                max_tool_turns=max_tool_turns,
+                max_files_read=max_files_read,
+                max_tokens=max_tokens,
+                precomputed_findings=precomputed_findings,
+                verify=verify,
+            )
+        result.latency_ms = (time.perf_counter() - started) * 1000
+        annotate_review_cost(result)
+    return result
 
+
+def _review_single(
+    pull_request: PullRequest,
+    repo_tools: RepoTools,
+    *,
+    client: Any | None,
+    model: str,
+    max_tool_turns: int,
+    max_files_read: int,
+    max_tokens: int,
+    precomputed_findings: list[Finding] | None,
+    verify: bool,
+) -> ReviewResult:
+    """The single loop: explore and judge in one conversation, then the
+    verifier (RC1-387) when it is on. Its request shape is the RC1-350 one,
+    byte for byte; the dispatcher above adds the span around it."""
     if client is None:
         from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 

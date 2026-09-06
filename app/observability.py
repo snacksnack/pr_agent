@@ -12,15 +12,34 @@ uninstrumented machines run identical code.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+import time
 from contextlib import nullcontext
 from typing import Any
+
+import httpx
+
+from app.models import ReviewResult
+from app.pricing import ReviewCost, UnknownModelPrice, review_cost
 
 try:  # documented optional-dep exception: ddtrace is absent in minimal envs
     from ddtrace.llmobs import LLMObs
 except ImportError:  # pragma: no cover - exercised only without ddtrace
     LLMObs = None
+
+logger = logging.getLogger("app.observability")
+
+ML_APP = "pr-review-agent"
+
+#: One point per review, never per call (RC1-395). Distributions, so a
+#: dashboard can draw p50/p95 and a monitor can watch p95 over a day; the
+#: RC1-377 monitor is cost per *call* and goes down when the multi-agent
+#: path replaces one long loop with six short calls.
+COST_METRIC = "pr_agent.review.cost_usd"
+LATENCY_METRIC = "pr_agent.review.latency_s"
+METRIC_TIMEOUT_S = 10
 
 
 def enable_llm_obs(ml_app: str, *, service: str | None = None) -> bool:
@@ -105,3 +124,110 @@ def annotate_span(**fields: Any) -> None:
         LLMObs.annotate(**fields)
     except Exception as exc:  # noqa: BLE001 — decoration must never fail a review
         print(f"llmobs: annotate failed: {exc}", file=sys.stderr)
+
+
+# --- cost per review (RC1-395) ------------------------------------------------
+
+def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
+    """Price a finished review and write the price onto the active workflow
+    span: ``cost_usd``, one ``stage_cost_usd.<stage>`` per stage, and
+    ``latency_s`` as metrics; the path, the scout and the conventions file
+    as metadata. Called by the dispatcher while the span is open, so the
+    numbers land on the trace's root rather than on any one call.
+
+    Returns the cost, or ``None`` when the model has no price on file — the
+    review is then logged as unpriced and the span gets no cost. Never
+    raises: decoration must not fail a review that has already been paid for.
+    """
+    try:
+        cost = review_cost(result)
+    except UnknownModelPrice as exc:
+        logger.warning("review_unpriced %s", exc)
+        return None
+    latency_s = result.latency_ms / 1000
+    logger.info(
+        "review_cost mode=%s cost_usd=%.4f latency_s=%.1f %s",
+        result.mode,
+        cost.total,
+        latency_s,
+        " ".join(f"{stage}={usd:.4f}" for stage, usd in cost.stages.items()),
+    )
+    metrics: dict[str, float] = {"cost_usd": float(cost.total), "latency_s": latency_s}
+    for stage, usd in cost.stages.items():
+        metrics[f"stage_cost_usd.{stage}"] = float(usd)
+    annotate_span(
+        metadata={
+            "mode": result.mode,
+            "scout": _scout_tag(result),
+            "scout_turns": result.tool_turns if result.mode == "multi" else None,
+            "verified": result.verified,
+            "conventions_file": result.conventions_file,
+        },
+        metrics=metrics,
+    )
+    return cost
+
+
+def _scout_tag(result: ReviewResult) -> str:
+    if result.mode != "multi":
+        return "none"
+    return "ran" if result.scout_ran else "skipped"
+
+
+def review_metric_tags(result: ReviewResult, *, repo: str) -> list[str]:
+    """The tag set both metrics carry. Kept small on purpose — every distinct
+    combination is a billable custom metric, five more once percentiles are
+    on — and chosen so the dashboard can split by path, by repo and by model,
+    which are the three things that change a review's price."""
+    return [
+        f"ml_app:{ML_APP}",
+        f"repo:{repo}",
+        f"mode:{result.mode}",
+        f"scout:{_scout_tag(result)}",
+        f"verified:{str(result.verified).lower()}",
+        f"model:{result.model}",
+    ]
+
+
+def review_metric_points(
+    result: ReviewResult, *, repo: str, at: int | None = None
+) -> list[dict[str, Any]]:
+    """The v1 distribution-points payload for one review. Pure — tests read
+    this rather than a network. Empty when the model has no price: a gap
+    means unmeasured, a zero would mean free."""
+    try:
+        cost = review_cost(result)
+    except UnknownModelPrice:
+        return []
+    at = at or int(time.time())
+    tags = review_metric_tags(result, repo=repo)
+    return [
+        {"metric": COST_METRIC, "points": [[at, [float(cost.total)]]], "tags": tags},
+        {"metric": LATENCY_METRIC, "points": [[at, [result.latency_ms / 1000]]], "tags": tags},
+    ]
+
+
+def ship_review_metrics(result: ReviewResult, *, repo: str) -> bool:
+    """Submit the review's cost and latency to Datadog, agentless, from the
+    webhook. A no-op without ``DD_API_KEY``; any failure is logged and
+    swallowed, since the review is already posted or about to be and a
+    metric is not worth a retry. Returns whether a point was sent."""
+    api_key = os.environ.get("DD_API_KEY")
+    if not api_key:
+        return False
+    series = review_metric_points(result, repo=repo)
+    if not series:
+        return False
+    site = os.environ.get("DD_SITE", "datadoghq.com")
+    try:
+        resp = httpx.post(
+            f"https://api.{site}/api/v1/distribution_points",
+            json={"series": series},
+            headers={"DD-API-KEY": api_key},
+            timeout=METRIC_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 — a metric must never fail a review
+        logger.warning("review_metrics_failed %s", exc)
+        return False
+    return True

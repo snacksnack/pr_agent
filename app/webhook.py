@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from app.config import settings
-from app.observability import enable_llm_obs
+from app.observability import enable_llm_obs, ship_review_metrics
 
 if TYPE_CHECKING:  # avoid importing these at module load; worker imports lazily
     from app.dedup import DedupStore
@@ -210,6 +210,10 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
             log.info(
                 "repo_tools api_calls=%d tree=%s", tools.api_calls, tools.tree_available
             )
+            # RC1-395: one cost point per review, from here only — the
+            # dry-run CLI and the eval corpus run the same review function
+            # and must not write into the production series.
+            ship_review_metrics(result, repo=f"{event.owner}/{event.repo}")
             result.findings.extend(precomputed)
             outcome = post_review(
                 gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha

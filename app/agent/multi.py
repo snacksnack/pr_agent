@@ -311,133 +311,133 @@ def review_pull_request_multi(
     )
 
     latency: dict[str, float] = {}
-    with stage_span("workflow", "pr_review"):
-        # RC1-393: the deterministic context is gathered wherever the scout
-        # would explore — same gate, so a docs-only change or an empty
-        # checkout pays for neither.
-        started = time.perf_counter()
-        context = RepoContext()
-        if plan.scout and repo_context:
-            with stage_span("task", "repo_context"):
-                context = build_repo_context(pull_request, repo_tools)
-        context_text = context.render()
-        turns = scout_turns(context, full=scout_max_turns, with_context=scout_context_turns)
-        latency["context"] = _ms_since(started)
-        logger.info(
-            "context conventions=%s callers=%d unsearched=%d scout_turns=%d",
-            context.conventions_path,
-            len(context.callers),
-            len(context.symbols_unsearched),
-            turns,
-        )
+    # RC1-393: the deterministic context is gathered wherever the scout
+    # would explore — same gate, so a docs-only change or an empty
+    # checkout pays for neither.
+    started = time.perf_counter()
+    context = RepoContext()
+    if plan.scout and repo_context:
+        with stage_span("task", "repo_context"):
+            context = build_repo_context(pull_request, repo_tools)
+    context_text = context.render()
+    turns = scout_turns(context, full=scout_max_turns, with_context=scout_context_turns)
+    latency["context"] = _ms_since(started)
+    logger.info(
+        "context conventions=%s callers=%d unsearched=%d scout_turns=%d",
+        context.conventions_path,
+        len(context.callers),
+        len(context.symbols_unsearched),
+        turns,
+    )
 
-        started = time.perf_counter()
-        if plan.scout and turns == 0:
-            brief = scouting.skipped_brief(
-                "the conventions file and the callers of what changed are above, "
-                "gathered without a model turn; nothing left to explore"
+    started = time.perf_counter()
+    if plan.scout and turns == 0:
+        brief = scouting.skipped_brief(
+            "the conventions file and the callers of what changed are above, "
+            "gathered without a model turn; nothing left to explore"
+        )
+    elif plan.scout:
+        with stage_span("agent", "scout"):
+            brief = scouting.explore(
+                pull_request,
+                repo_tools,
+                client=client,
+                model=model,
+                max_tool_turns=turns,
+                max_files_read=max_files_read,
+                max_tokens=max_tokens,
+                precomputed_findings=precomputed_findings,
+                context=context_text,
             )
-        elif plan.scout:
-            with stage_span("agent", "scout"):
-                brief = scouting.explore(
-                    pull_request,
-                    repo_tools,
-                    client=client,
-                    model=model,
-                    max_tool_turns=turns,
-                    max_files_read=max_files_read,
-                    max_tokens=max_tokens,
-                    precomputed_findings=precomputed_findings,
-                    context=context_text,
-                )
-        else:
-            reason = plan.reasons[0] if plan.reasons else "nothing to explore"
-            brief = scouting.skipped_brief(reason)
+    else:
+        reason = plan.reasons[0] if plan.reasons else "nothing to explore"
+        brief = scouting.skipped_brief(reason)
 
-        latency["scout"] = _ms_since(started)
+    latency["scout"] = _ms_since(started)
 
-        prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text, context_text)
+    prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text, context_text)
+    started = time.perf_counter()
+    warm, outputs = asyncio.run(
+        fan_out(async_client, plan.reviewers, model, prefix, max_tokens)
+    )
+    latency["fan_out"] = _ms_since(started)
+    findings, off_scope, deduplicated = merge_findings(outputs)
+
+    stage_usage = {"scout": brief.usage, "warm_cache": warm}
+    for out in outputs:
+        stage_usage[f"reviewer:{out.spec.name}"] = out.usage
+    total = TokenUsage()
+    for used in stage_usage.values():
+        total = total + used
+
+    result = ReviewResult(
+        summary=compose_summary(outputs),
+        findings=findings,
+        model=model,
+        tool_turns=brief.tool_turns,
+        files_read=brief.files_read,
+        truncated=brief.truncated,
+        malformed_findings=sum(o.malformed for o in outputs),
+        coerced_findings=sum(o.coerced for o in outputs),
+        input_tokens=total.input_tokens,
+        output_tokens=total.output_tokens,
+        cache_creation_input_tokens=total.cache_creation_input_tokens,
+        cache_read_input_tokens=total.cache_read_input_tokens,
+        mode="multi",
+        reviewers_run=plan.names,
+        brief=brief.text,
+        stage_usage=stage_usage,
+        stage_latency_ms=latency,
+        off_scope_findings=off_scope,
+        deduplicated_findings=deduplicated,
+        unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
+        conventions_file=context.conventions_path,
+        callers_found=len(context.callers),
+        scout_ran=not brief.skipped,
+    )
+    logger.info(
+        "multi_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
+        "context=%d out=%d",
+        ",".join(plan.names),
+        len(findings),
+        off_scope,
+        deduplicated,
+        result.unusable_reviewer_calls,
+        total.context_tokens,
+        total.output_tokens,
+    )
+    annotate_span(
+        metadata={
+            "reviewers": plan.names,
+            "scout": plan.scout,
+            "reasons": list(plan.reasons),
+            "conventions_file": context.conventions_path,
+        },
+        metrics={
+            "findings": len(findings),
+            "off_scope": off_scope,
+            "callers_found": len(context.callers),
+            "scout_turn_cap": turns,
+        },
+    )
+
+    if verify and result.findings:
         started = time.perf_counter()
-        warm, outputs = asyncio.run(
-            fan_out(async_client, plan.reviewers, model, prefix, max_tokens)
-        )
-        latency["fan_out"] = _ms_since(started)
-        findings, off_scope, deduplicated = merge_findings(outputs)
-
-        stage_usage = {"scout": brief.usage, "warm_cache": warm}
-        for out in outputs:
-            stage_usage[f"reviewer:{out.spec.name}"] = out.usage
-        total = TokenUsage()
-        for used in stage_usage.values():
-            total = total + used
-
-        result = ReviewResult(
-            summary=compose_summary(outputs),
-            findings=findings,
-            model=model,
-            tool_turns=brief.tool_turns,
-            files_read=brief.files_read,
-            truncated=brief.truncated,
-            malformed_findings=sum(o.malformed for o in outputs),
-            coerced_findings=sum(o.coerced for o in outputs),
-            input_tokens=total.input_tokens,
-            output_tokens=total.output_tokens,
-            cache_creation_input_tokens=total.cache_creation_input_tokens,
-            cache_read_input_tokens=total.cache_read_input_tokens,
-            mode="multi",
-            reviewers_run=plan.names,
-            brief=brief.text,
-            stage_usage=stage_usage,
-            stage_latency_ms=latency,
-            off_scope_findings=off_scope,
-            deduplicated_findings=deduplicated,
-            unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
-            conventions_file=context.conventions_path,
-            callers_found=len(context.callers),
-        )
-        logger.info(
-            "multi_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
-            "context=%d out=%d",
-            ",".join(plan.names),
-            len(findings),
-            off_scope,
-            deduplicated,
-            result.unusable_reviewer_calls,
-            total.context_tokens,
-            total.output_tokens,
-        )
-        annotate_span(
-            metadata={
-                "reviewers": plan.names,
-                "scout": plan.scout,
-                "reasons": list(plan.reasons),
-                "conventions_file": context.conventions_path,
-            },
-            metrics={
-                "findings": len(findings),
-                "off_scope": off_scope,
-                "callers_found": len(context.callers),
-                "scout_turn_cap": turns,
-            },
-        )
-
-        if verify and result.findings:
-            started = time.perf_counter()
-            with stage_span("agent", "verifier"):
-                result = verify_findings(
-                    pull_request,
-                    result,
-                    client=client,
-                    shared_prefix=prefix,
-                    tools=REVIEW_TOOLS,
-                    tool_choice=TOOL_CHOICE_ANY,
-                )
-            latency["verifier"] = _ms_since(started)
-        logger.info(
-            "multi_latency %s",
-            " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
-        )
-        return result
+        with stage_span("agent", "verifier"):
+            result = verify_findings(
+                pull_request,
+                result,
+                client=client,
+                shared_prefix=prefix,
+                tools=REVIEW_TOOLS,
+                tool_choice=TOOL_CHOICE_ANY,
+            )
+        latency["verifier"] = _ms_since(started)
+    logger.info(
+        "multi_latency %s",
+        " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
+    )
+    return result
 
 
 def _ms_since(started: float) -> float:
