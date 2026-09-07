@@ -1,6 +1,8 @@
-"""Price a review of a real PR at its own head (RC1-393/394/391).
+"""Price a review of a real PR at its own head (RC1-393/394/391/396).
 
     python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph]
+    python scripts/measure_pr.py 8 --multi --verify \
+        --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
 
 For each PR: a git worktree at the PR's head SHA (the review must see the
 repository as the PR did, not as ``main`` is now — RC1-393 produced a
@@ -9,6 +11,11 @@ spurious blocker measuring against the wrong checkout), the shipped
 over the result. One JSON line per review on stdout; a human summary on
 stderr. Billed: every PR drives a real model.
 
+``--repo-dir`` points at another checkout (its origin names the repository,
+its PRs are the ones measured); ``--overlay`` copies files from that
+checkout's working tree into the worktree before the review, which is how a
+conventions file is measured against a PR that predates it (RC1-396).
+
 Written down because it had been rebuilt from a memory note three times.
 """
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,22 +37,39 @@ from app.github import fetch_pull_request
 from app.pricing import review_cost
 
 
-def _gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+def _gh(*args: str, cwd: Path) -> str:
+    return subprocess.run(
+        ["gh", *args], check=True, capture_output=True, text=True, cwd=cwd
+    ).stdout
 
 
-def _origin() -> tuple[str, str]:
+def _origin(cwd: Path) -> tuple[str, str]:
     url = subprocess.run(
-        ["git", "remote", "get-url", "origin"], check=True, capture_output=True, text=True
+        ["git", "remote", "get-url", "origin"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
     ).stdout.strip()
     path = url.split(":")[-1].split("github.com/")[-1].removesuffix(".git")
     owner, repo = path.split("/")[-2:]
     return owner, repo
 
 
-def measure(number: int, *, multi: bool, verify: bool, orchestrator: str) -> dict:
-    owner, repo = _origin()
-    head = _gh("pr", "view", str(number), "--json", "headRefOid", "-q", ".headRefOid").strip()
+def measure(
+    number: int,
+    *,
+    multi: bool,
+    verify: bool,
+    orchestrator: str,
+    repo_dir: Path = Path("."),
+    overlay: tuple[str, ...] = (),
+) -> dict:
+    repo_dir = repo_dir.resolve()
+    owner, repo = _origin(repo_dir)
+    head = _gh(
+        "pr", "view", str(number), "--json", "headRefOid", "-q", ".headRefOid", cwd=repo_dir
+    ).strip()
     pr = fetch_pull_request(owner, repo, number, token=settings.github_token)
     with tempfile.TemporaryDirectory(prefix=f"pr-{number}-") as tmp:
         worktree = Path(tmp) / "wt"
@@ -52,8 +77,13 @@ def measure(number: int, *, multi: bool, verify: bool, orchestrator: str) -> dic
             ["git", "worktree", "add", "--detach", str(worktree), head],
             check=True,
             capture_output=True,
+            cwd=repo_dir,
         )
         try:
+            for rel in overlay:
+                target = worktree / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
             result = review_pull_request(
                 pr, RepoTools(worktree), multi=multi, verify=verify, repo_context=True
@@ -61,11 +91,15 @@ def measure(number: int, *, multi: bool, verify: bool, orchestrator: str) -> dic
             wall_s = time.perf_counter() - started
         finally:
             subprocess.run(
-                ["git", "worktree", "remove", "--force", str(worktree)], capture_output=True
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                capture_output=True,
+                cwd=repo_dir,
             )
     cost = review_cost(result)
     return {
+        "repo": f"{owner}/{repo}",
         "pr": number,
+        "overlay": list(overlay),
         "head": head[:7],
         "files": len(pr.files),
         "orchestrator": orchestrator if multi else "single",
@@ -101,6 +135,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--multi", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--orchestrator", default=None, choices=("asyncio", "langgraph"))
+    parser.add_argument(
+        "--repo-dir",
+        type=Path,
+        default=Path("."),
+        help="checkout whose origin and PRs to measure (default: the current directory)",
+    )
+    parser.add_argument(
+        "--overlay",
+        nargs="*",
+        default=[],
+        metavar="PATH",
+        help="files copied from --repo-dir's working tree into the worktree first",
+    )
     args = parser.parse_args(argv)
     if args.orchestrator:
         settings.review_orchestrator = args.orchestrator
@@ -111,10 +158,13 @@ def main(argv: list[str] | None = None) -> int:
             multi=args.multi,
             verify=args.verify,
             orchestrator=settings.review_orchestrator,
+            repo_dir=args.repo_dir,
+            overlay=tuple(args.overlay),
         )
         print(json.dumps(row), flush=True)
         print(
-            f"#{row['pr']} {row['orchestrator']}: ${row['cost_usd']:.4f} {row['wall_s']}s "
+            f"{row['repo']}#{row['pr']} {row['orchestrator']}: ${row['cost_usd']:.4f} "
+            f"{row['wall_s']}s "
             f"{row['findings']} finding(s) {row['by_severity']}",
             file=sys.stderr,
             flush=True,
