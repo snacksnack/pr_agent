@@ -325,9 +325,13 @@ def review_pull_request(
     with stage_span("workflow", "pr_review"):
         annotate_review_identity(pull_request)
         if multi:
-            from app.agent.multi import review_pull_request_multi
+            if settings.review_orchestrator == "langgraph":
+                # RC1-391 spike: the same graph on LangGraph, dev-only dependency.
+                from app.agent.graph import review_pull_request_graph as review_multi
+            else:
+                from app.agent.multi import review_pull_request_multi as review_multi
 
-            result = review_pull_request_multi(
+            result = review_multi(
                 pull_request,
                 repo_tools,
                 client=client,
