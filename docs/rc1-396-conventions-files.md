@@ -121,6 +121,10 @@ has the whole of it in view, not extracted from one session's survey.
 `n8n-jira-notion-sync` also has no file, but it has never had a PR, so it
 pays nothing today.
 
+*Update 2026-09-07:* the platform file landed as RC1-399, measured with the
+same method on platform #64; the before/after is in that repository's
+`docs/delivery/conventions-file.md`.
+
 ## What to watch
 
 - The PRs that add the files were reviewed live at 10:48 UTC, but that is
