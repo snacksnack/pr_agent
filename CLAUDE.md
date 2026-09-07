@@ -82,7 +82,12 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       default 0); the run-C guard on every reviewer and the multi path's
       verifier; the `pr_review` span tagged repo/pr/head_sha and a last-reviews
       list on the fleet dashboard (record in `docs/rc1-394-tests-by-python.md`)
-- [ ] RC1-391 spike: port the same graph to LangGraph and compare
+- [x] RC1-391 spike: the same graph on LangGraph (`app/agent/graph.py`;
+      `REVIEW_ORCHESTRATOR=langgraph`, default `asyncio`; dev-only dependency),
+      measured against `multi.py` on the corpus and live PRs; the comparison
+      and the "when I would reach for this" answer in
+      `docs/rc1-391-langgraph-spike.md`. Live-PR pricing harness:
+      `scripts/measure_pr.py`.
 
 ## Layout
 
@@ -113,6 +118,7 @@ app/
                 into the prefix; `complete` when all three are answered
     scout.py    RC1-390: the exploring half of the loop, ends in a brief
     multi.py    RC1-390: context -> [scout] -> warm cache -> reviewers (gather) -> merge -> verifier
+    graph.py    RC1-391: the same review as a LangGraph StateGraph (spike; REVIEW_ORCHESTRATOR)
     prompts.py  rubric/system prompt (RC1-111); reviewer specs + scout prompt (RC1-390)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
@@ -142,7 +148,9 @@ tests/          pytest, offline
   `review_scout_context_turns` (RC1-393: the scout's cap once Python has put
   the conventions file and callers in the prefix but the tests search was cut
   off), `review_scout_complete_turns` (RC1-394: the cap once tests are in the
-  prefix too; 0 skips the scout, which is the default).
+  prefix too; 0 skips the scout, which is the default), `review_orchestrator`
+  (`asyncio`; `langgraph` runs the RC1-391 port, which needs the dev
+  requirements — the runtime image does not carry LangGraph).
 - **Flag off must stay byte-identical.** `app/agent/multi.py` is imported only
   when `review_multi_agent` is on; changes to the single loop's request shape
   need a corpus run either way.
@@ -169,6 +177,8 @@ python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
 python -m evals --repo-path .  # ...with a checkout every case explores (RC1-393; the
                                # scout runs on every case, so ~2-3x the diff-only cost)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
+python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph]
+                               # price reviews of real PRs at their own head (BILLED; RC1-391)
 ```
 
 ## Per-ticket workflow
