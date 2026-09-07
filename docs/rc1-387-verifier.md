@@ -108,7 +108,8 @@ Two findings from this run changed the story's own premises:
    API's `input_tokens`, which excludes `cache_read_input_tokens` and
    `cache_creation_input_tokens`. Fixed in this story (`TokenUsage`, priced
    at 1.25x for writes and 0.1x for reads); the library-side fix so other
-   subjects do not repeat it is **RC1-392**. Every pr-review cost on the trend
+   subjects do not repeat it is **RC1-392** (shipped in agent-evals v0.6.0;
+   the stopgap now delegates to it). Every pr-review cost on the trend
    page between 2026-08-31 and this fix is low by that factor. Because the
    baseline's own cost is wrong, **the cost comparison below waits for the
    corrected pair.**

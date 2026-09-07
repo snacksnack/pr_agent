@@ -29,9 +29,9 @@ def test_price_tables_agree_with_the_harness_in_both_directions():
     assert pricing.AS_OF == harness_pricing.AS_OF
 
 
-def test_cache_rates_agree_with_the_eval_subject():
-    assert pricing.CACHE_WRITE == subject._CACHE_WRITE
-    assert pricing.CACHE_READ == subject._CACHE_READ
+def test_cache_rates_agree_with_the_harness():
+    assert pricing.CACHE_WRITE == harness_pricing.CACHE_WRITE
+    assert pricing.CACHE_READ == harness_pricing.CACHE_READ
 
 
 def test_cost_matches_the_eval_subject_to_the_token():

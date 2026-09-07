@@ -5,8 +5,8 @@ in USD, plus the two prompt-cache rates the API bills at: a cache write is
 1.25x the input price, a cache read 0.1x. ``AS_OF`` says when a reader last
 checked the list.
 
-Duplicated from ``agent_evals.pricing.PRICES`` and the cache multipliers in
-``evals/subject.py`` on purpose: the runtime image is ``python:3.12-slim``
+Duplicated from ``agent_evals.pricing`` (``PRICES``, ``CACHE_WRITE``,
+``CACHE_READ``) on purpose: the runtime image is ``python:3.12-slim``
 with no git, and the eval harness is pinned by git ref, so the webhook cannot
 import it in production without shipping the whole harness (the same reason
 ``app/observability.py`` exists). ``tests/test_pricing.py`` asserts the two

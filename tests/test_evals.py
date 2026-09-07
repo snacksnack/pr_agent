@@ -131,7 +131,10 @@ def test_cost_prices_cache_writes_and_reads_not_just_uncached_input():
             cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
         ),
     )
-    assert recorded.input_tokens == 10008, "the record carries the whole context read"
+    assert recorded.input_tokens == 8, "the API's counts go on the record verbatim (RC1-392)"
+    assert recorded.cache_creation_input_tokens == 4000
+    assert recorded.cache_read_input_tokens == 6000
+    assert recorded.context_tokens == 10008, "the whole context is still one property away"
     assert recorded.cost_usd == expected
 
 
