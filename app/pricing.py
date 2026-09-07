@@ -26,7 +26,7 @@ from decimal import Decimal
 from app.models import ReviewResult, TokenUsage
 
 #: When these prices were last verified against the published price list.
-AS_OF = "2026-08-16"
+AS_OF = "2026-09-07"
 
 _MILLION = Decimal("1000000")
 
@@ -55,7 +55,7 @@ def _price(input_per_mtok: str, output_per_mtok: str) -> ModelPrice:
 PRICES: dict[str, ModelPrice] = {
     "claude-opus-5": _price("5.00", "25.00"),
     "claude-opus-4-8": _price("5.00", "25.00"),
-    "claude-sonnet-5": _price("3.00", "15.00"),
+    "claude-sonnet-5": _price("2.00", "10.00"),  # billed list price (RC1-401)
     "claude-sonnet-4-6": _price("3.00", "15.00"),
     "claude-haiku-4-5": _price("1.00", "5.00"),
 }
