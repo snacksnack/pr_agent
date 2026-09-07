@@ -123,8 +123,17 @@ pays nothing today.
 
 ## What to watch
 
-- The live confirmation is the webhook log on the first PR to each n8n
-  repository after the file merges: `context conventions=CLAUDE.md …
+- The PRs that add the files were reviewed live at 10:48 UTC, but that is
+  not the confirmation: the router classed both as documentation-only
+  (`plan scout=False … reasons=('documentation-only change: scout and
+  repo_context skipped',)`), so neither built a context and the log line
+  reads `conventions=None`. The same minute, the live review of pr_agent #45
+  did build one — `conventions=CLAUDE.md conventions_chars=6018 …
+  complete=True scout_turns=0` — which shows the path working on a code PR,
+  and also that this repository's own file is now just over the cap and is
+  being cut to its priority sections.
+- The live confirmation for the n8n repositories is the webhook log on the
+  first code PR to each after the file merges: `context conventions=CLAUDE.md …
   complete=True scout_turns=0` and a `mode:multi` cost point in the
   5–10 ¢ range on the fleet dashboard.
 - A conventions file over 6,000 characters is cut to its conventions,
