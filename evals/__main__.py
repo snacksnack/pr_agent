@@ -62,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
 
     verify = "on" if settings.review_verify_findings else "off"
     multi = "on" if settings.review_multi_agent else "off"
+    if settings.review_multi_agent and settings.review_orchestrator != "asyncio":
+        multi += f" ({settings.review_orchestrator})"
     checkout = f"checkout {args.repo_path}" if args.repo_path else "diff-only"
     context = "repo context on" if repo_context else "repo context OFF"
     print(

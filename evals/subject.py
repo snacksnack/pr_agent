@@ -119,6 +119,10 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
             + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
         ).encode()
         version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+        if settings.review_orchestrator != "asyncio":
+            # RC1-391: the same graph on a framework is its own subject version;
+            # the two are compared, never averaged.
+            version += f"+{settings.review_orchestrator}"
     if checkout:
         version += "+checkout"
     if not repo_context:
@@ -387,6 +391,8 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
         # RC1-393: whether the case had a repository to explore, and what
         # Python put in the prefix before the scout ran.
         "checkout": checkout,
+        # RC1-391: which orchestration ran the graph.
+        "orchestrator": settings.review_orchestrator,
         "context": {
             "conventions_file": result.conventions_file,
             "callers": result.callers_found,
