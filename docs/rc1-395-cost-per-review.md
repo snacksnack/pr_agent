@@ -48,7 +48,7 @@ is `python:3.12-slim` with no git, and the eval harness's
 models, input and output per million tokens, plus the two cache rates the
 API bills at (writes 1.25x the input price, reads 0.1x). `tests/test_pricing.py`
 asserts the copy equals the harness's table in both directions, that the
-cache rates equal the eval subject's, and that `cost_usd` matches
+cache rates equal the harness's (RC1-392), and that `cost_usd` matches
 `evals/subject._cost_usd` to the token for every model, so the two cannot
 drift silently. An unknown model raises rather than pricing at zero, and the
 live path catches that at the boundary and ships nothing: a gap in the

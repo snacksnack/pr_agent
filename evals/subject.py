@@ -518,28 +518,21 @@ def materialise_checkout(
         path.write_text(contents, encoding="utf-8")
 
 
-#: Prompt-cache multipliers on the input price (5-minute cache): a write costs
-#: 1.25x, a read 0.1x. Same on every current model.
-_CACHE_WRITE = Decimal("1.25")
-_CACHE_READ = Decimal("0.1")
-
-
 def _cost_usd(model: str, usage: TokenUsage) -> Decimal:
-    """Cache-aware price of a review (RC1-387).
+    """Price a review's four token counts at the harness's rates.
 
-    `pricing.cost_usd` knows input and output only. After prompt caching
-    (RC1-350) the bulk of a review's context is billed as cache reads and
-    writes, so pricing the uncached `input_tokens` alone undercounted every
-    run since 2026-08-31 by roughly 2.5x. Priced here from the library's
-    per-model input price until the library learns the two cache rates.
+    The harness has known the two cache rates since v0.6.0 (RC1-392); this
+    kept its RC1-387 stopgap's name so the observations that call it did not
+    move. Raises on an unknown model — a review that looks free is worse
+    than one that is not priced.
     """
-    base = pricing.cost_usd(model, usage.input_tokens, usage.output_tokens)  # raises on unknown
-    price = pricing.PRICES[model]
-    cached = (
-        Decimal(usage.cache_creation_input_tokens) * price.input_per_mtok * _CACHE_WRITE
-        + Decimal(usage.cache_read_input_tokens) * price.input_per_mtok * _CACHE_READ
-    ) / Decimal(1_000_000)
-    return base + cached
+    return pricing.cost_usd(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+    )
 
 
 def _token_breakdown(usage: TokenUsage) -> dict[str, int]:
@@ -556,16 +549,19 @@ def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
 
     Recording $0 for a billed suite is RC1-254's exact finding; the guard stays
     honest when nothing was captured — no measured tokens, no invented cost.
-    `input_tokens` on the record is the whole context the model read (uncached
-    plus cache writes plus cache reads), which is what the pre-caching runs
-    reported and so what the trend compares against.
+    The four counts go on the record as the API reported them (the harness's
+    convention since v0.6.0, RC1-392): `input_tokens` is the uncached
+    remainder, the cache counts carry the rest, and `Usage.context_tokens`
+    is the whole prompt for anyone comparing against pre-caching runs.
     """
     if result is None:
         return Usage(latency_ms=latency_ms)
     usage = result.usage
     return Usage(
-        input_tokens=usage.context_tokens,
+        input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
         cost_usd=_cost_usd(result.model, usage),
         latency_ms=latency_ms,
     )
