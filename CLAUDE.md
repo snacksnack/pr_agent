@@ -88,6 +88,10 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       and the "when I would reach for this" answer in
       `docs/rc1-391-langgraph-spike.md`. Live-PR pricing harness:
       `scripts/measure_pr.py`.
+- [x] RC1-396 conventions files in the two n8n repositories so their reviews
+      skip the scout; `measure_pr.py --repo-dir/--overlay` measures a file
+      against a PR that predates it (before/after in
+      `docs/rc1-396-conventions-files.md`)
 
 ## Layout
 
@@ -179,6 +183,8 @@ python -m evals --repo-path .  # ...with a checkout every case explores (RC1-393
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
 python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph]
                                # price reviews of real PRs at their own head (BILLED; RC1-391)
+python scripts/measure_pr.py 8 --multi --verify --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
+                               # ...another repo's PR, with a working-tree file laid over the head (RC1-396)
 ```
 
 ## Per-ticket workflow
