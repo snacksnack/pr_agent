@@ -1,0 +1,126 @@
+"""Price a review of a real PR at its own head (RC1-393/394/391).
+
+    python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph]
+
+For each PR: a git worktree at the PR's head SHA (the review must see the
+repository as the PR did, not as ``main`` is now — RC1-393 produced a
+spurious blocker measuring against the wrong checkout), the shipped
+``review_pull_request`` with the flags asked for, and ``app.pricing.review_cost``
+over the result. One JSON line per review on stdout; a human summary on
+stderr. Billed: every PR drives a real model.
+
+Written down because it had been rebuilt from a memory note three times.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+from app.agent.reviewer import review_pull_request
+from app.agent.tools import RepoTools
+from app.config import settings
+from app.github import fetch_pull_request
+from app.pricing import review_cost
+
+
+def _gh(*args: str) -> str:
+    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+
+
+def _origin() -> tuple[str, str]:
+    url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    path = url.split(":")[-1].split("github.com/")[-1].removesuffix(".git")
+    owner, repo = path.split("/")[-2:]
+    return owner, repo
+
+
+def measure(number: int, *, multi: bool, verify: bool, orchestrator: str) -> dict:
+    owner, repo = _origin()
+    head = _gh("pr", "view", str(number), "--json", "headRefOid", "-q", ".headRefOid").strip()
+    pr = fetch_pull_request(owner, repo, number, token=settings.github_token)
+    with tempfile.TemporaryDirectory(prefix=f"pr-{number}-") as tmp:
+        worktree = Path(tmp) / "wt"
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(worktree), head],
+            check=True,
+            capture_output=True,
+        )
+        try:
+            started = time.perf_counter()
+            result = review_pull_request(
+                pr, RepoTools(worktree), multi=multi, verify=verify, repo_context=True
+            )
+            wall_s = time.perf_counter() - started
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree)], capture_output=True
+            )
+    cost = review_cost(result)
+    return {
+        "pr": number,
+        "head": head[:7],
+        "files": len(pr.files),
+        "orchestrator": orchestrator if multi else "single",
+        "mode": result.mode,
+        "cost_usd": float(cost.total),
+        "stages_usd": {k: float(v) for k, v in cost.stages.items()},
+        "wall_s": round(wall_s, 1),
+        "stage_latency_ms": {k: round(v) for k, v in result.stage_latency_ms.items()},
+        "findings": len(result.findings),
+        "by_severity": {
+            s: sum(1 for f in result.findings if f.severity == s)
+            for s in ("blocker", "warning", "nit")
+        },
+        "verifier_dropped": len(result.verifier_dropped),
+        "scout_ran": result.scout_ran,
+        "context_complete": result.context_complete,
+        "min_reviewer_cache_read": min(
+            (
+                u.cache_read_input_tokens
+                for k, u in result.stage_usage.items()
+                if k.startswith("reviewer:")
+            ),
+            default=0,
+        ),
+        "messages": [f"[{f.severity}/{f.category}] {f.file}:{f.line} {f.message[:100]}"
+                     for f in result.findings],
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("numbers", nargs="+", type=int)
+    parser.add_argument("--multi", action="store_true")
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--orchestrator", default=None, choices=("asyncio", "langgraph"))
+    args = parser.parse_args(argv)
+    if args.orchestrator:
+        settings.review_orchestrator = args.orchestrator
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(name)s %(message)s")
+    for number in args.numbers:
+        row = measure(
+            number,
+            multi=args.multi,
+            verify=args.verify,
+            orchestrator=settings.review_orchestrator,
+        )
+        print(json.dumps(row), flush=True)
+        print(
+            f"#{row['pr']} {row['orchestrator']}: ${row['cost_usd']:.4f} {row['wall_s']}s "
+            f"{row['findings']} finding(s) {row['by_severity']}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
