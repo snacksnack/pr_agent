@@ -76,6 +76,12 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       point per review from the webhook, widget + p95 monitor as code in the
       platform (`app/pricing.py`, `observability.annotate_review_cost` /
       `ship_review_metrics`; record in `docs/rc1-395-cost-per-review.md`)
+- [x] RC1-394 tests for the changed paths by Python; a complete context
+      (conventions + callers + tests) skips the scout by default
+      (`context.tests_for`, `router.scout_turns`; `REVIEW_SCOUT_COMPLETE_TURNS`,
+      default 0); the run-C guard on every reviewer and the multi path's
+      verifier; the `pr_review` span tagged repo/pr/head_sha and a last-reviews
+      list on the fleet dashboard (record in `docs/rc1-394-tests-by-python.md`)
 - [ ] RC1-391 spike: port the same graph to LangGraph and compare
 
 ## Layout
@@ -102,10 +108,11 @@ app/
     reviewer.py the loop: review_pull_request(...)
     verifier.py second pass over the loop's findings, flag-gated (RC1-387)
     router.py   RC1-390: which reviewers run, decided from the file list;
-                RC1-393: the scout's turn cap, decided from the context
-    context.py  RC1-393: conventions file + callers by grep, Python only, into the prefix
+                RC1-393/394: the scout's turn cap, decided from the context
+    context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
+                into the prefix; `complete` when all three are answered
     scout.py    RC1-390: the exploring half of the loop, ends in a brief
-    multi.py    RC1-390: context -> scout -> warm cache -> reviewers (gather) -> merge -> verifier
+    multi.py    RC1-390: context -> [scout] -> warm cache -> reviewers (gather) -> merge -> verifier
     prompts.py  rubric/system prompt (RC1-111); reviewer specs + scout prompt (RC1-390)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
@@ -133,7 +140,9 @@ tests/          pytest, offline
   docs/rc1-387-verifier.md before turning it on), `review_multi_agent` (off;
   RC1-390, see docs/rc1-390-multi-agent.md), `review_scout_max_turns`,
   `review_scout_context_turns` (RC1-393: the scout's cap once Python has put
-  the conventions file and callers in the prefix).
+  the conventions file and callers in the prefix but the tests search was cut
+  off), `review_scout_complete_turns` (RC1-394: the cap once tests are in the
+  prefix too; 0 skips the scout, which is the default).
 - **Flag off must stay byte-identical.** `app/agent/multi.py` is imported only
   when `review_multi_agent` is on; changes to the single loop's request shape
   need a corpus run either way.

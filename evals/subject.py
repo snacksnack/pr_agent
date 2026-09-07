@@ -390,6 +390,10 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
         "context": {
             "conventions_file": result.conventions_file,
             "callers": result.callers_found,
+            # RC1-394: the tests rows, and whether the context was complete
+            # enough for the router to skip the scout.
+            "tests": result.tests_found,
+            "complete": result.context_complete,
         },
     }
 

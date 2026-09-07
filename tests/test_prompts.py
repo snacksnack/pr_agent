@@ -156,6 +156,18 @@ def test_reviewer_instructions_name_the_reviewer_its_categories_and_the_tool():
     assert "no tools" in text and "Call submit_review exactly once." in text
 
 
+def test_every_reviewer_is_told_not_to_file_the_missing_evidence():
+    """RC1-394: the run-C guard. Every reviewer reads a bounded, grep-built
+    context; none may raise a finding about what it did not reach."""
+    for spec in prompts.REVIEWERS:
+        assert prompts.MISSING_EVIDENCE_NOTE in spec.evidence, spec.name
+        assert prompts.MISSING_EVIDENCE_NOTE in prompts.reviewer_instructions(spec)
+    text = prompts.reviewer_instructions(prompts.DIFF_LOCAL)
+    assert "A scout has already explored" not in text, "the scout is optional now"
+    assert "a scout's brief follows it when one ran" in text
+    assert "tests touching the changed paths" in prompts.SCOUT_CONTEXT_NOTE
+
+
 def test_narrowed_reviewer_keeps_its_name_and_drops_dimensions():
     narrowed = prompts.CHANGE_INTENT.narrowed((8,))
     assert narrowed.name == "change_intent" and narrowed.categories == ("pr_drift",)

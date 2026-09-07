@@ -65,6 +65,21 @@ VERIFIER_INSTRUCTIONS = (
     "exactly once."
 )
 
+# RC1-394: appended for the multi-agent path, whose reviewers have no tools
+# and read a bounded, grep-built context. RC1-393's run C showed them
+# escalating "the scout found nothing" into blockers on files that were
+# simply not in the checkout; with the scout gone the context block is the
+# thing that can be read that way. The single loop's verifier is unchanged.
+ABSENCE_RULE = (
+    "The repository context above was gathered by a bounded grep, and the "
+    "scout's brief, when there is one, by a few tool calls. Drop a finding "
+    "whose only evidence is that something was not found there — a file, "
+    "module, caller or symbol the context does not mention, or that the "
+    "brief could not reach: absence from a bounded search is not evidence "
+    "of absence. A changed path the tests list names as untested is a fair "
+    "'tests' finding at warning; it is not a blocker."
+)
+
 VERIFY_TOOL = {
     "name": "verify_findings",
     "description": (
@@ -210,6 +225,7 @@ def verify_findings(
     shared_prefix: str | None = None,
     tools: list[dict] | None = None,
     tool_choice: dict | None = None,
+    absence_rule: bool = False,
 ) -> ReviewResult:
     """Run the verifier over ``result.findings`` and return a new result.
 
@@ -222,14 +238,18 @@ def verify_findings(
     passes ``shared_prefix`` — the PR and scout brief exactly as the
     reviewers saw them — with the reviewers' ``tools`` and ``tool_choice``,
     so this call reads their cached prefix instead of writing its own.
+    ``absence_rule`` (RC1-394) adds the rule that a claim resting only on
+    what the bounded context did not find is dropped; the multi-agent path
+    sets it, the single loop's request stays byte for byte.
     """
     if not result.findings:
         return result
     from app.agent.reviewer import render_pr  # noqa: PLC0415 — sibling module; avoids a cycle
 
     model = model or settings.review_verify_model or result.model or settings.review_model
+    instructions = VERIFIER_INSTRUCTIONS + (" " + ABSENCE_RULE if absence_rule else "")
     suffix = "\n".join(
-        [format_findings_for_verification(result.findings), "", VERIFIER_INSTRUCTIONS]
+        [format_findings_for_verification(result.findings), "", instructions]
     )
     if shared_prefix is None:
         text = "\n".join([*render_pr(pull_request), "", suffix])
@@ -289,5 +309,7 @@ def verify_findings(
         unusable_reviewer_calls=result.unusable_reviewer_calls,
         conventions_file=result.conventions_file,
         callers_found=result.callers_found,
+        tests_found=result.tests_found,
+        context_complete=result.context_complete,
         scout_ran=result.scout_ran,
     )

@@ -287,3 +287,19 @@ def test_read_text_is_raw_and_never_raises(tmp_path):
     assert tools.read_text("sub") is None
     assert tools.read_text("missing.md") is None
     assert tools.read_text("../outside") is None
+
+
+# --- paths (RC1-394) -----------------------------------------------------------------
+
+def test_paths_lists_every_file_the_tools_would_serve(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("x\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("x\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref\n")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "a.pyc").write_bytes(b"\x00")
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    (tmp_path / "uv.lock").write_text("lock\n")
+    assert sorted(RepoTools(tmp_path).paths()) == ["app/a.py", "tests/test_a.py"]

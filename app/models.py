@@ -186,6 +186,10 @@ class ReviewResult:
     # whether the scout had the cheap context or re-derived it.
     conventions_file: str | None = None
     callers_found: int = 0
+    # RC1-394: test rows Python found for the changed paths, and whether the
+    # context was complete enough for the router to skip the scout.
+    tests_found: int = 0
+    context_complete: bool = False
     # RC1-395: the three facts pricing and the per-review metric need that
     # the fields above do not carry. ``verifier_model`` is the model the
     # verifier pass actually ran on (``review_verify_model`` may differ from

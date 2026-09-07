@@ -29,7 +29,7 @@ from app.agent.prompts import (
 from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
 from app.config import settings
 from app.models import SEVERITY_ORDER, Finding, PullRequest, ReviewResult, TokenUsage
-from app.observability import annotate_review_cost, stage_span
+from app.observability import annotate_review_cost, annotate_review_identity, stage_span
 
 # Max characters of inline diff to put in the seed prompt; the agent can read
 # full files via tools if it needs more than this.
@@ -323,6 +323,7 @@ def review_pull_request(
 
     started = time.perf_counter()
     with stage_span("workflow", "pr_review"):
+        annotate_review_identity(pull_request)
         if multi:
             from app.agent.multi import review_pull_request_multi
 

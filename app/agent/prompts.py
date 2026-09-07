@@ -357,12 +357,21 @@ class ReviewerSpec:
 # the hunk alone; the hunk plus the surrounding repository; the hunk plus the
 # PR's stated intent and its manifests. Three is the number of distinct
 # contexts a review has, which is why it is three and not thirteen.
+# RC1-394: every reviewer gets this line, not only repo_context. The context
+# block is a bounded grep; a tool-less reviewer that reads "not found" in it
+# as "does not exist" files a blocker on nothing (RC1-393's run C).
+MISSING_EVIDENCE_NOTE = (
+    "When the repository context above did not reach what you needed, judge "
+    "from the diff alone and raise nothing about the missing evidence itself."
+)
+
 DIFF_LOCAL = ReviewerSpec(
     "diff_local",
     (3, 2, 6),
     "Everything you need is in the hunks themselves: a committed secret, an "
     "injection, an unidiomatic construct, a swallowed exception, a docstring "
-    "that does not match its code. Judge the lines that changed.",
+    "that does not match its code. Judge the lines that changed. "
+    + MISSING_EVIDENCE_NOTE,
     owns_docs=True,
 )
 REPO_CONTEXT = ReviewerSpec(
@@ -371,16 +380,16 @@ REPO_CONTEXT = ReviewerSpec(
     "Your evidence is the repository around the change: the conventions its "
     "neighbouring modules follow, the callers of what changed, and the tests "
     "that do or do not cover it. The repository conventions, the callers "
-    "list and the scout's brief above are that evidence; cite them. When "
-    "none of them reached what you needed, judge from the diff alone and "
-    "raise nothing about the missing evidence itself.",
+    "list, the tests list and the scout's brief above are that evidence; "
+    "cite them. " + MISSING_EVIDENCE_NOTE,
 )
 CHANGE_INTENT = ReviewerSpec(
     "change_intent",
     (8, 9, 5, 10),
     "Your evidence is what the change says it does versus what it does: the "
     "PR description against the diff, dependency manifests, infrastructure "
-    "and workflow configuration, and the scale at which the touched IO runs.",
+    "and workflow configuration, and the scale at which the touched IO runs. "
+    + MISSING_EVIDENCE_NOTE,
 )
 REVIEWERS: tuple[ReviewerSpec, ...] = (DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT)
 
@@ -391,10 +400,12 @@ def reviewer_instructions(spec: ReviewerSpec) -> str:
     cats = ", ".join(spec.categories)
     return (
         f"You are the '{spec.name}' reviewer on a panel of three, each reading "
-        "the same change with a different kind of evidence. A scout has already "
-        "explored the repository; its brief is above. You have no tools in this "
-        "pass: judge from the diff, the description, and the brief, and do not "
-        "ask to read more.\n"
+        "the same change with a different kind of evidence. The repository "
+        "context above — its conventions file, the callers of what changed and "
+        "the tests touching it — was gathered by grep before this pass, and a "
+        "scout's brief follows it when one ran. You have no tools in this "
+        "pass: judge from the diff, the description, the context and the "
+        "brief, and do not ask to read more.\n"
         "\n"
         f"Your evidence: {spec.evidence}\n"
         "\n"
@@ -449,13 +460,14 @@ SCOUT_INSTRUCTIONS = (
 # it does not spend turns re-reading the conventions file or grepping for
 # callers the list already names.
 SCOUT_CONTEXT_NOTE = (
-    "Some of that work is already done: the repository's conventions file "
-    "and the callers of what changed are above, gathered by grep before you "
-    "started. Do not re-read the conventions file or search for those "
-    "callers again. Look only for what is not already there: tests for the "
-    "changed paths, conventions the file does not state that the touched "
-    "modules follow, and callers the list did not reach. Your exploration "
-    "budget is short for that reason: a few tool calls, then submit."
+    "Some of that work is already done: the repository's conventions file, "
+    "the callers of what changed and the tests touching the changed paths "
+    "are above, gathered by grep before you started. Do not re-read the "
+    "conventions file or search for those callers or tests again. Look only "
+    "for what is not already there: conventions the file does not state "
+    "that the touched modules follow, callers the list did not reach, and "
+    "tests the search did not reach. Your exploration budget is short for "
+    "that reason: a few tool calls, then submit."
 )
 
 SUBMIT_BRIEF_TOOL = {
