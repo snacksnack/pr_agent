@@ -92,6 +92,11 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       skip the scout; `measure_pr.py --repo-dir/--overlay` measures a file
       against a PR that predates it (before/after in
       `docs/rc1-396-conventions-files.md`)
+- [x] RC1-398 the verifier's category tie-break, measured before any
+      cross-category dedupe rule: boundary cases in `evals/boundary.py`
+      (one defect, two categories, the pair of findings), scoring in
+      `evals/tiebreak.py`, `scripts/measure_tiebreak.py history|probe|pipeline`
+      (decision in `docs/rc1-398-category-tiebreak.md`)
 
 ## Layout
 
@@ -185,6 +190,9 @@ python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph
                                # price reviews of real PRs at their own head (BILLED; RC1-391)
 python scripts/measure_pr.py 8 --multi --verify --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
                                # ...another repo's PR, with a working-tree file laid over the head (RC1-396)
+PYTHONPATH=. python scripts/measure_tiebreak.py history    # the eval store's on-plant survivors (free; RC1-398)
+PYTHONPATH=. python scripts/measure_tiebreak.py probe --runs 5     # BILLED: the verifier over each boundary pair, both orders
+PYTHONPATH=. python scripts/measure_tiebreak.py pipeline --runs 3  # BILLED: whole multi-agent reviews of the boundary cases
 ```
 
 ## Per-ticket workflow
