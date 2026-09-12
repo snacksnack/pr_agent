@@ -3,7 +3,7 @@
 Each case is a diff with one defect that legitimately fits two of the rubric's
 categories, and the two findings a first pass would file on it — the same
 defect on the same line, described once in each category's terms, at the same
-severity. The multi-agent merge (``multi.merge_findings``) folds findings only
+severity. The merge (``pipeline.merge_findings``) folds findings only
 when file, line *and* category agree, so a pair like this reaches the verifier
 intact, and the verifier's instruction is to keep the one whose category names
 the defect best. These cases exist to measure whether it does.

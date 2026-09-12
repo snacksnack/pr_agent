@@ -146,7 +146,10 @@ def test_prompt_version_changes_when_the_verifier_is_on(monkeypatch):
     off = subject.prompt_version()
     monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_verify_findings=True))
     on = subject.prompt_version()
-    assert on.startswith(off) and "+verify-sha256:" in on
+    assert "+verify-sha256:" in on and "+verify-sha256:" not in off
+    # The verifier's segment is inserted ahead of the pipeline's, which keeps
+    # a verifier-on version byte for byte what RC1-394's runs recorded.
+    assert on.replace(on[on.index("+verify-sha256:"):on.index("+multi-sha256:")], "") == off
 
 
 def test_case_ids_are_unique():
@@ -353,29 +356,24 @@ def test_the_corpus_covers_every_gating_category():
 # --- RC1-390: the multi-agent path in the record -------------------------------
 
 
-def test_prompt_version_changes_when_multi_agent_is_on(monkeypatch):
-    """A multi-agent run is its own subject version, on top of the verifier's."""
+def test_prompt_version_always_carries_the_pipeline_prompts(monkeypatch):
+    """RC1-422: the scout's and reviewers' instructions are the prompt, so
+    their hash is always in the version; the verifier's goes in front of it
+    when that pass is on."""
     from app.config import Settings
 
     monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
-    off = subject.prompt_version()
-    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_multi_agent=True))
-    on = subject.prompt_version()
-    assert on.startswith(off) and "+multi-sha256:" in on
+    plain = subject.prompt_version()
+    assert "+multi-sha256:" in plain
     monkeypatch.setattr(
-        subject,
-        "settings",
-        Settings(_env_file=None, review_multi_agent=True, review_verify_findings=True),
+        subject, "settings", Settings(_env_file=None, review_verify_findings=True)
     )
     both = subject.prompt_version()
-    assert "+verify-sha256:" in both and both.endswith(on.split("+")[-1])
+    assert "+verify-sha256:" in both and both.endswith(plain.split("+")[-1])
 
 
-def test_multi_observations_read_false_when_the_single_loop_ran():
-    from app.models import ReviewResult
-
+def test_multi_observations_read_false_when_there_is_no_result():
     assert subject._multi_observations(None) == {"ran": False}
-    assert subject._multi_observations(ReviewResult()) == {"ran": False}
 
 
 def test_multi_observations_carry_stages_and_the_cache_premise():
@@ -410,7 +408,7 @@ def test_prompt_version_names_a_checkout_and_the_context_control(monkeypatch):
     context off, are each their own subject version."""
     from app.config import Settings
 
-    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_multi_agent=True))
+    monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
     plain = subject.prompt_version()
     assert subject.prompt_version(checkout=True) == plain + "+checkout"
     assert subject.prompt_version(checkout=True, repo_context=False) == (

@@ -1,54 +1,44 @@
-"""Agentic review loop (RC1-110).
+"""Model-facing primitives shared by every stage of the review (RC1-110, RC1-422).
 
-Drives a multi-turn conversation with the model: seed it with the PR diff and
-metadata, expose the repo-exploration tools (RC1-109) plus a ``submit_review``
-tool, and let it investigate across turns until it submits structured findings.
+The review itself is :mod:`app.agent.pipeline`. What lives here is the part
+of talking to the model that every stage shares: the PR rendered the way the
+model reads it (:func:`render_pr`, one rendering for the scout, the
+reviewers and the verifier), the cache-marked request the scout's loop sends
+(:func:`_create`), the response shape normalized to plain blocks, the token
+counts read off a response, and the ``submit_review`` payload read into
+findings (:func:`parse_findings`).
 
-Guardrails cap both the number of model turns and the number of files read so a
-single review can't run away on cost or time. If the model exhausts its budget
-without submitting, we force a final ``submit_review`` call so the caller always
-gets a structured :class:`ReviewResult`.
-
-The model client is injectable: pass any object exposing
-``messages.create(...)`` (the real ``anthropic.Anthropic`` client, or a scripted
-fake in tests). The review rubric, system prompt, procedural instructions, and
-the ``submit_review`` output schema live in :mod:`app.agent.prompts` (RC1-111);
-this module composes them into the loop.
+RC1-110 built this as the single agentic loop — explore and judge in one
+conversation. RC1-390 split that into the scout and the routed reviewers,
+and RC1-422 retired the loop once the multi-agent path had been measured
+cheaper on live PRs, so only the primitives remain. The model client is
+injectable everywhere: any object exposing ``messages.create(...)``.
 """
 from __future__ import annotations
 
-import time
 from typing import Any
 
-from app.agent.prompts import (
-    INSTRUCTIONS,
-    SUBMIT_TOOL,
-    SYSTEM_PROMPT,
-    format_precomputed_findings,
-)
-from app.agent.tools import TOOL_SCHEMAS, RepoTools, is_lockfile
-from app.config import settings
-from app.models import SEVERITY_ORDER, Finding, PullRequest, ReviewResult, TokenUsage
-from app.observability import annotate_review_cost, annotate_review_identity, stage_span
+from app.agent.prompts import SYSTEM_PROMPT, format_precomputed_findings
+from app.agent.tools import is_lockfile
+from app.models import SEVERITY_ORDER, Finding, PullRequest, TokenUsage
 
-# Max characters of inline diff to put in the seed prompt; the agent can read
+# Max characters of inline diff to put in the seed prompt; the scout can read
 # full files via tools if it needs more than this.
 MAX_DIFF_CHARS = 50_000
 DEFAULT_MAX_TOKENS = 4096
-# Per-request ceiling for the SDK client the loop builds itself (RC1-387). The
-# SDK default is ten minutes with two retries, so one stalled response held a
-# corpus case for half an hour; a review turn that has not answered in this
+# Per-request ceiling for the SDK clients the pipeline builds itself (RC1-387).
+# The SDK default is ten minutes with two retries, so one stalled response held
+# a corpus case for half an hour; a review turn that has not answered in this
 # long is not going to. Retries still apply on top of it.
 REQUEST_TIMEOUT_S = 180
 
-ALL_TOOLS = [*TOOL_SCHEMAS, SUBMIT_TOOL]
-
-# Prompt caching (RC1-350). The loop re-sends the whole conversation on every
-# turn, so two 5-minute-TTL breakpoints let turns 2+ read the prefix at ~0.1x
-# input price: one on the constant tools+system prefix (shared across reviews
-# too), one riding the latest turn. The moving marker is applied to a copy at
-# send time — the history itself never accumulates markers, keeping each
-# request at two of the API's four-breakpoint cap.
+# Prompt caching (RC1-350). The scout's loop re-sends the whole conversation on
+# every turn, so two 5-minute-TTL breakpoints let turns 2+ read the prefix at
+# ~0.1x input price: one on the constant tools+system prefix (shared across
+# reviews too), one riding the latest turn. The moving marker is applied to a
+# copy at send time — the history itself never accumulates markers, keeping
+# each request at two of the API's four-breakpoint cap. The pipeline's fan-out
+# puts the same marker on its one shared prefix.
 CACHE_CONTROL = {"type": "ephemeral"}
 
 SYSTEM_BLOCKS = [
@@ -57,7 +47,7 @@ SYSTEM_BLOCKS = [
 
 
 class ReviewError(RuntimeError):
-    """Raised when the loop cannot produce a structured review."""
+    """Raised when a stage cannot produce its structured output."""
 
 
 def _get(block: Any, key: str, default: Any = None) -> Any:
@@ -86,24 +76,18 @@ def _normalize_blocks(content: Any) -> list[dict]:
     return blocks
 
 
-def format_pr_for_review(
-    pr: PullRequest, precomputed_findings: list[Finding] | None = None
-) -> str:
-    """Render the PR metadata + diff into the seed user message.
-
-    When ``precomputed_findings`` are supplied (e.g. from deterministic static
-    checks that ran first), they are listed as already-recorded so the model
-    builds on them rather than duplicating them.
-    """
-    return "\n".join([*render_pr(pr, precomputed_findings), "", INSTRUCTIONS])
-
-
 def render_pr(
     pr: PullRequest, precomputed_findings: list[Finding] | None = None
 ) -> list[str]:
     """The PR as the model sees it — metadata, description, bounded diff —
-    without the procedural instructions. Shared with the verifier (RC1-387)
-    so both passes read the same rendering of the same change."""
+    without any stage's instructions. One rendering for the scout's seed,
+    the reviewers' shared prefix and the verifier (RC1-387), so every pass
+    reads the same change the same way.
+
+    When ``precomputed_findings`` are supplied (from deterministic static
+    checks that ran first), they are listed as already-recorded so the model
+    builds on them rather than duplicating them.
+    """
     parts = [
         f"Pull request: {pr.slug}",
         f"Title: {pr.title}",
@@ -156,8 +140,9 @@ def _user_text(text: str) -> dict:
 def _with_cache_marker(messages: list) -> list:
     """Return ``messages`` with a cache breakpoint on the final content block.
 
-    Copies, never mutates: the loop's history stays unmarked so the breakpoint
-    moves forward each turn while earlier positions remain valid read points.
+    Copies, never mutates: the scout's history stays unmarked so the
+    breakpoint moves forward each turn while earlier positions remain valid
+    read points.
     """
     if not messages or not isinstance(messages[-1].get("content"), list):
         return messages
@@ -174,20 +159,17 @@ def _create(
     model: str,
     messages: list,
     max_tokens: int,
+    tools: list[dict],
     tool_choice: dict | None = None,
-    tools: list[dict] | None = None,
     system: list[dict] | None = None,
 ):
-    """One model call with the loop's cache markers applied.
-
-    ``tools`` and ``system`` default to the single loop's; the scout
-    (RC1-390) passes its own tool list and otherwise runs the same loop.
-    """
+    """One model call with the tool-loop cache markers applied: the
+    constant system block and the moving marker on the latest turn."""
     kwargs: dict[str, Any] = {
         "model": model,
         "system": SYSTEM_BLOCKS if system is None else system,
         "messages": _with_cache_marker(messages),
-        "tools": ALL_TOOLS if tools is None else tools,
+        "tools": tools,
         "max_tokens": max_tokens,
     }
     if tool_choice is not None:
@@ -214,7 +196,7 @@ def _tokens(response: Any) -> TokenUsage:
 def parse_findings(payload: dict) -> tuple[list[Finding], int, int]:
     """Read a ``submit_review`` payload into findings.
 
-    Returns ``(findings, malformed, coerced)``: findings the loop could not
+    Returns ``(findings, malformed, coerced)``: findings that could not be
     read are counted rather than silently skipped, and a severity outside
     blocker/warning/nit is coerced to warning and counted (RC1-387).
     """
@@ -247,235 +229,3 @@ def parse_findings(payload: dict) -> tuple[list[Finding], int, int]:
         )
     return findings, malformed, coerced
 
-
-def _result_from_submission(
-    payload: dict,
-    *,
-    model: str,
-    tool_turns: int,
-    files_read: int,
-    truncated: bool,
-    usage: TokenUsage,
-) -> ReviewResult:
-    findings, malformed, coerced = parse_findings(payload)
-    return ReviewResult(
-        summary=str(payload.get("summary") or ""),
-        findings=findings,
-        model=model,
-        tool_turns=tool_turns,
-        files_read=files_read,
-        truncated=truncated,
-        malformed_findings=malformed,
-        coerced_findings=coerced,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_creation_input_tokens=usage.cache_creation_input_tokens,
-        cache_read_input_tokens=usage.cache_read_input_tokens,
-    )
-
-
-def review_pull_request(
-    pull_request: PullRequest,
-    repo_tools: RepoTools,
-    *,
-    client: Any | None = None,
-    model: str | None = None,
-    max_tool_turns: int | None = None,
-    max_files_read: int | None = None,
-    max_tokens: int = DEFAULT_MAX_TOKENS,
-    precomputed_findings: list[Finding] | None = None,
-    verify: bool | None = None,
-    multi: bool | None = None,
-    async_client: Any | None = None,
-    repo_context: bool = True,
-) -> ReviewResult:
-    """Run the agentic review loop over a PR and return structured findings.
-
-    ``precomputed_findings`` are findings from deterministic static checks that
-    ran before the loop; they are shown to the model as already-recorded (so it
-    doesn't duplicate them) but are NOT merged here — the caller owns merging
-    them into the final result, keeping this function's output the model's own.
-
-    ``verify`` (RC1-387) runs the verifier pass over the loop's findings before
-    returning; ``None`` defers to ``settings.review_verify_findings``. The
-    deterministic findings are never verified — they are not the model's.
-
-    ``multi`` (RC1-390) routes the review through the scout, the three
-    evidence-scoped reviewers and the merge instead of this loop; ``None``
-    defers to ``settings.review_multi_agent``. ``async_client`` is that
-    path's fan-out client (``anthropic.AsyncAnthropic`` or a fake); unused
-    when ``multi`` is off. ``repo_context`` (RC1-393) is whether that path
-    puts the conventions file and the callers list in the shared prefix
-    before the scout runs; the eval turns it off to measure it, nothing
-    else does.
-
-    Either path runs inside one ``pr_review`` workflow span (RC1-395; before
-    this only the multi path opened one), and the finished review is priced
-    while that span is still open, so the trace carries the review's cost
-    and latency as metrics on its root. Pricing reads the result; it changes
-    no request.
-    """
-    model = model or settings.review_model
-    verify = settings.review_verify_findings if verify is None else verify
-    multi = settings.review_multi_agent if multi is None else multi
-    max_tool_turns = max_tool_turns if max_tool_turns is not None else settings.max_tool_turns
-    max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
-
-    started = time.perf_counter()
-    with stage_span("workflow", "pr_review"):
-        annotate_review_identity(pull_request)
-        if multi:
-            from app.agent.multi import review_pull_request_multi
-
-            result = review_pull_request_multi(
-                pull_request,
-                repo_tools,
-                client=client,
-                async_client=async_client,
-                model=model,
-                max_files_read=max_files_read,
-                max_tokens=max_tokens,
-                precomputed_findings=precomputed_findings,
-                verify=verify,
-                repo_context=repo_context,
-            )
-        else:
-            result = _review_single(
-                pull_request,
-                repo_tools,
-                client=client,
-                model=model,
-                max_tool_turns=max_tool_turns,
-                max_files_read=max_files_read,
-                max_tokens=max_tokens,
-                precomputed_findings=precomputed_findings,
-                verify=verify,
-            )
-        result.latency_ms = (time.perf_counter() - started) * 1000
-        annotate_review_cost(result)
-    return result
-
-
-def _review_single(
-    pull_request: PullRequest,
-    repo_tools: RepoTools,
-    *,
-    client: Any | None,
-    model: str,
-    max_tool_turns: int,
-    max_files_read: int,
-    max_tokens: int,
-    precomputed_findings: list[Finding] | None,
-    verify: bool,
-) -> ReviewResult:
-    """The single loop: explore and judge in one conversation, then the
-    verifier (RC1-387) when it is on. Its request shape is the RC1-350 one,
-    byte for byte; the dispatcher above adds the span around it."""
-    if client is None:
-        from anthropic import Anthropic  # imported lazily so tests don't need the SDK
-
-        client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
-
-    messages: list[dict] = [
-        _user_text(format_pr_for_review(pull_request, precomputed_findings))
-    ]
-    files_read = 0
-    turns = 0
-    truncated = False
-    usage = TokenUsage()
-
-    for _ in range(max_tool_turns):
-        turns += 1
-        response = _create(client, model=model, messages=messages, max_tokens=max_tokens)
-        usage = usage + _tokens(response)
-        blocks = _normalize_blocks(_get(response, "content"))
-        messages.append({"role": "assistant", "content": blocks})
-
-        tool_uses = [b for b in blocks if b["type"] == "tool_use"]
-        if not tool_uses:
-            break  # model stopped without submitting -> force a submission below
-
-        tool_results = []
-        submission: dict | None = None
-        for tu in tool_uses:
-            name, tool_input, tool_id = tu["name"], tu["input"], tu["id"]
-            if name == "submit_review":
-                submission = tool_input
-                output = "Review recorded."
-            elif name == "read_file" and files_read >= max_files_read:
-                truncated = True
-                output = "Error: file-read budget exhausted. Submit your review now."
-            else:
-                if name == "read_file":
-                    files_read += 1
-                output = repo_tools.dispatch(name, tool_input)
-            tool_results.append(
-                {"type": "tool_result", "tool_use_id": tool_id, "content": output}
-            )
-
-        messages.append({"role": "user", "content": tool_results})
-
-        if submission is not None:
-            result = _result_from_submission(
-                submission,
-                model=model,
-                tool_turns=turns,
-                files_read=files_read,
-                truncated=truncated,
-                usage=usage,
-            )
-            return _maybe_verify(result, pull_request, client, verify=verify)
-    else:
-        # Ran the full turn budget without submitting.
-        truncated = True
-
-    # Force a final structured submission.
-    submission, forced_usage = _force_submit(client, messages, model=model, max_tokens=max_tokens)
-    result = _result_from_submission(
-        submission,
-        model=model,
-        tool_turns=turns,
-        files_read=files_read,
-        truncated=truncated,
-        usage=usage + forced_usage,
-    )
-    return _maybe_verify(result, pull_request, client, verify=verify)
-
-
-def _maybe_verify(
-    result: ReviewResult, pull_request: PullRequest, client: Any, *, verify: bool
-) -> ReviewResult:
-    """Run the verifier pass (RC1-387) when it is on and there is something
-    to verify. A clean review pays nothing extra."""
-    if not verify or not result.findings:
-        return result
-    from app.agent.verifier import verify_findings
-
-    return verify_findings(pull_request, result, client=client)
-
-
-def _force_submit(
-    client: Any, messages: list, *, model: str, max_tokens: int
-) -> tuple[dict, TokenUsage]:
-    """Make one final call that must call submit_review.
-
-    Returns the submission's input plus the call's token counts, so the forced
-    turn is metered like every other one.
-    """
-    nudge = messages + [
-        _user_text(
-            "You have used your review budget. Call submit_review now "
-            "with your final findings."
-        )
-    ]
-    response = _create(
-        client,
-        model=model,
-        messages=nudge,
-        max_tokens=max_tokens,
-        tool_choice={"type": "tool", "name": "submit_review"},
-    )
-    for block in _normalize_blocks(_get(response, "content")):
-        if block["type"] == "tool_use" and block["name"] == "submit_review":
-            return block["input"], _tokens(response)
-    raise ReviewError("model did not submit a review when forced")

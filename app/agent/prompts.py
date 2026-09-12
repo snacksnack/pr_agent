@@ -2,14 +2,15 @@
 
 This module is the canonical home for everything that *defines* a review: the
 system prompt (reviewer persona + severity calibration + the full rubric across
-every dimension), the per-PR procedural ``INSTRUCTIONS``, the closed set of
-finding ``CATEGORIES``, and the strict ``submit_review`` tool schema that the
-agent loop (RC1-110) calls exactly once to emit ``findings[] + summary``.
+every dimension), the closed set of finding ``CATEGORIES``, the strict
+``submit_review`` tool schema each reviewer calls exactly once to emit
+``findings[] + summary``, the reviewer specs and the scout's instructions
+(RC1-390).
 
 Keep this module import-light and side-effect-free: it holds *text and schema*
-only. The loop in :mod:`app.agent.reviewer` composes these into model calls, and
-the verdict policy (which categories escalate to "request changes") lives with
-the loop / config (``settings.block_on``), not here.
+only. The pipeline in :mod:`app.agent.pipeline` composes these into model
+calls, and the verdict policy (which categories escalate to "request changes")
+lives with config (``settings.block_on``), not here.
 """
 from __future__ import annotations
 
@@ -152,30 +153,10 @@ SYSTEM_PROMPT = (
     "\n" + SEVERITY_GUIDANCE + "\n\n" + REVIEW_RUBRIC
 )
 
-# --- per-PR procedural instructions (appended to the seed user message) ---
-
-INSTRUCTIONS = (
-    "Investigate the changes using the read_file, list_dir, and grep tools as "
-    "needed to understand the code in its existing context, then call "
-    "submit_review exactly once with your findings.\n"
-    "- Read before you judge: inspect neighbouring code/tests so 'convention' "
-    "and 'breaking change' findings are grounded in this repo's reality.\n"
-    "- Anchor each finding to a file and line whenever it refers to a specific "
-    "location; PR-level findings (e.g. pr_drift, dependencies) may omit the "
-    "line.\n"
-    "- Give each finding a severity (blocker/warning/nit), a category from the "
-    "allowed set, a clear message explaining the issue AND why it matters, and a "
-    "concrete suggested fix whenever one exists.\n"
-    "- Lead the summary with the most serious point and give an overall read of "
-    "the PR's health.\n"
-    "- If there are no issues, submit an empty findings list with a short "
-    "summary saying so. Don't invent problems to look thorough."
-)
-
 # --- strict structured-output schema --------------------------------------
 
-# The tool the model calls to end the review. Its input_schema is the contract
-# the loop relies on: a ``summary`` string plus a ``findings`` array, where each
+# The tool each reviewer calls to end its review. Its input_schema is the
+# contract the pipeline relies on: a ``summary`` string plus a ``findings`` array, where each
 # finding carries severity, category, message, and (optionally) file/line/
 # suggestion. ``additionalProperties: false`` keeps the output strict.
 SUBMIT_TOOL = {
@@ -284,11 +265,11 @@ def format_precomputed_findings(findings: Iterable[Finding] | None) -> str:
 
 # --- multi-agent review: scout brief + evidence-scoped reviewers (RC1-390) --
 
-# The rubric above is one string so the single loop's system prompt stays byte
-# for byte what it was. The multi-agent path needs the same text cut by
-# dimension, so the slices are derived from it here rather than kept as a
-# second copy that could drift: paragraph 0 is the preamble, 1-10 are the
-# numbered dimensions, the last is the cross-cutting note that names ``docs``.
+# The rubric above is one string — the system prompt every stage shares.
+# The reviewers need the same text cut by dimension, so the slices are
+# derived from it here rather than kept as a second copy that could drift:
+# paragraph 0 is the preamble, 1-10 are the numbered dimensions, the last
+# is the cross-cutting note that names ``docs``.
 _RUBRIC_PARAGRAPHS: tuple[str, ...] = tuple(REVIEW_RUBRIC.split("\n\n"))
 RUBRIC_PREAMBLE = _RUBRIC_PARAGRAPHS[0]
 RUBRIC_DIMENSIONS: dict[int, str] = {

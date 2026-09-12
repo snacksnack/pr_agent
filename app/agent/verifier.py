@@ -69,7 +69,7 @@ VERIFIER_INSTRUCTIONS = (
 # and read a bounded, grep-built context. RC1-393's run C showed them
 # escalating "the scout found nothing" into blockers on files that were
 # simply not in the checkout; with the scout gone the context block is the
-# thing that can be read that way. The single loop's verifier is unchanged.
+# thing that can be read that way.
 ABSENCE_RULE = (
     "The repository context above was gathered by a bounded grep, and the "
     "scout's brief, when there is one, by a few tool calls. Drop a finding "
@@ -234,13 +234,12 @@ def verify_findings(
     totals and broken out. A result with no findings is returned unchanged.
 
     By default the pass renders the PR itself and sends its one tool, which
-    is the RC1-387 request byte for byte. The multi-agent path (RC1-390)
-    passes ``shared_prefix`` — the PR and scout brief exactly as the
-    reviewers saw them — with the reviewers' ``tools`` and ``tool_choice``,
-    so this call reads their cached prefix instead of writing its own.
-    ``absence_rule`` (RC1-394) adds the rule that a claim resting only on
-    what the bounded context did not find is dropped; the multi-agent path
-    sets it, the single loop's request stays byte for byte.
+    is the RC1-387 request byte for byte (the tie-break probe still sends
+    it). The pipeline (RC1-390) passes ``shared_prefix`` — the PR and scout
+    brief exactly as the reviewers saw them — with the reviewers' ``tools``
+    and ``tool_choice``, so this call reads their cached prefix instead of
+    writing its own. ``absence_rule`` (RC1-394) adds the rule that a claim
+    resting only on what the bounded context did not find is dropped.
     """
     if not result.findings:
         return result

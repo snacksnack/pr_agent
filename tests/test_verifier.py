@@ -7,8 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent import verifier
-from app.agent.reviewer import review_pull_request
-from app.agent.tools import RepoTools
 from app.config import Settings
 from app.models import Finding, PRRef, PullRequest, ReviewResult
 
@@ -219,77 +217,6 @@ def test_cache_tokens_are_counted_on_the_verifier_call(pr):
 
 
 # --- wiring into the loop -----------------------------------------------------
-
-@pytest.fixture()
-def repo(tmp_path):
-    root = tmp_path / "repo"
-    root.mkdir()
-    return RepoTools(root)
-
-
-def test_the_loop_runs_the_verifier_when_asked(repo, pr):
-    scripted = [
-        [_submit("t1", "two findings", [
-            {"severity": "warning", "category": "security", "message": "real"},
-            {"severity": "warning", "category": "error_handling", "message": "decoy"},
-        ])],
-        _verdicts({"index": 1, "decision": "drop", "reason": "deliberate"}),
-    ]
-    client = FakeClient(scripted, usages=[(100, 10), (40, 4)])
-
-    result = review_pull_request(pr, repo, client=client, verify=True)
-
-    assert [f.message for f in result.findings] == ["real"]
-    assert result.verified and len(result.verifier_dropped) == 1
-    assert (result.input_tokens, result.output_tokens) == (140, 14)
-    assert len(client.messages.calls) == 2
-
-
-def test_the_loop_skips_the_verifier_by_default(repo, pr, monkeypatch):
-    import app.agent.reviewer as reviewer
-
-    monkeypatch.setattr(reviewer, "settings", Settings(_env_file=None))
-    client = FakeClient([[_submit("t1", "one", [
-        {"severity": "warning", "category": "security", "message": "real"},
-    ])]])
-
-    result = review_pull_request(pr, repo, client=client)
-
-    assert not result.verified and len(client.messages.calls) == 1
-
-
-def test_the_loop_skips_the_verifier_on_a_clean_review(repo, pr):
-    client = FakeClient([[_submit("t1", "clean", [])]])
-    result = review_pull_request(pr, repo, client=client, verify=True)
-    assert not result.verified and len(client.messages.calls) == 1
-
-
-def test_the_forced_submission_path_is_verified_too(repo, pr):
-    scripted = [
-        [{"type": "text", "text": "hmm"}],  # no tool use -> forced submit
-        [_submit("t2", "forced", [{"severity": "nit", "category": "docs", "message": "x"}])],
-        _verdicts({"index": 0, "decision": "drop", "reason": "n/a"}),
-    ]
-    client = FakeClient(scripted)
-    result = review_pull_request(pr, repo, client=client, max_tool_turns=1, verify=True)
-    assert result.verified and not result.findings and len(result.verifier_dropped) == 1
-
-
-def test_settings_flag_turns_the_verifier_on(repo, pr, monkeypatch):
-    import app.agent.reviewer as reviewer
-
-    monkeypatch.setattr(
-        reviewer, "settings", Settings(_env_file=None, review_verify_findings=True)
-    )
-    client = FakeClient([
-        [_submit("t1", "one", [
-            {"severity": "warning", "category": "security", "message": "real"},
-        ])],
-        _verdicts(),
-    ])
-    result = review_pull_request(pr, repo, client=client)
-    assert result.verified and len(client.messages.calls) == 2
-
 
 # --- RC1-390: the shared-prefix mode -------------------------------------------
 

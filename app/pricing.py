@@ -95,11 +95,12 @@ class ReviewCost:
 def review_cost(result: ReviewResult) -> ReviewCost:
     """Price a finished review from the token counts it carries.
 
-    The multi-agent path (RC1-390) records every stage — ``scout``,
-    ``warm_cache``, ``reviewer:<name>``, ``verifier`` — so each is priced on
-    its own and the total is their sum. The single loop records only its
-    total and the verifier's share, so its stages are ``loop`` (the total
-    less the verifier) and, when the pass ran, ``verifier``. The verifier
+    The pipeline (RC1-390) records every stage — ``scout``, ``warm_cache``,
+    ``reviewer:<name>``, ``verifier`` — so each is priced on its own and the
+    total is their sum. A result with no stage breakdown (the retired single
+    loop's rows in the eval store, a bare result in a test) is priced from
+    its totals as ``loop`` (the total less the verifier) and, when the pass
+    ran, ``verifier``. The verifier
     is priced at the model it actually used (``review_verify_model`` may
     differ from the review model); everything else at the review model.
 

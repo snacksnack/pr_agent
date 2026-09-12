@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # bursts once alerts are enabled and carry nothing for a reviewer to judge,
     # so they stay off the billed review path (RC1-359).
     review_skip_authors: str = "dependabot[bot]"
-    max_tool_turns: int = 20
+    # File-read budget for the scout (RC1-390); its turn caps are below.
     max_files_read: int = 40
     # RC1-387: second pass that re-reads each finding against the diff before
     # it is posted, and may drop or downgrade it. Off by default; the corpus
@@ -48,14 +48,11 @@ class Settings(BaseSettings):
     review_verify_findings: bool = False
     # Model for the verifier pass; unset means the same model as the review.
     review_verify_model: str | None = None
-    # RC1-390: split the review into a scout, three evidence-scoped reviewers
-    # fanned out on one shared cached prefix, a Python merge, and the verifier.
-    # Off by default: off is the single loop above, byte for byte. The corpus
-    # is run both ways and docs/rc1-390-multi-agent.md records the numbers.
-    review_multi_agent: bool = False
-    # Turn cap for the scout (RC1-390). It writes a brief, not findings, so it
-    # needs fewer turns than the single loop; every turn re-sends the growing
-    # conversation, so the cap is the scout's cost ceiling.
+    # Turn cap for the scout (RC1-390) when Python found no repository context
+    # to put in the prefix. It writes a brief, not findings; every turn
+    # re-sends the growing conversation, so the cap is the scout's cost
+    # ceiling. RC1-422 made this pipeline the only one (docs/rc1-422-single-
+    # pipeline.md); docs/rc1-390-multi-agent.md has the original numbers.
     review_scout_max_turns: int = 8
     # RC1-393: the scout's turn cap when Python has already put the
     # conventions file and the callers list in front of it. Measured: with
@@ -108,7 +105,6 @@ class Settings(BaseSettings):
         return [item.strip() for item in self.review_skip_authors.split(",") if item.strip()]
 
     @field_validator(
-        "max_tool_turns",
         "max_files_read",
         "remote_api_budget",
         "github_max_attempts",

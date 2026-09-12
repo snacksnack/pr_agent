@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.checks import n8n
-from app.agent.reviewer import review_pull_request
+from app.agent.pipeline import review_pull_request
 from app.agent.tools import RepoTools, ToolError
 from app.config import settings
 from app.github import GitHubError, fetch_pull_request, parse_pr_spec
@@ -166,19 +166,18 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
     )
     if result.truncated:
         meta += "  (truncated: hit a turn/file budget)"
-    if result.mode == "multi":
-        # RC1-390: turns/files above are the scout's; the reviewers ran once each.
-        meta += f"  mode=multi reviewers={','.join(result.reviewers_run)}"
-        # RC1-393: what Python put in the prefix before the scout ran.
+    # RC1-390: turns/files above are the scout's; the reviewers ran once each.
+    meta += f"  reviewers={','.join(result.reviewers_run)}"
+    # RC1-393: what Python put in the prefix before the scout ran.
+    meta += (
+        f"  context(conventions={result.conventions_file or 'none'},"
+        f" callers={result.callers_found})"
+    )
+    if result.off_scope_findings or result.deduplicated_findings:
         meta += (
-            f"  context(conventions={result.conventions_file or 'none'},"
-            f" callers={result.callers_found})"
+            f"  merged(off_scope={result.off_scope_findings},"
+            f" deduplicated={result.deduplicated_findings})"
         )
-        if result.off_scope_findings or result.deduplicated_findings:
-            meta += (
-                f"  merged(off_scope={result.off_scope_findings},"
-                f" deduplicated={result.deduplicated_findings})"
-            )
     lines.append(meta)
     return "\n".join(lines)
 
@@ -273,7 +272,7 @@ def _default_review(*, model: str | None) -> ReviewFn:
     def _review(
         pr: PullRequest, repo_tools: RepoTools, precomputed: list[Finding]
     ) -> ReviewResult:
-        # client=None -> reviewer lazily builds the Anthropic SDK from settings.
+        # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
         return review_pull_request(
             pr, repo_tools, client=None, model=model, precomputed_findings=precomputed
         )
