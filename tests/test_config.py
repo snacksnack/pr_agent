@@ -47,7 +47,6 @@ def test_verifier_is_off_by_default_and_parses_env_booleans():
     """RC1-387: the verifier is an experiment behind a flag until the ADR says otherwise."""
     assert Settings(_env_file=None).review_verify_findings is False
     assert Settings(_env_file=None, review_verify_findings="1").review_verify_findings is True
-    assert Settings(_env_file=None, review_verify_model=None).review_verify_model is None
 
 
 def test_retired_flags_in_the_environment_are_ignored(monkeypatch):

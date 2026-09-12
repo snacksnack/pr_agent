@@ -265,7 +265,6 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
 | `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
-| `REVIEW_VERIFY_MODEL` | Model for the verifier pass; unset = `REVIEW_MODEL` | — |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |

@@ -119,7 +119,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     for case in _cases(args):
         for order in orders:
             for i in range(args.runs):
-                row = tiebreak.probe_case(case, order, client=client, rule=args.rule)
+                row = tiebreak.probe_case(case, order, client=client)
                 row["run"] = i
                 rows.append(row)
                 _write(out, row)
@@ -222,12 +222,6 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--case", action="append", help="only these case ids (repeatable)")
         if name == "probe":
             p.add_argument("--order", choices=("both", *tiebreak.ORDERS), default="both")
-            p.add_argument(
-                "--rule",
-                choices=tuple(tiebreak.RULES),
-                default="shipped",
-                help="tie-break sentence in the verifier's instructions (candidate: not shipped)",
-            )
     args = parser.parse_args(argv)
     return args.fn(args)
 

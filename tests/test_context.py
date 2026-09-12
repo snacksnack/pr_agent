@@ -476,7 +476,7 @@ def test_remote_backend_finds_tests_through_the_tree_and_the_budgeted_grep():
     assert "tests/test_a.py: (test file named for app/a.py)" in ctx.tests
     assert "tests/test_a.py:1: from app.a import fetch" in ctx.tests
     assert ctx.callers == [] and ctx.unresolved == ["fetch"], "the test hit is not a caller"
-    assert ctx.complete
+    assert ctx.tests_searched  # the cap is an answer; no conventions file here, so not complete
 
 
 def test_remote_tests_search_stops_when_the_tree_is_out_of_budget():
@@ -492,3 +492,26 @@ def test_remote_read_text_is_none_once_the_budget_is_spent():
     tools = RemoteRepoTools(gh, PRRef("o", "r", 1), "sha", api_budget=1)
     assert tools.read_text("app/a.py") == "y"
     assert tools.read_text("CLAUDE.md") is None, "the context is optional; the review is not"
+
+
+def test_a_file_whose_test_rows_the_cap_refused_is_not_called_untested(tmp_path, monkeypatch):
+    """RC1-428: RC1-427's reference PR #39 drew three false "no tests" warnings
+    from files whose rows the 30-row cap had refused; the list called them
+    untested. A hit the cap refuses is still a test that exists."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app").mkdir()
+    for name in ("widget", "gadget"):
+        (tmp_path / "app" / f"{name}.py").write_text("x = 1\n")
+        (tmp_path / "tests" / f"test_{name}.py").write_text(
+            "\n".join(f"use_{i} = {name}({i})" for i in range(8)) + "\n"
+        )
+    pr = _pr(("app/widget.py", "+x = 2\n"), ("app/gadget.py", "+x = 3\n"))
+    monkeypatch.setattr(context, "MAX_TEST_ROWS", 3)
+    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    assert len(ctx.tests) == 3 and ctx.tests_truncated and ctx.tests_searched
+    assert ctx.untested == []
+    assert ctx.tests_unlisted == ["app/gadget.py"]
+    rendered = ctx.render()
+    assert "(no test references" not in rendered
+    assert "(tests exist but did not fit under the cap for: app/gadget.py)" in rendered
+    assert ctx.tests_searched  # the cap is an answer; no conventions file here, so not complete

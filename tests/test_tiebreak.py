@@ -227,26 +227,3 @@ def test_recording_client_reads_the_numbering_back_from_the_request():
     recorder = tiebreak.RecordingClient(client)
     recorder.create(**client.messages.calls[0])
     assert recorder.numbered_categories() == {0: "error_handling", 1: "security"}
-
-
-def test_probe_can_swap_the_tiebreak_sentence_and_restores_it():
-    from app.agent import verifier
-
-    case = boundary.BY_ID["dead-code-after-return"]
-    client = _FakeClient([[]])
-    before = verifier.VERIFIER_INSTRUCTIONS
-    row = tiebreak.probe_case(
-        case, tiebreak.INTENDED_FIRST, client=client, model="claude-sonnet-4-6", rule="candidate"
-    )
-    sent = client.messages.calls[0]["messages"][0]["content"][1]["text"]
-    assert tiebreak.CANDIDATE_TIEBREAK in sent
-    assert tiebreak.SHIPPED_TIEBREAK not in sent
-    assert row["rule"] == "candidate"
-    assert before == verifier.VERIFIER_INSTRUCTIONS, "module state restored"
-
-
-def test_the_shipped_tiebreak_sentence_is_the_one_in_the_verifier():
-    from app.agent import verifier
-
-    assert tiebreak.SHIPPED_TIEBREAK in verifier.VERIFIER_INSTRUCTIONS
-    assert tiebreak.instructions_with("shipped") == verifier.VERIFIER_INSTRUCTIONS

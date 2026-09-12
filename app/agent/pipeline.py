@@ -471,13 +471,11 @@ def _review(
         started = time.perf_counter()
         with stage_span("agent", "verifier"):
             result = verify_findings(
-                pull_request,
                 result,
                 client=client,
-                shared_prefix=prefix,
+                prefix=prefix,
                 tools=REVIEW_TOOLS,
                 tool_choice=TOOL_CHOICE_ANY,
-                absence_rule=True,
             )
         latency["verifier"] = _ms_since(started)
     logger.info(

@@ -44,8 +44,6 @@ class Settings(BaseSettings):
     # is run with it both ways and the ADR (docs/rc1-387-verifier.md) says
     # what the numbers were. Never adds findings, never raises severity.
     review_verify_findings: bool = False
-    # Model for the verifier pass; unset means the same model as the review.
-    review_verify_model: str | None = None
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
