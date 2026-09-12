@@ -256,9 +256,8 @@ def main(
 
 
 def _default_fetch(ref: PRRef) -> PullRequest:
-    return fetch_pull_request(
-        ref.owner, ref.repo, ref.number, token=settings.github_token
-    )
+    # token=None: the client resolves it — gh CLI first, then GITHUB_TOKEN (RC1-430).
+    return fetch_pull_request(ref.owner, ref.repo, ref.number)
 
 
 def _default_review(*, model: str | None) -> ReviewFn:

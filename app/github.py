@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import logging
 import re
+import subprocess
 import time
 from collections.abc import Callable
 from urllib.parse import quote
@@ -60,11 +62,60 @@ def parse_pr_spec(spec: str) -> PRRef:
     )
 
 
+logger = logging.getLogger("app.github")
+
+# How long to give ``gh auth token`` (RC1-430). It reads the keychain and
+# prints; anything longer is a hung keychain prompt, not a slow token.
+GH_CLI_TIMEOUT_S = 5.0
+
+
+def gh_cli_token() -> str | None:
+    """The token the ``gh`` CLI is logged in with, or ``None`` when gh is not
+    installed, not logged in, or does not answer in time (RC1-430).
+
+    Never raises: the dry-run CLI asks this on a developer's machine and
+    falls through to the PAT, and the live App never asks it at all.
+    """
+    try:
+        done = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=GH_CLI_TIMEOUT_S,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    token = done.stdout.strip()
+    return token if done.returncode == 0 and token else None
+
+
+def resolve_token(explicit: str | None = None) -> tuple[str | None, str]:
+    """The token a read-only client should use, and where it came from.
+
+    Order (RC1-430): an explicit argument (the live App's installation
+    token), then the ``gh`` CLI's token, then the ``GITHUB_TOKEN`` setting.
+    The CLI comes before the setting on purpose: gh keeps its token fresh,
+    while a PAT in ``.env`` expires silently — on 2026-09-11 one did, and a
+    measurement failed with a 401 while gh on the same machine was fine.
+    """
+    if explicit:
+        return explicit, "explicit"
+    token = gh_cli_token()
+    if token:
+        return token, "gh auth token"
+    if settings.github_token:
+        return settings.github_token, "GITHUB_TOKEN"
+    return None, "none"
+
+
 class GitHubClient:
     """Thin GitHub REST client for reading pull requests.
 
-    Pass a token explicitly, or let it fall back to ``settings.github_token``.
-    A pre-built ``httpx.Client`` can be injected (used by tests to mock the API).
+    Pass a token explicitly (the live App does, with an installation token),
+    or let :func:`resolve_token` find one: the ``gh`` CLI's, then the
+    ``GITHUB_TOKEN`` setting. A pre-built ``httpx.Client`` can be injected
+    (used by tests to mock the API).
     """
 
     def __init__(
@@ -76,7 +127,9 @@ class GitHubClient:
         max_attempts: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._token = token if token is not None else settings.github_token
+        self._token, source = resolve_token(token)
+        if source != "explicit":
+            logger.info("github_token source=%s", source)
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
         self._owns_client = client is None
@@ -124,7 +177,7 @@ class GitHubClient:
         if resp.status_code in (401, 403):
             raise GitHubError(
                 f"Authentication or permission error ({resp.status_code}) for "
-                f"{url}. Check GITHUB_TOKEN and its scopes."
+                f"{url}. Check `gh auth status`, or GITHUB_TOKEN and its scopes."
             )
         if resp.status_code >= 400:
             raise GitHubError(f"GitHub returned {resp.status_code} for {url}")

@@ -32,7 +32,6 @@ from pathlib import Path
 
 from app.agent.pipeline import review_pull_request
 from app.agent.tools import RepoTools
-from app.config import settings
 from app.github import fetch_pull_request
 from app.pricing import review_cost
 
@@ -69,7 +68,7 @@ def measure(
     head = _gh(
         "pr", "view", str(number), "--json", "headRefOid", "-q", ".headRefOid", cwd=repo_dir
     ).strip()
-    pr = fetch_pull_request(owner, repo, number, token=settings.github_token)
+    pr = fetch_pull_request(owner, repo, number)  # gh CLI token, then GITHUB_TOKEN (RC1-430)
     with tempfile.TemporaryDirectory(prefix=f"pr-{number}-") as tmp:
         worktree = Path(tmp) / "wt"
         subprocess.run(
