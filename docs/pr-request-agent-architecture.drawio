@@ -65,13 +65,6 @@
           <mxGeometry x="22" y="152" width="201" height="74" as="geometry"/>
         </mxCell>
 
-        <mxCell id="checks" value="DETERMINISTIC CHECKS" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#FEF3C7;swimlaneFillColor=#FFFBEB;strokeColor=#F59E0B;fontColor=#92400E;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
-          <mxGeometry x="335" y="335" width="245" height="180" as="geometry"/>
-        </mxCell>
-        <mxCell id="n8n" value="&lt;b&gt;n8n workflow cost check&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;schedules · polling · loops&lt;br&gt;best-effort, non-blocking&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F59E0B;fontColor=#78350F;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="checks">
-          <mxGeometry x="22" y="52" width="201" height="82" as="geometry"/>
-        </mxCell>
-
         <mxCell id="repoaccess" value="REPOSITORY ACCESS · read_text / grep / paths" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F1F5F9;swimlaneFillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
           <mxGeometry x="335" y="540" width="245" height="270" as="geometry"/>
         </mxCell>
@@ -89,44 +82,44 @@
           <mxGeometry x="125" y="48" width="270" height="62" as="geometry"/>
         </mxCell>
         <mxCell id="multi-boundary" value="REVIEW PIPELINE" style="swimlane;html=1;horizontal=1;startSize=26;rounded=1;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#6B21A8;fontFamily=Helvetica;fontSize=11;fontStyle=1;arcSize=5;collapsible=0;" vertex="1" parent="engine">
-          <mxGeometry x="145" y="138" width="230" height="373" as="geometry"/>
+          <mxGeometry x="145" y="138" width="230" height="443" as="geometry"/>
         </mxCell>
         <mxCell id="plan" value="Python router&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;choose reviewers · is there a repo to grep?&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
           <mxGeometry x="20" y="43" width="190" height="54" as="geometry"/>
         </mxCell>
+        <mxCell id="checks-stage" value="Deterministic checks&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;n8n workflow cost · whole file · non-fatal&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="116" width="190" height="54" as="geometry"/>
+        </mxCell>
         <mxCell id="context" value="Deterministic repo context&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;conventions · callers · tests&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
-          <mxGeometry x="20" y="116" width="190" height="58" as="geometry"/>
+          <mxGeometry x="20" y="186" width="190" height="58" as="geometry"/>
         </mxCell>
         <mxCell id="cache" value="Shared prefix + cache warm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
-          <mxGeometry x="20" y="194" width="190" height="44" as="geometry"/>
+          <mxGeometry x="20" y="264" width="190" height="44" as="geometry"/>
         </mxCell>
         <mxCell id="reviewers" value="&lt;b&gt;Parallel specialist reviewers&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;diff-local · repo-context · change-intent&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#9333EA;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
-          <mxGeometry x="20" y="258" width="190" height="66" as="geometry"/>
+          <mxGeometry x="20" y="328" width="190" height="66" as="geometry"/>
         </mxCell>
         <mxCell id="merge" value="Python merge&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;scope guard + dedupe&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
-          <mxGeometry x="20" y="344" width="190" height="54" as="geometry"/>
+          <mxGeometry x="20" y="414" width="190" height="54" as="geometry"/>
         </mxCell>
         <mxCell id="verifier" value="&lt;b&gt;Verifier&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;drop/downgrade unsupported findings&lt;br&gt;fold one defect under two categories&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
           <mxGeometry x="28" y="622" width="467" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="result" value="&lt;b&gt;ReviewResult&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary · Finding[] · token usage · stage latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontColor=#312E81;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+        <mxCell id="result" value="&lt;b&gt;ReviewResult&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary · model findings (verified) + check findings, once · token usage · stage latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontColor=#312E81;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
           <mxGeometry x="105" y="712" width="310" height="62" as="geometry"/>
         </mxCell>
 
         <mxCell id="delivery" value="VERDICT + DELIVERY" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#DCFCE7;swimlaneFillColor=#FBFFFC;strokeColor=#22C55E;fontColor=#166534;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
-          <mxGeometry x="1160" y="55" width="275" height="500" as="geometry"/>
-        </mxCell>
-        <mxCell id="combine" value="Merge deterministic findings&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;exactly once&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
-          <mxGeometry x="23" y="50" width="229" height="58" as="geometry"/>
+          <mxGeometry x="1160" y="55" width="275" height="415" as="geometry"/>
         </mxCell>
         <mxCell id="verdict" value="&lt;b&gt;Verdict policy&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;COMMENT by default&lt;br&gt;REQUEST_CHANGES only for block_on&lt;br&gt;(default: leaked_secret)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
-          <mxGeometry x="23" y="135" width="229" height="92" as="geometry"/>
+          <mxGeometry x="23" y="50" width="229" height="92" as="geometry"/>
         </mxCell>
         <mxCell id="post" value="&lt;b&gt;post_review()&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;upsert marked summary&lt;br&gt;new inline comments only&lt;br&gt;dismiss superseded change requests&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
-          <mxGeometry x="23" y="255" width="229" height="100" as="geometry"/>
+          <mxGeometry x="23" y="170" width="229" height="100" as="geometry"/>
         </mxCell>
         <mxCell id="posted" value="Single structured review&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary + severity-tagged inline comments&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
-          <mxGeometry x="23" y="390" width="229" height="68" as="geometry"/>
+          <mxGeometry x="23" y="305" width="229" height="68" as="geometry"/>
         </mxCell>
 
         <mxCell id="ops" value="CROSS-CUTTING OPERATIONS" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#C084FC;fontColor=#6B21A8;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
@@ -154,10 +147,10 @@
         <mxCell id="e-auth-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="appauth" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-cli-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="cli" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-client-model" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#3B82F6;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="github-client" target="pr-model"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-model-checks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="pr-model" target="n8n"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-model-router" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#8B5CF6;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="pr-model" target="router"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-router-multi" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#8B5CF6;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="engine" source="router" target="plan"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-plan-context" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="plan" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-plan-checks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="plan" target="checks-stage"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-checks-context" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="checks-stage" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-context-cache" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="context" target="cache"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-cache-reviewers" value="fan out" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#9333EA;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=9;fontColor=#7E22CE;" edge="1" parent="multi-boundary" source="cache" target="reviewers"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-reviewers-merge" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#9333EA;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="reviewers" target="merge"><mxGeometry relative="1" as="geometry"/></mxCell>
@@ -165,8 +158,7 @@
         <mxCell id="e-verifier-result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6366F1;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="engine" source="verifier" target="result"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-tools-context" value="read_text / grep / paths" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;dashed=1;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=10;fontColor=#475569;labelBackgroundColor=#FFFFFF;" edge="1" parent="fly-boundary" source="repoaccess" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-anthropic-engine" value="model calls" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=11;fontColor=#B45309;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="anthropic" target="engine"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-result-combine" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="combine"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-combine-verdict" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;endArrow=block;endFill=1;" edge="1" parent="delivery" source="combine" target="verdict"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-result-verdict" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="verdict"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-verdict-post" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;endArrow=block;endFill=1;" edge="1" parent="delivery" source="verdict" target="post"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-post-posted" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#16A34A;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="delivery" source="post" target="posted"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-result-cli" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="dryout"><mxGeometry relative="1" as="geometry"/></mxCell>
