@@ -96,7 +96,7 @@ automatically on every PR. Until then, the dry-run CLI is the way to run it.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then fill in ANTHROPIC_API_KEY + GITHUB_TOKEN
+cp .env.example .env          # then fill in ANTHROPIC_API_KEY (GITHUB_TOKEN only without gh)
 python -m app                 # config sanity check — no credentials required
 pytest -q                     # run the test suite
 ```
@@ -109,7 +109,8 @@ active review settings, then confirms the config loads.
 Run the full review against a real PR and print the would-be review to your
 terminal — nothing is posted to GitHub. This is the tool used to tune review
 quality before the App and hosting exist. It needs `ANTHROPIC_API_KEY` (the
-review loop) and `GITHUB_TOKEN` (a PAT with read access to the repo).
+review loop) and a GitHub token with read access to the repo — the `gh`
+CLI's, if it is logged in, else `GITHUB_TOKEN` (RC1-430).
 
 ```bash
 python -m app.review --pr owner/repo#123
@@ -259,7 +260,7 @@ All settings load from environment variables (and an optional `.env`). See
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | Review agent loop | — |
-| `GITHUB_TOKEN` | PAT for the dry-run CLI (RC1-113) | — |
+| `GITHUB_TOKEN` | PAT for the dry-run CLI and the measurement scripts, used only when the `gh` CLI has no token (RC1-113, RC1-430) | — |
 | `REVIEW_MODEL` | Workhorse review model | `claude-sonnet-4-6` |
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |

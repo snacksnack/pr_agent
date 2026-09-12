@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app import __version__
 from app.config import settings
+from app.github import resolve_token
 
 
 def _present(value: str | None) -> str:
@@ -18,7 +19,8 @@ def main() -> int:
 
     print("Credentials")
     print(f"  ANTHROPIC_API_KEY       {_present(settings.anthropic_api_key)}")
-    print(f"  GITHUB_TOKEN            {_present(settings.github_token)}")
+    _, source = resolve_token()
+    print(f"  GITHUB_TOKEN            {_present(settings.github_token)}  (dry-run uses: {source})")
 
     print("\nReview behavior")
     print(f"  review_model           {settings.review_model}")

@@ -153,7 +153,8 @@ tests/          pytest, offline
   for data, small focused modules. Keep it pythonic — that's literally what this
   tool reviews for.
 - **Models are source-agnostic.** Ingestion fills `app/models.py` shapes; the
-  PAT path (dry-run) and the App/installation-token path (webhook) produce the
+  read-only path (dry-run: the gh CLI's token, else the PAT; RC1-430) and the
+  App/installation-token path (webhook) produce the
   *same* models so everything downstream is auth-agnostic.
 - **Injectable clients.** Network clients (GitHub, Anthropic) accept an injected
   client so tests run offline; the real SDK is imported lazily inside functions.

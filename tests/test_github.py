@@ -286,3 +286,78 @@ def test_get_tree_unreadable_returns_none_never_raises():
         assert gh.get_tree(PRRef("o", "r", 42), "h") is None
     with _client(lambda req: httpx.Response(200, json={"message": "odd"})) as gh:
         assert gh.get_tree(PRRef("o", "r", 42), "h") is None
+
+
+# --- where the read-only token comes from (RC1-430) ------------------------------
+
+def _gh(monkeypatch, *, stdout="", returncode=0, raises=None):
+    """Script ``subprocess.run`` for the ``gh auth token`` call."""
+    import subprocess
+
+    from app import github
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(github.subprocess, "run", fake_run)
+    return calls
+
+
+def test_gh_cli_token_is_preferred_over_the_setting(monkeypatch):
+    from app import github
+    from app.config import Settings
+
+    monkeypatch.setattr(github, "settings", Settings(_env_file=None, github_token="stale-pat"))
+    calls = _gh(monkeypatch, stdout="gho_fresh\n")
+    assert github.resolve_token() == ("gho_fresh", "gh auth token")
+    assert calls == [["gh", "auth", "token"]]
+
+
+def test_setting_is_used_when_gh_has_no_token(monkeypatch):
+    from app import github
+    from app.config import Settings
+
+    monkeypatch.setattr(github, "settings", Settings(_env_file=None, github_token="pat"))
+    _gh(monkeypatch, stdout="", returncode=1)  # gh installed, not logged in
+    assert github.resolve_token() == ("pat", "GITHUB_TOKEN")
+    _gh(monkeypatch, raises=FileNotFoundError("gh"))  # gh not installed
+    assert github.resolve_token() == ("pat", "GITHUB_TOKEN")
+
+
+def test_no_token_anywhere_is_none_not_an_error(monkeypatch):
+    import subprocess
+
+    from app import github
+    from app.config import Settings
+
+    monkeypatch.setattr(github, "settings", Settings(_env_file=None, github_token=None))
+    _gh(monkeypatch, raises=subprocess.TimeoutExpired(["gh"], 5))
+    assert github.resolve_token() == (None, "none")
+
+
+def test_an_explicit_token_never_asks_gh(monkeypatch):
+    """The live App passes an installation token; gh must not be consulted."""
+    from app import github
+
+    calls = _gh(monkeypatch, stdout="gho_fresh\n")
+    assert github.resolve_token("installation-token") == ("installation-token", "explicit")
+    assert calls == []
+    client = GitHubClient(token="installation-token", client=httpx.Client())
+    assert client._token == "installation-token" and calls == []
+    client.close()
+
+
+def test_the_client_resolves_the_token_when_none_is_given(monkeypatch):
+    from app import github
+    from app.config import Settings
+
+    monkeypatch.setattr(github, "settings", Settings(_env_file=None, github_token=None))
+    _gh(monkeypatch, stdout="gho_fresh\n")
+    client = GitHubClient(client=httpx.Client())
+    assert client._token == "gho_fresh"
+    client.close()
