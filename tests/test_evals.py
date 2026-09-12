@@ -414,6 +414,11 @@ def test_prompt_version_names_a_checkout_and_the_context_control(monkeypatch):
     assert subject.prompt_version(checkout=True, repo_context=False) == (
         plain + "+checkout+no-context"
     )
+    # RC1-427: the scout's control is its own version too, and composes.
+    assert subject.prompt_version(checkout=True, scout=False) == plain + "+checkout+no-scout"
+    assert subject.prompt_version(checkout=True, repo_context=False, scout=False) == (
+        plain + "+checkout+no-context+no-scout"
+    )
     assert subject.version(checkout=True).prompt_version.endswith("+checkout")
 
 

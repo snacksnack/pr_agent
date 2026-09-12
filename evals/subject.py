@@ -85,7 +85,9 @@ def preflight() -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is not set. This subject drives a real model.")
 
 
-def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
+def prompt_version(
+    *, checkout: bool = False, repo_context: bool = True, scout: bool = True
+) -> str:
     """Hash of the rubric and severity calibration together.
 
     Both, because they are edited independently and a change to either moves
@@ -97,7 +99,8 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
     run against a checkout explores on every case where a diff-only run
     explores on one, and a run with the deterministic context off is the
     control for one with it on. Neither pair may be averaged, so each is
-    its own subject version.
+    its own subject version. ``scout`` (RC1-427) is the same kind of
+    control: a run that never scouts, whatever the context.
     """
     import hashlib
 
@@ -124,15 +127,21 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
         version += "+checkout"
     if not repo_context:
         version += "+no-context"
+    if not scout:
+        version += "+no-scout"
     return version
 
 
-def version(*, checkout: bool = False, repo_context: bool = True) -> SubjectVersion:
+def version(
+    *, checkout: bool = False, repo_context: bool = True, scout: bool = True
+) -> SubjectVersion:
     return SubjectVersion(
         subject=NAME,
         code_version=_code_version(),
         model=settings.review_model,
-        prompt_version=prompt_version(checkout=checkout, repo_context=repo_context),
+        prompt_version=prompt_version(
+            checkout=checkout, repo_context=repo_context, scout=scout
+        ),
     )
 
 
@@ -251,7 +260,11 @@ def _name(rank: int) -> str:
 
 
 def run(
-    case: Case, *, repo_path: str | Path | None = None, repo_context: bool = True
+    case: Case,
+    *,
+    repo_path: str | Path | None = None,
+    repo_context: bool = True,
+    scout: bool = True,
 ) -> CaseResult:
     """Score one case.
 
@@ -259,14 +272,14 @@ def run(
     corpus is diff-only, so without one the scout runs on the single case
     that materialises files, and the cost of exploration is invisible.
     ``repo_context`` is the deterministic context switch, off for the
-    control run.
+    control run; ``scout`` (RC1-427) is the scout's, off for its control.
     """
     planted = corpus.BY_ID[case.input["case_id"]]
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
         exit_code, findings, result = _review(
-            planted, pr, repo_path=repo_path, repo_context=repo_context
+            planted, pr, repo_path=repo_path, repo_context=repo_context, scout=scout
         )
     except Exception as exc:
         return CaseResult(
@@ -568,6 +581,7 @@ def _review(
     *,
     repo_path: str | Path | None = None,
     repo_context: bool = True,
+    scout: bool = True,
 ) -> tuple[int, list[Finding], ReviewResult | None]:
     """Run the real CLI, capturing the merged result on the way past.
 
@@ -578,8 +592,9 @@ def _review(
     `ReviewResult` also carries the loop's token counts for pricing.
 
     The review function is the shipped `review_pull_request` with the CLI's
-    defaults (`client=None`, so the SDK is built from settings) plus the one
-    switch the CLI does not expose, `repo_context` (RC1-393).
+    defaults (`client=None`, so the SDK is built from settings) plus the two
+    switches the CLI does not expose, `repo_context` (RC1-393) and `scout`
+    (RC1-427).
     """
     captured: list[ReviewResult] = []
 
@@ -591,6 +606,7 @@ def _review(
             model=settings.review_model,
             precomputed_findings=precomputed,
             repo_context=repo_context,
+            scout=scout,
         )
         captured.append(result)
         return result

@@ -704,6 +704,22 @@ def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(
     assert result.latency_ms > 0
 
 
+def test_scout_off_skips_the_scout_whatever_the_context_but_keeps_the_context(tmp_path):
+    """RC1-427: the measurement switch. The context is still gathered and
+    reaches the prefix; the scout makes no call and the brief says why."""
+    repo = _repo_with_conventions(tmp_path)
+    sync = _sync()  # no scout call may happen
+    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+    result = _run(
+        _pr_changing_helper(), repo, sync, async_client, scout_context_turns=3,
+        scout_max_turns=8, scout=False, repo_context=False,
+    )
+    assert sync.messages.calls == [] and result.scout_ran is False
+    assert result.brief == "(scout skipped: no scout in this configuration)"
+    prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+    assert "Scout's brief:\n(scout skipped: no scout in this configuration)" in prefix
+
+
 def test_the_verifier_defaults_to_the_settings_flag(pr, repo, monkeypatch):
     """RC1-387's flag is read here now that this is the only entry point."""
     monkeypatch.setattr(

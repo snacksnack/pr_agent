@@ -311,6 +311,7 @@ def review_pull_request(
     verify: bool | None = None,
     plan: ReviewPlan | None = None,
     repo_context: bool = True,
+    scout: bool = True,
 ) -> ReviewResult:
     """Run the review and return one :class:`ReviewResult`.
 
@@ -321,8 +322,9 @@ def review_pull_request(
     model's own. ``verify`` (RC1-387) runs the verifier over the merged
     findings; ``None`` defers to ``settings.review_verify_findings``.
     ``repo_context`` (RC1-393) is whether Python puts the conventions file,
-    callers and tests in the shared prefix; the eval turns it off to
-    measure it, nothing else does.
+    callers and tests in the shared prefix; ``scout`` (RC1-427) is whether
+    the scout may run at all, whatever the context. The eval and the
+    measurement script turn each off to measure it, nothing else does.
 
     ``client`` serves the scout and the verifier (sync); ``async_client``
     serves the warm call and the reviewers. Either may be a fake exposing
@@ -352,6 +354,7 @@ def review_pull_request(
             verify=verify,
             plan=plan,
             repo_context=repo_context,
+            scout=scout,
         )
         result.latency_ms = (time.perf_counter() - started_review) * 1000
         annotate_review_cost(result)
@@ -374,6 +377,7 @@ def _review(
     verify: bool | None,
     plan: ReviewPlan | None,
     repo_context: bool,
+    scout: bool,
 ) -> ReviewResult:
     model = model or settings.review_model
     verify = settings.review_verify_findings if verify is None else verify
@@ -416,11 +420,15 @@ def _review(
         with stage_span("task", "repo_context"):
             context = build_repo_context(pull_request, repo_tools)
     context_text = context.render()
-    turns = scout_turns(
-        context,
-        full=scout_max_turns,
-        with_context=scout_context_turns,
-        when_complete=scout_complete_turns,
+    turns = (
+        scout_turns(
+            context,
+            full=scout_max_turns,
+            with_context=scout_context_turns,
+            when_complete=scout_complete_turns,
+        )
+        if scout
+        else 0
     )
     latency["context"] = _ms_since(started)
     logger.info(
@@ -436,7 +444,9 @@ def _review(
     )
 
     started = time.perf_counter()
-    if plan.scout and turns == 0:
+    if plan.scout and not scout:
+        brief = scouting.skipped_brief("no scout in this configuration")
+    elif plan.scout and turns == 0:
         brief = scouting.skipped_brief(
             "the conventions file, the callers of what changed and the tests "
             "touching the changed paths are above, gathered without a model "
