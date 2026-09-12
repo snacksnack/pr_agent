@@ -15,9 +15,6 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-#: The two ways the multi-agent review can be orchestrated (RC1-391).
-ORCHESTRATORS = ("asyncio", "langgraph")
-
 
 class Settings(BaseSettings):
     """Typed application settings, sourced from env / ``.env``."""
@@ -77,13 +74,6 @@ class Settings(BaseSettings):
     # write plus four cached reads. Set it to the context cap to measure
     # what a scout still adds on top of a complete context.
     review_scout_complete_turns: int = 0
-    # RC1-391 spike: which orchestration runs the multi-agent graph. "asyncio"
-    # is app/agent/multi.py, the shipped path. "langgraph" is the same graph —
-    # same router, prompts and requests — expressed as a LangGraph StateGraph
-    # in app/agent/graph.py, a dev-only dependency; the record in
-    # docs/rc1-391-langgraph-spike.md measures the two against each other.
-    # Meaningless with review_multi_agent off.
-    review_orchestrator: str = "asyncio"
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
@@ -128,13 +118,6 @@ class Settings(BaseSettings):
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be a positive integer")
-        return v
-
-    @field_validator("review_orchestrator")
-    @classmethod
-    def _known_orchestrator(cls, v: str) -> str:
-        if v not in ORCHESTRATORS:
-            raise ValueError(f"must be one of {', '.join(ORCHESTRATORS)}")
         return v
 
     @field_validator("review_scout_context_turns", "review_scout_complete_turns")

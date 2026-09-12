@@ -9,9 +9,3 @@ pytest>=8
 agent-evals[sql,llmobs] @ git+https://github.com/snacksnack/agent-evals@v0.6.1
 pytest-cov>=5
 ruff>=0.7
-
-# RC1-391 spike: the multi-agent graph on LangGraph (app/agent/graph.py),
-# behind REVIEW_ORCHESTRATOR=langgraph. Dev-only on purpose — the shipped
-# path is plain asyncio and the record says why; the module is imported only
-# when the flag names it, so the runtime image stays as it was.
-langgraph>=1.2,<2

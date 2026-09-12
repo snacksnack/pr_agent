@@ -1,6 +1,6 @@
-"""Price a review of a real PR at its own head (RC1-393/394/391/396).
+"""Price a review of a real PR at its own head (RC1-393/394/396).
 
-    python scripts/measure_pr.py 35 33 39 --multi --verify [--orchestrator langgraph]
+    python scripts/measure_pr.py 35 33 39 --multi --verify
     python scripts/measure_pr.py 8 --multi --verify \
         --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
 
@@ -61,7 +61,6 @@ def measure(
     *,
     multi: bool,
     verify: bool,
-    orchestrator: str,
     repo_dir: Path = Path("."),
     overlay: tuple[str, ...] = (),
 ) -> dict:
@@ -102,7 +101,6 @@ def measure(
         "overlay": list(overlay),
         "head": head[:7],
         "files": len(pr.files),
-        "orchestrator": orchestrator if multi else "single",
         "mode": result.mode,
         "cost_usd": float(cost.total),
         "stages_usd": {k: float(v) for k, v in cost.stages.items()},
@@ -134,7 +132,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("numbers", nargs="+", type=int)
     parser.add_argument("--multi", action="store_true")
     parser.add_argument("--verify", action="store_true")
-    parser.add_argument("--orchestrator", default=None, choices=("asyncio", "langgraph"))
     parser.add_argument(
         "--repo-dir",
         type=Path,
@@ -149,21 +146,18 @@ def main(argv: list[str] | None = None) -> int:
         help="files copied from --repo-dir's working tree into the worktree first",
     )
     args = parser.parse_args(argv)
-    if args.orchestrator:
-        settings.review_orchestrator = args.orchestrator
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(name)s %(message)s")
     for number in args.numbers:
         row = measure(
             number,
             multi=args.multi,
             verify=args.verify,
-            orchestrator=settings.review_orchestrator,
             repo_dir=args.repo_dir,
             overlay=tuple(args.overlay),
         )
         print(json.dumps(row), flush=True)
         print(
-            f"{row['repo']}#{row['pr']} {row['orchestrator']}: ${row['cost_usd']:.4f} "
+            f"{row['repo']}#{row['pr']} {row['mode']}: ${row['cost_usd']:.4f} "
             f"{row['wall_s']}s "
             f"{row['findings']} finding(s) {row['by_severity']}",
             file=sys.stderr,
