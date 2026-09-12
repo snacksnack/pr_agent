@@ -1,5 +1,11 @@
 # RC1-391 — The multi-agent review on LangGraph: spike record
 
+> **Removed in RC1-421 (2026-09-11).** The spike answered its question and
+> the port was deleted: `app/agent/graph.py`, `tests/test_graph.py`, the
+> `REVIEW_ORCHESTRATOR` setting and the `langgraph` dev dependency are gone.
+> The code paths named below exist at tag/commit history only; the numbers
+> and the decision stand.
+
 The last step of the multi-agent sequence (RC1-387 → RC1-390 → RC1-393 →
 RC1-394 → RC1-391). The graph the earlier stories built in plain Python is
 ported, unchanged, to LangGraph on a branch and the two are measured
