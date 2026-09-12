@@ -17,13 +17,14 @@ posts a single structured review (summary + inline comments, severity-tagged).
 ## Architecture (target)
 
 Custom **GitHub App** (account-wide) → **Python / FastAPI** service on **Fly.io**
-→ one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`): Python
-runs the deterministic checks (n8n workflow cost) and gathers the repository
-context (conventions file, callers, tests, by grep), three evidence-scoped
-reviewers fan out on one cached prefix, Python merges, the verifier judges
-the model's findings, and the pipeline hands back the one complete result
-(RC1-425). No model explores: the scout that did was measured and retired
-(RC1-427). Reviews are **advisory by default**; they escalate to "Request
+→ one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`), a
+coroutine over one async client (RC1-426): Python runs the deterministic
+checks (n8n workflow cost) and gathers the repository context (conventions
+file, callers, tests, by grep), three evidence-scoped reviewers fan out on
+one cached prefix, Python merges, the verifier judges the model's findings,
+and the pipeline hands back the one complete result (RC1-425). The webhook
+awaits it; the CLI runs it under the application's one `asyncio.run`. No
+model explores: the scout that did was measured and retired (RC1-427). Reviews are **advisory by default**; they escalate to "Request
 changes" only on a committed secret (`block_on`).
 
 ## Build plan & status
@@ -146,6 +147,14 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       the scripts read the metrics, verdict and posting read only the
       review; metric names and tags unchanged
       (record in `docs/rc1-429-run-metrics.md`)
+- [x] RC1-426 the pipeline is async end to end: `review_pull_request` and
+      `verify_findings` are coroutines over one async client (built and
+      closed on the caller's loop when not injected); the webhook's worker
+      awaits the pipeline, with its synchronous GitHub calls and the two
+      repository-reading stages in the default executor; the CLI's
+      `_default_review` is the application's only `asyncio.run` (a test
+      asserts it); the eval subject and the scripts bridge at their own
+      edges (record in `docs/rc1-426-async-pipeline.md`)
 
 ## Layout
 
@@ -158,12 +167,13 @@ app/
                 as ReviewOutcome (RC1-429)
   github.py     PR ingestion (httpx)
   auth.py       GitHub App auth: JWT -> installation tokens (RC1-115)
-  webhook.py    FastAPI receiver: HMAC verify, ack-fast, background review (RC1-116)
+  webhook.py    FastAPI receiver: HMAC verify, ack-fast, background review awaited on
+                the receiver's loop, GitHub calls in the executor (RC1-116/426)
   posting.py    post/refresh review: upsert summary comment + inline comments (RC1-117/118)
   verdict.py    verdict policy: gate on block_on category only (RC1-117)
   dedup.py      re-push/redelivery dedup store (RC1-118)
   retry.py      GitHub-API retry/backoff helper (RC1-120)
-  review.py     dry-run CLI (RC1-113)
+  review.py     dry-run CLI (RC1-113); its _default_review is the one asyncio.run (RC1-426)
   pricing.py    RC1-395: model prices + cache rates, a copy of the eval harness's
                 (the image cannot import it); review_cost() prices a ReviewResult
   observability.py  LLM Obs enable + spans (RC1-322/390); cost per review onto the
@@ -202,6 +212,13 @@ tests/          pytest, offline
   *same* models so everything downstream is auth-agnostic.
 - **Injectable clients.** Network clients (GitHub, Anthropic) accept an injected
   client so tests run offline; the real SDK is imported lazily inside functions.
+  The pipeline takes one *async* model client (`messages.create` is a coroutine).
+- **The edges own the loop.** `review_pull_request` is a coroutine and creates
+  no event loop; `asyncio.run` lives in `app/review.py` (the CLI), the eval
+  subject's `_capture` and the scripts' `main`, nowhere else — the webhook
+  awaits. Blocking I/O (synchronous GitHub reads) goes through
+  `asyncio.to_thread` so the receiver keeps acknowledging and answering
+  `/healthz` mid-review (RC1-426).
 - **Recoverable errors over crashes.** A repository read that cannot be
   answered is `None`; a search that cannot run raises `RepositoryError`, which
   context gathering records as "not searched" and tells the reviewers. Raise
