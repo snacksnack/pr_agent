@@ -137,6 +137,15 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `checks_failed`, `deterministic_findings` on the result); the webhook
       loads and publishes, the CLI loads and prints, `precomputed_findings`
       is gone (record in `docs/rc1-425-deterministic-checks.md`)
+- [x] RC1-429 the review and the run's metrics are two objects:
+      `ReviewResult` is summary + findings, `RunMetrics` (frozen) is every
+      token, latency, reviewer, verifier, context and check figure, and
+      `review_pull_request` returns them as a `ReviewOutcome`; the verifier
+      returns a `Verification` instead of rebuilding a result; pricing,
+      observability, the eval observations, the CLI's diagnostics line and
+      the scripts read the metrics, verdict and posting read only the
+      review; metric names and tags unchanged
+      (record in `docs/rc1-429-run-metrics.md`)
 
 ## Layout
 
@@ -144,7 +153,9 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
 app/
   __main__.py   config sanity check: `python -m app`
   config.py     typed settings (pydantic-settings); import `settings`
-  models.py     normalized data: PRRef, ChangedFile, PullRequest, Finding, ReviewResult
+  models.py     normalized data: PRRef, ChangedFile, PullRequest, Finding; the pipeline's
+                output ReviewResult (summary + findings) and RunMetrics (telemetry), paired
+                as ReviewOutcome (RC1-429)
   github.py     PR ingestion (httpx)
   auth.py       GitHub App auth: JWT -> installation tokens (RC1-115)
   webhook.py    FastAPI receiver: HMAC verify, ack-fast, background review (RC1-116)
@@ -163,13 +174,13 @@ app/
     local_repository.py   LocalRepository: the contract from a checkout on disk (RC1-109)
     github_repository.py  GitHubRepository: the contract from Trees + Contents at the PR
                 head, under the per-review API budget (RC1-364)
-    pipeline.py the review: review_pull_request(...) — checks -> context -> warm cache
-                -> reviewers (gather) -> merge -> verifier -> assemble; opens the
-                pr_review span (RC1-390/422/427/428/425)
+    pipeline.py the review: review_pull_request(...) -> ReviewOutcome — checks -> context
+                -> warm cache -> reviewers (gather) -> merge -> verifier -> assemble;
+                opens the pr_review span (RC1-390/422/427/428/425/429)
     reviewer.py model-facing primitives every stage shares: render_pr, the cache
                 marker + system block, _tokens, parse_findings (RC1-110/422/427)
     verifier.py second pass over the merged findings: drop, downgrade, fold one
-                defect under two categories; a stage, not a flag (RC1-387/428)
+                defect under two categories; returns a Verification (RC1-387/428/429)
     router.py   RC1-390: which reviewers run, decided from the file list, and
                 whether there is a repository to gather context from
     context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
@@ -207,6 +218,11 @@ tests/          pytest, offline
   already-recorded and in the result exactly once, after the verifier. A
   caller never runs a check or merges a finding; a new check is one entry in
   `app/agent/checks.CHECKS`.
+- **Review and metrics are two objects.** `review_pull_request` returns a
+  `ReviewOutcome`: publish `.review` (summary + findings; verdict and posting
+  read nothing else), price and ship `.metrics` (`RunMetrics`, frozen). A new
+  measurement is a `RunMetrics` field, never a `ReviewResult` one; the
+  Datadog metric names and tags are fixed in `observability.py`.
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
   (`["leaked_secret"]`), `remote_api_budget`
