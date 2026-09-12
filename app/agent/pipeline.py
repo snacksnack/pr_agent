@@ -41,6 +41,18 @@ reviewers). The review's graph is explicit in plain Python:
   (RC1-428): it runs on every review that has findings and makes no call on
   one that has none.
 
+The pipeline is async end to end (RC1-426): :func:`review_pull_request` is
+a coroutine, every model call is awaited on the caller's loop through one
+async client, and nothing here creates an event loop. The sync boundary
+belongs to the entry points — the dry-run CLI's ``_default_review``, the
+eval subject's ``_capture`` and the measurement scripts each call
+``asyncio.run`` once at their edge; the webhook's worker awaits the
+pipeline directly. The two stages that do blocking I/O of their own — the
+deterministic checks and the repository context, which read through the
+synchronous GitHub client on the live path — run in the default executor
+(``asyncio.to_thread``) so the receiver's loop stays free to acknowledge
+deliveries and answer the health check while a review is on.
+
 Two details of the cache are load-bearing and are measured, not assumed:
 
 1. The API only serves a cache entry once the request that wrote it has
@@ -165,11 +177,9 @@ def _submission(response: Any) -> dict | None:
     return None
 
 
-async def _warm_cache(async_client: Any, model: str, prefix: str) -> TokenUsage:
+async def _warm_cache(client: Any, model: str, prefix: str) -> TokenUsage:
     with stage_span("task", "warm_cache"):
-        response = await async_client.messages.create(
-            **_request(model, prefix, "", WARM_MAX_TOKENS)
-        )
+        response = await client.messages.create(**_request(model, prefix, "", WARM_MAX_TOKENS))
         usage = _tokens(response)
         logger.info(
             "warm_cache cache_write=%d cache_read=%d",
@@ -180,10 +190,10 @@ async def _warm_cache(async_client: Any, model: str, prefix: str) -> TokenUsage:
 
 
 async def _run_reviewer(
-    async_client: Any, spec: ReviewerSpec, model: str, prefix: str, max_tokens: int
+    client: Any, spec: ReviewerSpec, model: str, prefix: str, max_tokens: int
 ) -> ReviewerOutput:
     with stage_span("agent", f"reviewer.{spec.name}"):
-        response = await async_client.messages.create(
+        response = await client.messages.create(
             **_request(model, prefix, reviewer_instructions(spec), max_tokens)
         )
         usage = _tokens(response)
@@ -220,40 +230,20 @@ async def _run_reviewer(
 
 
 async def fan_out(
-    async_client: Any,
+    client: Any,
     reviewers: tuple[ReviewerSpec, ...],
     model: str,
     prefix: str,
     max_tokens: int,
 ) -> tuple[TokenUsage, list[ReviewerOutput]]:
-    """Warm the shared prefix, then run every reviewer concurrently."""
-    warm = await _warm_cache(async_client, model, prefix)
+    """Warm the shared prefix, then run every reviewer concurrently. A
+    reviewer that raises fails the review: ``gather`` propagates the first
+    error and the caller's ``finally`` closes the client."""
+    warm = await _warm_cache(client, model, prefix)
     outputs = await asyncio.gather(
-        *(_run_reviewer(async_client, spec, model, prefix, max_tokens) for spec in reviewers)
+        *(_run_reviewer(client, spec, model, prefix, max_tokens) for spec in reviewers)
     )
     return warm, list(outputs)
-
-
-async def _fan_out_then_close(
-    async_client: Any,
-    reviewers: tuple[ReviewerSpec, ...],
-    model: str,
-    prefix: str,
-    max_tokens: int,
-    *,
-    close: bool,
-) -> tuple[TokenUsage, list[ReviewerOutput]]:
-    """``fan_out``, then close the client this review built, on the loop its
-    connections were opened on. Seen in the RC1-394 corpus run: a client
-    left to the garbage collector schedules its close on the loop
-    ``asyncio.run`` has already torn down — "Event loop is closed", once per
-    review, and a connection held until then. An injected client is the
-    caller's to close."""
-    try:
-        return await fan_out(async_client, reviewers, model, prefix, max_tokens)
-    finally:
-        if close:
-            await async_client.close()
 
 
 # --- the merge ----------------------------------------------------------------
@@ -310,12 +300,11 @@ def compose_summary(outputs: list[ReviewerOutput]) -> str:
 
 # --- the review -----------------------------------------------------------------
 
-def review_pull_request(
+async def review_pull_request(
     pull_request: PullRequest,
     repository: RepositoryAccess,
     *,
     client: Any | None = None,
-    async_client: Any | None = None,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     checks: Sequence[Check] = CHECKS,
@@ -323,7 +312,7 @@ def review_pull_request(
     repo_context: bool = True,
 ) -> ReviewOutcome:
     """Run the review and return its :class:`ReviewOutcome`: the review and
-    the run's metrics.
+    the run's metrics. A coroutine (RC1-426): await it on your loop.
 
     The review carries the model's findings, verified, followed by the
     deterministic ``checks``' findings (RC1-425): the caller merges nothing.
@@ -333,42 +322,51 @@ def review_pull_request(
     callers and tests in the shared prefix; the eval turns it off to measure
     it, nothing else does.
 
-    ``client`` serves the verifier (sync) and is built only when there is
-    something to verify; ``async_client`` serves the warm call and the
-    reviewers. Either may be a fake exposing ``messages.create``. Runs the
-    fan-out on its own event loop, so call it from synchronous code — the
-    CLI, the eval subject, or the webhook's background task, which
-    Starlette runs in a worker thread.
+    ``client`` is the one model client for the whole review — the warm
+    call, the reviewers and the verifier — an ``AsyncAnthropic`` or a fake
+    whose ``messages.create`` is a coroutine. Built from settings when not
+    given, and then closed here, on this loop, before returning (a client
+    left to the garbage collector schedules its close on a loop that may be
+    gone; seen in the RC1-394 corpus run). An injected client is the
+    caller's to close. A model error or a cancellation propagates after the
+    same close.
 
     The whole review runs inside one ``pr_review`` workflow span and is
     priced while that span is open (RC1-395), so the trace carries the
     review's cost and latency as metrics on its root.
     """
+    owns_client = client is None
+    if client is None:
+        from anthropic import AsyncAnthropic  # imported lazily so tests don't need the SDK
+
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
     started_review = time.perf_counter()
-    with stage_span("workflow", "pr_review"):
-        annotate_review_identity(pull_request)
-        review, metrics = _review(
-            pull_request,
-            repository,
-            client=client,
-            async_client=async_client,
-            model=model,
-            max_tokens=max_tokens,
-            checks=checks,
-            plan=plan,
-            repo_context=repo_context,
-        )
-        metrics = replace(metrics, latency_ms=(time.perf_counter() - started_review) * 1000)
-        annotate_review_cost(metrics)
+    try:
+        with stage_span("workflow", "pr_review"):
+            annotate_review_identity(pull_request)
+            review, metrics = await _review(
+                pull_request,
+                repository,
+                client=client,
+                model=model,
+                max_tokens=max_tokens,
+                checks=checks,
+                plan=plan,
+                repo_context=repo_context,
+            )
+            metrics = replace(metrics, latency_ms=(time.perf_counter() - started_review) * 1000)
+            annotate_review_cost(metrics)
+    finally:
+        if owns_client:
+            await client.close()
     return ReviewOutcome(review=review, metrics=metrics)
 
 
-def _review(
+async def _review(
     pull_request: PullRequest,
     repository: RepositoryAccess,
     *,
-    client: Any | None,
-    async_client: Any | None,
+    client: Any,
     model: str | None,
     max_tokens: int,
     checks: Sequence[Check],
@@ -376,12 +374,6 @@ def _review(
     repo_context: bool,
 ) -> tuple[ReviewResult, RunMetrics]:
     model = model or settings.review_model
-    owns_async_client = async_client is None
-    if async_client is None:
-        from anthropic import AsyncAnthropic
-
-        async_client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
-
     plan = plan or plan_review(pull_request, explorable=repository.explorable)
     logger.info(
         "plan context=%s reviewers=%s reasons=%s",
@@ -393,12 +385,16 @@ def _review(
     latency: dict[str, float] = {}
     # RC1-425: the deterministic checks run first, on the changed files as
     # the repository serves them; the model reads their findings as
-    # already-recorded and never sees the files they parsed.
+    # already-recorded and never sees the files they parsed. Blocking I/O
+    # (the live path reads through the synchronous GitHub client), so it
+    # runs in the executor and the loop stays free (RC1-426).
     started = time.perf_counter()
     check_run = CheckRun()
     if checks:
         with stage_span("task", "checks"):
-            check_run = run_deterministic_checks(pull_request, repository, checks)
+            check_run = await asyncio.to_thread(
+                run_deterministic_checks, pull_request, repository, checks
+            )
     latency["checks"] = _ms_since(started)
     logger.info(
         "checks ran=%s failed=%s findings=%d",
@@ -408,12 +404,13 @@ def _review(
     )
 
     # RC1-393: the deterministic context is the review's exploration; a
-    # docs-only change or an empty checkout pays for none of it.
+    # docs-only change or an empty checkout pays for none of it. The same
+    # blocking reads as the checks, so the same executor.
     started = time.perf_counter()
     context = RepoContext()
     if plan.context and repo_context:
         with stage_span("task", "repo_context"):
-            context = build_repo_context(pull_request, repository)
+            context = await asyncio.to_thread(build_repo_context, pull_request, repository)
     context_text = context.render()
     latency["context"] = _ms_since(started)
     logger.info(
@@ -428,11 +425,7 @@ def _review(
 
     prefix = build_shared_prefix(pull_request, check_run.findings, context_text)
     started = time.perf_counter()
-    warm, outputs = asyncio.run(
-        _fan_out_then_close(
-            async_client, plan.reviewers, model, prefix, max_tokens, close=owns_async_client
-        )
-    )
+    warm, outputs = await fan_out(client, plan.reviewers, model, prefix, max_tokens)
     latency["fan_out"] = _ms_since(started)
     findings, off_scope, deduplicated = merge_findings(outputs)
 
@@ -474,16 +467,12 @@ def _review(
 
     # The verifier judges the model's claims only (RC1-387): the checks'
     # findings are not in the list, so they cannot be dropped, folded or
-    # downgraded by it.
+    # downgraded by it. Same client, same loop (RC1-426).
     verification = Verification(kept=tuple(findings))
     if findings:
-        if client is None:
-            from anthropic import Anthropic  # imported lazily so tests don't need the SDK
-
-            client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
         started = time.perf_counter()
         with stage_span("agent", "verifier"):
-            verification = verify_findings(
+            verification = await verify_findings(
                 findings,
                 client=client,
                 prefix=prefix,

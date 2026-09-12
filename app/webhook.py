@@ -18,15 +18,20 @@ the parsed JSON would change the bytes and break the HMAC). Anything unsigned or
 forged is rejected with 401 before we parse or schedule anything.
 
 The background *processor* is injectable so tests run offline; the default
-(:func:`process_event`) mints an installation token, ingests the PR, runs the
-review loop, and posts the review (RC1-117), with re-push dedup (RC1-118).
+(:func:`process_event`) mints an installation token, ingests the PR, awaits the
+review pipeline, and posts the review (RC1-117), with re-push dedup (RC1-118).
+It is a coroutine (RC1-426): Starlette runs it on the receiver's loop after
+the 202, and the GitHub calls around the pipeline — synchronous httpx — go
+to the default executor so the loop keeps acknowledging deliveries and
+answering the health check while a review is on.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -73,8 +78,8 @@ SIGNATURE_HEADER = "X-Hub-Signature-256"
 EVENT_HEADER = "X-GitHub-Event"
 DELIVERY_HEADER = "X-GitHub-Delivery"
 
-# Type of the async worker the endpoint dispatches to.
-Processor = Callable[["WebhookEvent"], None]
+# Type of the worker the endpoint dispatches to: a coroutine function (RC1-426).
+Processor = Callable[["WebhookEvent"], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -148,7 +153,7 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
 
 # --- default background processor ----------------------------------------
 
-def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> None:
+async def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> None:
     """Run the review for a delivered PR and post it back (default worker).
 
     Mints an installation token, ingests the PR, hands the pipeline a
@@ -159,6 +164,10 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
     workflow JSON, the reviewers, the verifier and the one result they add
     up to (RC1-425) — so this worker loads and publishes, as the dry-run CLI
     loads and prints.
+
+    Async (RC1-426): the pipeline is awaited on this loop; the token mint,
+    the PR fetch and the posting are synchronous GitHub calls and run in the
+    default executor so they never block the receiver.
 
     Dedup (RC1-118): skip webhook redeliveries (same delivery id), commits we've
     already reviewed (same head SHA), and *stale* events — if the PR's current
@@ -187,8 +196,10 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
 
     try:
         with GitHubAppAuth() as auth:
-            gh = auth.client_for_repo(event.owner, event.repo)
-            pr = gh.fetch_pull_request(PRRef(event.owner, event.repo, event.number))
+            gh = await asyncio.to_thread(auth.client_for_repo, event.owner, event.repo)
+            pr = await asyncio.to_thread(
+                gh.fetch_pull_request, PRRef(event.owner, event.repo, event.number)
+            )
             if pr.head_sha and pr.head_sha != event.head_sha:
                 log.info("skip_stale_head current=%s", pr.head_sha[:12])
                 return
@@ -199,7 +210,7 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
                 changed_files=[f.filename for f in pr.files],
                 api_budget=settings.remote_api_budget,
             )
-            reviewed = review_pull_request(pr, repository, client=None)
+            reviewed = await review_pull_request(pr, repository)
             log.info(
                 "repository api_calls=%d tree=%s", repository.api_calls, repository.tree_available
             )
@@ -207,8 +218,13 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
             # dry-run CLI and the eval corpus run the same review function
             # and must not write into the production series.
             ship_review_metrics(reviewed.metrics, repo=f"{event.owner}/{event.repo}")
-            outcome = post_review(
-                gh, pr, reviewed.review, block_on=settings.block_on, commit_id=event.head_sha
+            outcome = await asyncio.to_thread(
+                post_review,
+                gh,
+                pr,
+                reviewed.review,
+                block_on=settings.block_on,
+                commit_id=event.head_sha,
             )
         store.mark_reviewed(event.slug, event.head_sha)
     except Exception:  # noqa: BLE001 — background worker is the last line of defense

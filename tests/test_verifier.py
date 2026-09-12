@@ -1,6 +1,8 @@
-"""Tests for the verifier pass (RC1-387). Offline: a scripted fake client."""
+"""Tests for the verifier pass (RC1-387). Offline: a scripted fake async
+client (RC1-426), driven under ``asyncio.run`` from these sync tests."""
 from __future__ import annotations
 
+import asyncio
 import copy
 from types import SimpleNamespace
 
@@ -15,7 +17,7 @@ class FakeMessages:
         self._usages = list(usages or [])
         self.calls = []
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.calls.append(copy.deepcopy(kwargs))
         if not self._scripted:
             raise AssertionError("fake client ran out of scripted responses")
@@ -59,13 +61,15 @@ TOOL_CHOICE_ANY = {"type": "any"}
 def _verify(findings, client, **kwargs):
     """The call as the pipeline makes it: the reviewers' prefix, tools and
     tool choice (RC1-390); the one shape there is since RC1-428."""
-    return verifier.verify_findings(
-        list(findings),
-        client=client,
-        prefix=kwargs.pop("prefix", "THE PREFIX"),
-        tools=SHARED_TOOLS,
-        tool_choice=TOOL_CHOICE_ANY,
-        **kwargs,
+    return asyncio.run(
+        verifier.verify_findings(
+            list(findings),
+            client=client,
+            prefix=kwargs.pop("prefix", "THE PREFIX"),
+            tools=SHARED_TOOLS,
+            tool_choice=TOOL_CHOICE_ANY,
+            **kwargs,
+        )
     )
 
 
@@ -193,7 +197,7 @@ def test_cache_tokens_are_counted_on_the_verifier_call():
     client = FakeClient([_verdicts()])
     client.messages._usages = []
 
-    def create(**kwargs):
+    async def create(**kwargs):
         client.messages.calls.append(kwargs)
         return SimpleNamespace(
             content=_verdicts(),

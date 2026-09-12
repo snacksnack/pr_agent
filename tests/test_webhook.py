@@ -7,6 +7,7 @@ we can assert dispatch right after the call returns).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -275,7 +276,7 @@ def _wire_fakes(monkeypatch, pr, posted):
         def client_for_repo(self, owner, repo):
             return FakeClient()
 
-    def fake_review(pull_request, repository, client=None):
+    async def fake_review(pull_request, repository, client=None):
         posted["reviewed"] = posted.get("reviewed", 0) + 1
         posted["repository"] = repository
         return ReviewOutcome(ReviewResult(summary="ok"), RunMetrics(model="m"))
@@ -299,7 +300,7 @@ def test_process_event_ingests_reviews_and_posts(monkeypatch):
     _wire_fakes(monkeypatch, pr, posted)
 
     event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999)
-    process_event(event, store=DedupStore())
+    asyncio.run(process_event(event, store=DedupStore()))
 
     assert posted["pr"] is pr
     assert posted["commit_id"] == "abc123def4567890"
@@ -321,16 +322,16 @@ def test_process_event_skips_duplicate_delivery_and_reviewed_sha(monkeypatch):
     store = DedupStore()
 
     event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "sha-head", 1)
-    process_event(event, store=store)
+    asyncio.run(process_event(event, store=store))
     assert posted.get("reviewed") == 1
 
     # Same delivery id again -> skipped before any work.
-    process_event(event, store=store)
+    asyncio.run(process_event(event, store=store))
     assert posted.get("reviewed") == 1
 
     # New delivery, but the same head SHA was already reviewed -> skipped.
     again = WebhookEvent("d-2", "synchronize", "octo", "hello", 42, "sha-head", 1)
-    process_event(again, store=store)
+    asyncio.run(process_event(again, store=store))
     assert posted.get("reviewed") == 1
 
 
@@ -344,7 +345,7 @@ def test_process_event_skips_stale_head(monkeypatch):
     _wire_fakes(monkeypatch, pr, posted)
 
     event = WebhookEvent("d-1", "synchronize", "octo", "hello", 42, "older-sha", 1)
-    process_event(event, store=DedupStore())
+    asyncio.run(process_event(event, store=DedupStore()))
     assert "reviewed" not in posted  # never ran the review
 
 
@@ -401,7 +402,7 @@ def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
     ]
     seen: dict = {}
 
-    def fake_review(pull_request, repository, client=None):
+    async def fake_review(pull_request, repository, client=None):
         seen["repository"] = repository
         review = ReviewResult(summary="ok", findings=list(findings))
         return ReviewOutcome(review, RunMetrics(model="m"))
@@ -418,7 +419,7 @@ def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
     monkeypatch.setattr(app.posting, "post_review", fake_post)
 
     event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
-    process_event(event, store=DedupStore())
+    asyncio.run(process_event(event, store=DedupStore()))
 
     assert posted["result"].findings == findings
     # The webhook read nothing itself; the pipeline's repository reads at the head.
@@ -479,8 +480,12 @@ def test_process_event_ships_one_cost_point_per_review(monkeypatch):
         app.webhook, "ship_review_metrics", lambda result, *, repo: shipped.append((result, repo))
     )
 
-    process_event(WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999),
-                  store=DedupStore())
+    asyncio.run(
+        process_event(
+            WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999),
+            store=DedupStore(),
+        )
+    )
 
     assert len(shipped) == 1
     metrics, repo = shipped[0]
