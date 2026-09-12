@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent import pipeline
+from app.agent.local_repository import LocalRepository
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT
 from app.agent.router import ReviewPlan
-from app.agent.tools import RepoTools
 from app.models import ChangedFile, Finding, PRRef, PullRequest, TokenUsage
 
 
@@ -78,7 +78,7 @@ def repo(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "x.py").write_text("x = 1\n")
-    return RepoTools(root)
+    return LocalRepository(root)
 
 
 @pytest.fixture()
@@ -333,7 +333,7 @@ def test_empty_checkout_skips_the_context_and_the_reviewers_still_run(pr, tmp_pa
     empty = tmp_path / "empty"
     empty.mkdir()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    result = _run(pr, RepoTools(empty), _sync(), async_client)
+    result = _run(pr, LocalRepository(empty), _sync(), async_client)
     assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
     assert result.conventions_file is None and not result.context_complete
     assert set(result.stage_latency_ms) == {"context", "fan_out"}
@@ -357,7 +357,7 @@ def _repo_with_conventions(tmp_path):
     (root / "CLAUDE.md").write_text("# Notes\n\n## Conventions\n\n- read config via settings\n")
     (root / "app" / "x.py").write_text("def helper():\n    return 1\n")
     (root / "app" / "y.py").write_text("from app.x import helper\n\nvalue = helper()\n")
-    return RepoTools(root)
+    return LocalRepository(root)
 
 
 def _pr_changing_helper():
@@ -437,7 +437,7 @@ def test_context_is_not_gathered_when_there_is_nothing_to_explore(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    result = _run(_pr_changing_helper(), RepoTools(empty), _sync(), async_client)
+    result = _run(_pr_changing_helper(), LocalRepository(empty), _sync(), async_client)
     assert result.conventions_file is None and result.callers_found == 0
 
 
@@ -453,7 +453,7 @@ def test_context_survives_the_verifier(tmp_path):
     assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
 
 
-class _NoFileList(RepoTools):
+class _NoFileList(LocalRepository):
     """A checkout whose file list cannot be read (the live path with the
     tree call out of budget): conventions and callers are answered, the
     tests search is not, so the context is answered but not complete."""

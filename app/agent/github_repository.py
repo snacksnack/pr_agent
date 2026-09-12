@@ -7,7 +7,7 @@ review was written from the diff alone. This backend serves the same three tools
 from the Contents API at the PR head, so the live path and the dry-run CLI see
 the same repository.
 
-Same contract as :class:`app.agent.tools.RepoTools` — ``read_file``, ``list_dir``,
+Same contract as :class:`app.agent.local_repository.LocalRepository` — ``read_file``, ``list_dir``,
 ``grep``, and ``dispatch`` — and the same formatting, caps, and secret-file
 rules, so the agent loop cannot tell the two apart. Two things are different and
 deliberate:
@@ -30,13 +30,13 @@ import fnmatch
 from pathlib import PurePosixPath
 from typing import Any
 
-from app.agent.tools import (
+from app.agent.local_repository import (
     IGNORED_DIRS,
     MAX_GREP_FILE_BYTES,
     MAX_GREP_MATCHES,
     MAX_LIST_ENTRIES,
     MAX_READ_BYTES,
-    ToolError,
+    RepositoryError,
     compile_pattern,
     format_file_text,
     grep_text,
@@ -53,7 +53,7 @@ MAX_GREP_REMOTE_FILES = 30
 _UNSET = object()
 
 
-class RemoteRepoTools:
+class GitHubRepository:
     """The three exploration tools, read through ``gh`` at ``head_sha``."""
 
     def __init__(
@@ -89,7 +89,7 @@ class RemoteRepoTools:
 
     def _spend(self) -> None:
         if self._calls >= self._budget:
-            raise ToolError(
+            raise RepositoryError(
                 f"GitHub API budget exhausted ({self._budget} calls this review); "
                 "submit your review with what you have"
             )
@@ -102,7 +102,7 @@ class RemoteRepoTools:
         """Repo-relative POSIX path with no root escape; '' means the root."""
         parts = [p for p in str(rel).replace("\\", "/").split("/") if p not in ("", ".")]
         if any(p == ".." for p in parts):
-            raise ToolError(f"path escapes the repository root: {rel!r}")
+            raise RepositoryError(f"path escapes the repository root: {rel!r}")
         return "/".join(parts)
 
     # -- sources ---------------------------------------------------------
@@ -137,9 +137,9 @@ class RemoteRepoTools:
     ) -> str:
         rel = self._normalize(path)
         if not rel:
-            raise ToolError("'.' is a directory; use list_dir")
+            raise RepositoryError("'.' is a directory; use list_dir")
         if is_secret_file(PurePosixPath(rel).name):
-            raise ToolError(
+            raise RepositoryError(
                 f"refused: {path!r} looks like a secrets/credentials file; the "
                 "reviewer does not read these. Review committed changes from the diff."
             )
@@ -147,7 +147,7 @@ class RemoteRepoTools:
             raise lockfile_refusal(path)
         text = self._fetch(rel)
         if text is None:
-            raise ToolError(
+            raise RepositoryError(
                 f"no such file at the PR head: {path!r} (or it is a directory, "
                 "binary, or over the API's 1 MB limit)"
             )
@@ -159,7 +159,7 @@ class RemoteRepoTools:
         error. One API call when uncached, none when the budget is spent."""
         try:
             rel = self._normalize(path)
-        except ToolError:
+        except RepositoryError:
             return None
         if not rel or is_secret_file(PurePosixPath(rel).name):
             return None
@@ -167,7 +167,7 @@ class RemoteRepoTools:
             return None
         try:
             text = self._fetch(rel)
-        except ToolError:
+        except RepositoryError:
             return None  # budget exhausted: the context is optional, the review is not
         return text[:MAX_READ_BYTES] if text is not None else None
 
@@ -178,7 +178,7 @@ class RemoteRepoTools:
         as ``grep``'s candidates: noise, secret and lock files left out."""
         try:
             entries = self._entries()
-        except ToolError:
+        except RepositoryError:
             return None
         if entries is None:
             return None
@@ -195,7 +195,7 @@ class RemoteRepoTools:
         rel = self._normalize(path)
         entries = self._entries()
         if entries is None:
-            raise ToolError(
+            raise RepositoryError(
                 "the repository tree is not readable on this review; read_file "
                 "still works for paths you know from the diff"
             )
@@ -215,7 +215,7 @@ class RemoteRepoTools:
             elif not is_secret_file(rest) and not is_lockfile(rest):
                 files.append((rest, int(e.get("size", 0))))
         if not dirs and not files:
-            raise ToolError(f"no such directory: {path!r}")
+            raise RepositoryError(f"no such directory: {path!r}")
 
         listed = [f"{d}/" for d in sorted(dirs, key=str.lower)]
         listed += [f"{n} ({s} B)" for n, s in sorted(files, key=lambda f: f[0].lower())]

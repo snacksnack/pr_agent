@@ -30,13 +30,13 @@ from typing import Any
 
 from app.agent import verifier
 from app.agent.context import RepoContext
+from app.agent.local_repository import LocalRepository
 from app.agent.pipeline import (
     REVIEW_TOOLS,
     TOOL_CHOICE_ANY,
     build_shared_prefix,
     review_pull_request,
 )
-from app.agent.tools import RepoTools
 from app.config import settings
 from app.models import Finding, ReviewResult
 from app.pricing import cost_usd, review_cost
@@ -344,7 +344,7 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
         materialise_checkout(Path(tmp), None, boundary.repo_files(case))
         started = time.perf_counter()
         result = review_pull_request(
-            pr, RepoTools(tmp), client=recorder, verify=True, repo_context=True
+            pr, LocalRepository(tmp), client=recorder, verify=True, repo_context=True
         )
         wall_s = time.perf_counter() - started
     kept_on = [

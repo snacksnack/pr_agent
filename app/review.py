@@ -33,8 +33,8 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.checks import n8n
+from app.agent.local_repository import LocalRepository, RepositoryError
 from app.agent.pipeline import review_pull_request
-from app.agent.tools import RepoTools, ToolError
 from app.config import settings
 from app.github import GitHubError, fetch_pull_request, parse_pr_spec
 from app.models import Finding, PRRef, PullRequest, ReviewResult
@@ -48,7 +48,7 @@ EXIT_ERROR = 2       # the review could not be produced (ingestion/loop failure)
 FetchFn = Callable[[PRRef], PullRequest]
 # The review callable receives the PR, repo tools, and any precomputed findings
 # from deterministic checks (shown to the model as already-recorded context).
-ReviewFn = Callable[[PullRequest, RepoTools, "list[Finding]"], ReviewResult]
+ReviewFn = Callable[[PullRequest, LocalRepository, "list[Finding]"], ReviewResult]
 
 _SEVERITY_LABEL = {"blocker": "BLOCKER", "warning": "WARNING", "nit": "NIT"}
 
@@ -179,8 +179,8 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
 
 def _resolve_repo_tools(
     repo_path: str | None, tmpdirs: list[str]
-) -> tuple[RepoTools, Path | None]:
-    """Build RepoTools from --repo-path, or an empty temp dir as a fallback.
+) -> tuple[LocalRepository, Path | None]:
+    """Build LocalRepository from --repo-path, or an empty temp dir as a fallback.
 
     Returns the tools plus the real checkout root (``None`` when we fell back to
     the empty temp dir, so the n8n hook knows there are no real files to read).
@@ -189,12 +189,12 @@ def _resolve_repo_tools(
         root = Path(repo_path).expanduser()
         if not root.is_dir():
             raise GitHubError(f"--repo-path is not a directory: {repo_path}")
-        return RepoTools(root), root
+        return LocalRepository(root), root
     # No checkout: give the agent an empty dir so its tools return graceful
     # "no such file" errors and it reviews from the diff in the seed prompt.
     tmp = tempfile.mkdtemp(prefix="pr-review-empty-")
     tmpdirs.append(tmp)
-    return RepoTools(tmp), None
+    return LocalRepository(tmp), None
 
 
 # --- entry point ----------------------------------------------------------
@@ -234,7 +234,7 @@ def main(
         precomputed = run_n8n_checks(pr, repo_root)
         result = review(pr, repo_tools, precomputed)
         result.findings.extend(precomputed)
-    except (GitHubError, ToolError) as exc:
+    except (GitHubError, RepositoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     finally:
@@ -262,7 +262,7 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 def _default_review(*, model: str | None) -> ReviewFn:
     def _review(
-        pr: PullRequest, repo_tools: RepoTools, precomputed: list[Finding]
+        pr: PullRequest, repo_tools: LocalRepository, precomputed: list[Finding]
     ) -> ReviewResult:
         # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
         return review_pull_request(

@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.context import RepoContext, build_repo_context
+from app.agent.local_repository import LocalRepository
 from app.agent.prompts import SUBMIT_TOOL, SYSTEM_PROMPT, ReviewerSpec, reviewer_instructions
 from app.agent.reviewer import (
     CACHE_CONTROL,
@@ -73,7 +74,6 @@ from app.agent.reviewer import (
     render_pr,
 )
 from app.agent.router import ReviewPlan, plan_review
-from app.agent.tools import RepoTools
 from app.agent.verifier import VERIFY_TOOL, verify_findings
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult, TokenUsage
@@ -297,7 +297,7 @@ def compose_summary(outputs: list[ReviewerOutput]) -> str:
 
 def review_pull_request(
     pull_request: PullRequest,
-    repo_tools: RepoTools,
+    repo_tools: LocalRepository,
     *,
     client: Any | None = None,
     async_client: Any | None = None,
@@ -349,7 +349,7 @@ def review_pull_request(
 
 def _review(
     pull_request: PullRequest,
-    repo_tools: RepoTools,
+    repo_tools: LocalRepository,
     *,
     client: Any | None,
     async_client: Any | None,

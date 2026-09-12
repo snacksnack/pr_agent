@@ -43,7 +43,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.tools import ToolError, is_lockfile
+from app.agent.local_repository import RepositoryError, is_lockfile
 from app.models import PullRequest
 
 logger = logging.getLogger("app.agent.context")
@@ -326,7 +326,7 @@ def callers(pr: PullRequest, tools: Any, symbols: list[str]) -> RepoContext:
         definition = re.compile(_DEFINITION_HIT.pattern.format(name=re.escape(name)))
         try:
             out = tools.grep(rf"\b{re.escape(name)}\b", max_results=MAX_CALLERS_PER_SYMBOL * 3)
-        except ToolError as exc:
+        except RepositoryError as exc:
             logger.info("context_search_stopped symbol=%s reason=%s", name, exc)
             ctx.search_stopped = True
             ctx.symbols_unsearched.append(name)
@@ -494,7 +494,7 @@ def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> tuple[i
             out = tools.grep(
                 rf"\b{re.escape(stem)}\b", path=root, max_results=MAX_TESTS_PER_FILE * 3
             )
-        except ToolError as exc:
+        except RepositoryError as exc:
             logger.info("tests_search_stopped file=%s reason=%s", source, exc)
             ctx.tests_stopped = True
             return hits, listed

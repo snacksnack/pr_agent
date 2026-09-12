@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.tools import RepoTools, ToolError, is_secret_file
+from app.agent.local_repository import LocalRepository, RepositoryError, is_secret_file
 
 
 @pytest.fixture()
@@ -23,7 +23,7 @@ def repo(tmp_path):
     (root / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-SHOULD-NOT-LEAK\n")
     (root / ".env.example").write_text("ANTHROPIC_API_KEY=\n")
     (tmp_path / "secret.txt").write_text("API_KEY=should-not-be-readable\n")
-    return RepoTools(root)
+    return LocalRepository(root)
 
 
 # --- read_file ------------------------------------------------------------
@@ -41,23 +41,23 @@ def test_read_file_line_range(repo):
 
 
 def test_read_file_missing(repo):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.read_file("nope.py")
 
 
 def test_read_file_on_dir_errors(repo):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.read_file("src")
 
 
 def test_read_file_binary_errors(repo):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.read_file("image.png")
 
 
 @pytest.mark.parametrize("escape", ["../secret.txt", "/etc/hostname", "src/../../secret.txt"])
 def test_read_file_blocks_traversal(repo, escape):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.read_file(escape)
 
 
@@ -76,7 +76,7 @@ def test_list_dir_subdir(repo):
 
 
 def test_list_dir_on_file_errors(repo):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.list_dir("README.md")
 
 
@@ -105,7 +105,7 @@ def test_grep_fixed_string(repo):
 
 
 def test_grep_invalid_regex_errors(repo):
-    with pytest.raises(ToolError):
+    with pytest.raises(RepositoryError):
         repo.grep("(unclosed")
 
 
@@ -134,7 +134,7 @@ def test_is_secret_file_classification(name, secret):
 
 
 def test_read_file_refuses_secret(repo):
-    with pytest.raises(ToolError) as exc:
+    with pytest.raises(RepositoryError) as exc:
         repo.read_file(".env")
     assert "secrets" in str(exc.value).lower()
 
@@ -175,13 +175,13 @@ def repo_with_lock(tmp_path):
         '[[package]]\nname = "httpx"\nsource = { registry = "https://pypi.org" }\n'
     )
     (root / "src" / "app.py").write_text("import httpx\n")
-    return RepoTools(root)
+    return LocalRepository(root)
 
 
 def test_read_file_refuses_lock_files_with_a_pointer_to_the_manifest(repo_with_lock):
-    with pytest.raises(ToolError, match="generated lock file"):
+    with pytest.raises(RepositoryError, match="generated lock file"):
         repo_with_lock.read_file("package-lock.json")
-    with pytest.raises(ToolError, match="generated lock file"):
+    with pytest.raises(RepositoryError, match="generated lock file"):
         repo_with_lock.read_file("uv.lock")
     assert "left-pad" in repo_with_lock.read_file("package.json")
 
@@ -198,15 +198,15 @@ def test_grep_and_list_dir_skip_lock_files(repo_with_lock):
 def test_explorable_is_false_for_an_empty_root(tmp_path):
     """RC1-390: the dry-run CLI hands the pipeline an empty directory when
     it has no checkout; the router skips the repository context on it."""
-    from app.agent.tools import RepoTools
+    from app.agent.local_repository import LocalRepository
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert RepoTools(empty).explorable is False
+    assert LocalRepository(empty).explorable is False
     (empty / ".git").mkdir()
-    assert RepoTools(empty).explorable is False  # noise dirs do not count
+    assert LocalRepository(empty).explorable is False  # noise dirs do not count
     (empty / "a.py").write_text("x = 1\n")
-    assert RepoTools(empty).explorable is True
+    assert LocalRepository(empty).explorable is True
 
 
 # --- read_text (RC1-393) ------------------------------------------------------------
@@ -217,7 +217,7 @@ def test_read_text_is_raw_and_never_raises(tmp_path):
     (tmp_path / "uv.lock").write_text("lock\n")
     (tmp_path / "bin").write_bytes(b"\xff\xfe\x00")
     (tmp_path / "sub").mkdir()
-    tools = RepoTools(tmp_path)
+    tools = LocalRepository(tmp_path)
     assert tools.read_text("CLAUDE.md") == "# hi\nrules\n"
     assert tools.read_text(".env") is None
     assert tools.read_text("uv.lock") is None
@@ -240,4 +240,4 @@ def test_paths_lists_every_file_the_tools_would_serve(tmp_path):
     (tmp_path / "__pycache__" / "a.pyc").write_bytes(b"\x00")
     (tmp_path / ".env").write_text("SECRET=1\n")
     (tmp_path / "uv.lock").write_text("lock\n")
-    assert sorted(RepoTools(tmp_path).paths()) == ["app/a.py", "tests/test_a.py"]
+    assert sorted(LocalRepository(tmp_path).paths()) == ["app/a.py", "tests/test_a.py"]

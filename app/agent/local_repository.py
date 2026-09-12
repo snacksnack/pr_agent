@@ -6,13 +6,13 @@ with strict path-safety (no escaping the root, no symlink traversal) and bounded
 output so a huge file or a noisy grep can't blow up the context window or cost.
 
 The tools here operate on a local checkout (the dry-run CLI's ``--repo-path``).
-The live webhook has no checkout; :mod:`app.agent.remote_tools` serves the same
+The live webhook has no checkout; :mod:`app.agent.github_repository` serves the same
 three tools from the GitHub Contents API at the PR head (RC1-364). Both share
 the formatting and matching helpers below and the :func:`dispatch_tool` contract,
 so the agent loop cannot tell which one it is talking to.
 
 Each tool is also exposed as an Anthropic tool schema (``TOOL_SCHEMAS``) and
-invoked via :meth:`RepoTools.dispatch`, which the agent loop (RC1-110) drives.
+invoked via :meth:`LocalRepository.dispatch`, which the agent loop (RC1-110) drives.
 """
 from __future__ import annotations
 
@@ -117,14 +117,14 @@ def is_lockfile(name: str) -> bool:
     return name.lower() in LOCKFILE_NAMES
 
 
-def lockfile_refusal(path: str) -> ToolError:
-    return ToolError(
+def lockfile_refusal(path: str) -> RepositoryError:
+    return RepositoryError(
         f"refused: {path!r} is a generated lock file; review dependency changes "
         "from the manifest (package.json, pyproject.toml, ...) and the diff header."
     )
 
 
-class ToolError(Exception):
+class RepositoryError(Exception):
     """A recoverable tool failure (bad path, binary file, etc.).
 
     The dispatcher turns these into strings so the model can adjust and retry
@@ -132,13 +132,13 @@ class ToolError(Exception):
     """
 
 
-class RepoTools:
+class LocalRepository:
     """Filesystem tools scoped to a single repository root."""
 
     def __init__(self, root: str | os.PathLike) -> None:
         self.root = Path(root)
         if not self.root.is_dir():
-            raise ToolError(f"repo root is not a directory: {root}")
+            raise RepositoryError(f"repo root is not a directory: {root}")
 
     @property
     def explorable(self) -> bool:
@@ -153,7 +153,7 @@ class RepoTools:
         root = self.root.resolve()
         candidate = (self.root / rel).resolve()
         if candidate != root and root not in candidate.parents:
-            raise ToolError(f"path escapes the repository root: {rel!r}")
+            raise RepositoryError(f"path escapes the repository root: {rel!r}")
         return candidate
 
     def _relpath(self, p: Path) -> str:
@@ -185,7 +185,7 @@ class RepoTools:
         """Return a file's contents with line numbers, optionally a line range."""
         p = self._resolve(path)
         if is_secret_file(p.name):
-            raise ToolError(
+            raise RepositoryError(
                 f"refused: {path!r} looks like a secrets/credentials file; the "
                 "reviewer does not read these (they're typically gitignored and "
                 "not part of the PR). Review committed changes from the diff."
@@ -193,9 +193,9 @@ class RepoTools:
         if is_lockfile(p.name):
             raise lockfile_refusal(path)
         if not p.exists():
-            raise ToolError(f"no such file: {path!r}")
+            raise RepositoryError(f"no such file: {path!r}")
         if p.is_dir():
-            raise ToolError(f"{path!r} is a directory; use list_dir")
+            raise RepositoryError(f"{path!r} is a directory; use list_dir")
 
         size = p.stat().st_size
         return format_file_text(path, p.read_bytes()[:MAX_READ_BYTES], size, start_line, end_line)
@@ -210,7 +210,7 @@ class RepoTools:
         """
         try:
             p = self._resolve(path)
-        except ToolError:
+        except RepositoryError:
             return None
         if is_secret_file(p.name) or is_lockfile(p.name) or not p.is_file():
             return None
@@ -230,9 +230,9 @@ class RepoTools:
         """List a directory (dirs first), excluding noise dirs like .git."""
         p = self._resolve(path)
         if not p.exists():
-            raise ToolError(f"no such directory: {path!r}")
+            raise RepositoryError(f"no such directory: {path!r}")
         if not p.is_dir():
-            raise ToolError(f"{path!r} is not a directory; use read_file")
+            raise RepositoryError(f"{path!r} is not a directory; use read_file")
 
         entries: list[str] = []
         children = sorted(p.iterdir(), key=lambda c: (c.is_file(), c.name.lower()))
@@ -272,7 +272,7 @@ class RepoTools:
 
         base = self._resolve(path)
         if not base.exists():
-            raise ToolError(f"no such path: {path!r}")
+            raise RepositoryError(f"no such path: {path!r}")
 
         results: list[str] = []
         truncated = False
@@ -312,7 +312,7 @@ def format_file_text(
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ToolError(f"{path!r} is binary or not UTF-8 text") from exc
+        raise RepositoryError(f"{path!r} is binary or not UTF-8 text") from exc
 
     lines = text.splitlines()
     total = len(lines)
@@ -346,7 +346,7 @@ def compile_pattern(pattern: str, *, ignore_case: bool = False, fixed: bool = Fa
     try:
         return re.compile(re.escape(pattern) if fixed else pattern, flags)
     except re.error as exc:
-        raise ToolError(f"invalid regex {pattern!r}: {exc}") from exc
+        raise RepositoryError(f"invalid regex {pattern!r}: {exc}") from exc
 
 
 def grep_text(

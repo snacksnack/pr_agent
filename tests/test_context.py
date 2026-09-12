@@ -21,8 +21,8 @@ from app.agent.context import (
     named_test_files,
     select_sections,
 )
-from app.agent.remote_tools import RemoteRepoTools
-from app.agent.tools import RepoTools, ToolError
+from app.agent.github_repository import GitHubRepository
+from app.agent.local_repository import LocalRepository, RepositoryError
 from app.models import ChangedFile, PRRef, PullRequest
 
 
@@ -98,12 +98,12 @@ def test_headingless_file_is_cut_at_the_cap():
 def test_first_conventions_file_found_wins(tmp_path):
     (tmp_path / "CONTRIBUTING.md").write_text("contrib\n")
     (tmp_path / "AGENTS.md").write_text("agents\n")
-    path, text, cut = context.conventions_file(RepoTools(tmp_path))
+    path, text, cut = context.conventions_file(LocalRepository(tmp_path))
     assert (path, text, cut) == ("AGENTS.md", "agents", False)
 
 
 def test_no_conventions_file_is_none(tmp_path):
-    assert context.conventions_file(RepoTools(tmp_path)) == (None, "", False)
+    assert context.conventions_file(LocalRepository(tmp_path)) == (None, "", False)
 
 
 # --- callers ---------------------------------------------------------------------
@@ -113,7 +113,7 @@ def _checkout(tmp_path):
     (tmp_path / "app" / "a.py").write_text("def fetch(path):\n    return path\n\nfetch('x')\n")
     (tmp_path / "app" / "b.py").write_text("from app.a import fetch\n\nout = fetch('y')\n")
     (tmp_path / "app" / "c.py").write_text("fetcher = 1\nprefetch = 2\n")
-    return RepoTools(tmp_path)
+    return LocalRepository(tmp_path)
 
 
 def test_callers_exclude_the_definition_and_match_whole_words(tmp_path):
@@ -150,13 +150,13 @@ def test_callers_are_capped_per_symbol_and_in_total(tmp_path):
     (tmp_path / "many.py").write_text("\n".join(f"use_{i} = fetch({i})" for i in range(50)))
     defs = "\n".join(f"+def fetch{i}():" for i in range(MAX_SYMBOLS + 2))
     pr = _pr(("app/a.py", defs + "\n+def fetch():"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.symbols) == MAX_SYMBOLS
     assert ctx.symbols_unsearched == [f"fetch{MAX_SYMBOLS}", f"fetch{MAX_SYMBOLS + 1}", "fetch"]
     assert f"(not searched: fetch{MAX_SYMBOLS}, fetch{MAX_SYMBOLS + 1}, fetch)" in ctx.render()
 
     pr = _pr(("app/a.py", "+def fetch():"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.callers) == MAX_CALLERS_PER_SYMBOL
 
 
@@ -164,7 +164,7 @@ def test_total_row_cap_marks_truncation(tmp_path, monkeypatch):
     monkeypatch.setattr(context, "MAX_CALLER_ROWS", 4)
     (tmp_path / "many.py").write_text("\n".join(f"a = fn{i % 2}({i})" for i in range(20)))
     pr = _pr(("app/a.py", "+def fn0():\n+def fn1():\n+def fn2():"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.callers) == 4 and ctx.callers_truncated
     assert ctx.unresolved == [] and ctx.symbols_unsearched == ["fn1", "fn2"]
     assert "(not searched: fn1, fn2)" in ctx.render()
@@ -177,7 +177,7 @@ def test_a_tool_error_stops_the_search_and_is_recorded(tmp_path):
             return None
 
         def grep(self, pattern, **kw):
-            raise ToolError("GitHub API budget exhausted")
+            raise RepositoryError("GitHub API budget exhausted")
 
         def paths(self):
             return None
@@ -276,7 +276,7 @@ def _checkout_with_tests(tmp_path):
         "from app.a import fetch\n\n\ndef test_fetch():\n    assert fetch('x') == 'x'\n"
     )
     (tmp_path / "tests" / "test_other.py").write_text("import app.b\n")
-    return RepoTools(tmp_path)
+    return LocalRepository(tmp_path)
 
 
 def test_tests_section_names_the_test_file_greps_the_tree_and_lists_the_untested(tmp_path):
@@ -307,7 +307,7 @@ def test_a_repository_with_no_tests_says_so_and_still_counts_as_answered(tmp_pat
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "a.py").write_text("x = 1\n")
     pr = _pr(("app/a.py", "+x = 2\n"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert ctx.symbols == [] and ctx.untested == ["app/a.py"]
     assert ctx.tests_searched and ctx.complete
     assert "(no test files found in the repository)" in ctx.render()
@@ -317,7 +317,7 @@ def test_a_repository_with_no_tests_says_so_and_still_counts_as_answered(tmp_pat
 def test_a_diff_with_no_source_file_is_answered_without_a_search(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("## Conventions\nrules\n")
     pr = _pr(("tests/test_a.py", "+def test_x(): pass\n"), ("README.md", "+hi\n"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert ctx.source_files == [] and ctx.tests_searched and ctx.complete
     assert "Tests touching" not in ctx.render()
 
@@ -325,12 +325,12 @@ def test_a_diff_with_no_source_file_is_answered_without_a_search(tmp_path):
 def test_complete_needs_the_conventions_file_too(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "a.py").write_text("x = 1\n")
-    ctx = build_repo_context(_pr(("app/a.py", "+x = 2\n")), RepoTools(tmp_path))
+    ctx = build_repo_context(_pr(("app/a.py", "+x = 2\n")), LocalRepository(tmp_path))
     assert ctx.tests_searched and not ctx.complete
 
 
 def test_no_file_list_stops_the_tests_search_before_it_starts(tmp_path):
-    class NoTree(RepoTools):
+    class NoTree(LocalRepository):
         def paths(self):
             return None
 
@@ -350,14 +350,14 @@ def test_a_tool_error_in_the_tests_grep_stops_it_and_keeps_what_was_found(tmp_pa
     (tmp_path / "app" / "widget.py").write_text("x = 1\n")
     (tmp_path / "app" / "gadget.py").write_text("y = 1\n")
     (tmp_path / "tests" / "test_widget.py").write_text("from app import widget\n")
-    tools = RepoTools(tmp_path)
+    tools = LocalRepository(tmp_path)
     calls = []
     real_grep = tools.grep
 
     def grep(pattern, *args, **kw):
         calls.append(pattern)
         if "gadget" in pattern:
-            raise ToolError("GitHub API budget exhausted")
+            raise RepositoryError("GitHub API budget exhausted")
         return real_grep(pattern, *args, **kw)
 
     tools.grep = grep
@@ -383,11 +383,11 @@ def test_tests_rows_are_capped_per_file_and_in_total(tmp_path, monkeypatch):
         "\n".join(f"use_{i} = widget({i})" for i in range(40)) + "\n"
     )
     pr = _pr(("app/widget.py", "+x = 2\n"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.tests) == MAX_TESTS_PER_FILE and not ctx.tests_truncated
 
     monkeypatch.setattr(context, "MAX_TEST_ROWS", 4)
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.tests) == 4 and ctx.tests_truncated and ctx.tests_searched
     assert "tests list capped" in ctx.render()
 
@@ -419,7 +419,7 @@ def test_short_and_generic_stems_are_not_grepped_but_named_files_still_count(tmp
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_io.py").write_text("io = 1\n")
     pr = _pr(("app/io.py", "+x = 1\n"))
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert ctx.tests == ["tests/test_io.py: (test file named for app/io.py)"]
 
 
@@ -446,7 +446,7 @@ def test_remote_backend_serves_the_same_context_under_the_api_budget():
         ".env": "SECRET=1\n",
     }
     gh = FakeGitHub(files)
-    tools = RemoteRepoTools(
+    tools = GitHubRepository(
         gh, PRRef("o", "r", 1), "sha", changed_files=["app/a.py"], api_budget=10
     )
     pr = _pr(("app/a.py", "+def fetch():"))
@@ -468,7 +468,7 @@ def test_remote_backend_finds_tests_through_the_tree_and_the_budgeted_grep():
         "tests/test_z.py": "unrelated = 1\n",
     }
     gh = FakeGitHub(files)
-    tools = RemoteRepoTools(
+    tools = GitHubRepository(
         gh, PRRef("o", "r", 1), "sha", changed_files=["app/a.py"], api_budget=10
     )
     ctx = build_repo_context(_pr(("app/a.py", "+def fetch():")), tools)
@@ -481,7 +481,7 @@ def test_remote_backend_finds_tests_through_the_tree_and_the_budgeted_grep():
 
 def test_remote_tests_search_stops_when_the_tree_is_out_of_budget():
     gh = FakeGitHub({"CLAUDE.md": "## Conventions\nx\n", "app/a.py": "x = 1\n"})
-    tools = RemoteRepoTools(gh, PRRef("o", "r", 1), "sha", api_budget=1)
+    tools = GitHubRepository(gh, PRRef("o", "r", 1), "sha", api_budget=1)
     ctx = build_repo_context(_pr(("app/a.py", "+x = 2")), tools)
     assert ctx.conventions_path == "CLAUDE.md"
     assert ctx.tests_stopped and not ctx.complete
@@ -489,7 +489,7 @@ def test_remote_tests_search_stops_when_the_tree_is_out_of_budget():
 
 def test_remote_read_text_is_none_once_the_budget_is_spent():
     gh = FakeGitHub({"CLAUDE.md": "x", "app/a.py": "y"})
-    tools = RemoteRepoTools(gh, PRRef("o", "r", 1), "sha", api_budget=1)
+    tools = GitHubRepository(gh, PRRef("o", "r", 1), "sha", api_budget=1)
     assert tools.read_text("app/a.py") == "y"
     assert tools.read_text("CLAUDE.md") is None, "the context is optional; the review is not"
 
@@ -507,7 +507,7 @@ def test_a_file_whose_test_rows_the_cap_refused_is_not_called_untested(tmp_path,
         )
     pr = _pr(("app/widget.py", "+x = 2\n"), ("app/gadget.py", "+x = 3\n"))
     monkeypatch.setattr(context, "MAX_TEST_ROWS", 3)
-    ctx = build_repo_context(pr, RepoTools(tmp_path))
+    ctx = build_repo_context(pr, LocalRepository(tmp_path))
     assert len(ctx.tests) == 3 and ctx.tests_truncated and ctx.tests_searched
     assert ctx.untested == []
     assert ctx.tests_unlisted == ["app/gadget.py"]

@@ -169,8 +169,8 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
     Exceptions are swallowed and logged — a background task has no client to
     return an error to, and one bad delivery must not take the worker down.
     """
+    from app.agent.github_repository import GitHubRepository
     from app.agent.pipeline import review_pull_request
-    from app.agent.remote_tools import RemoteRepoTools
     from app.auth import GitHubAppAuth
     from app.dedup import dedup_store
     from app.models import PRRef
@@ -197,7 +197,7 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
             # findings are fed to the loop as already-recorded context so the
             # model builds on them instead of duplicating them, then merged once.
             precomputed = _run_n8n_checks(gh, pr, log)
-            tools = RemoteRepoTools(
+            tools = GitHubRepository(
                 gh,
                 pr.ref,
                 pr.head_sha,
