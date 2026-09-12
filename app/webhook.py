@@ -169,8 +169,8 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
     Exceptions are swallowed and logged — a background task has no client to
     return an error to, and one bad delivery must not take the worker down.
     """
+    from app.agent.pipeline import review_pull_request
     from app.agent.remote_tools import RemoteRepoTools
-    from app.agent.reviewer import review_pull_request
     from app.auth import GitHubAppAuth
     from app.dedup import dedup_store
     from app.models import PRRef

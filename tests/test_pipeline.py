@@ -1,4 +1,4 @@
-"""Tests for the multi-agent review path (RC1-390). Offline: scripted fakes
+"""Tests for the pipeline-agent review path (RC1-390). Offline: scripted fakes
 for the sync client (scout, verifier) and the async client (warm call,
 reviewers)."""
 from __future__ import annotations
@@ -8,9 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent import multi
+from app.agent import pipeline
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT
-from app.agent.reviewer import review_pull_request
 from app.agent.router import ReviewPlan
 from app.agent.tools import RepoTools
 from app.config import Settings
@@ -99,7 +98,7 @@ WARM = []
 
 def _run(pr, repo, sync, async_client, **kw):
     kw.setdefault("model", "m")
-    return multi.review_pull_request_multi(pr, repo, client=sync, async_client=async_client, **kw)
+    return pipeline.review_pull_request(pr, repo, client=sync, async_client=async_client, **kw)
 
 
 # --- the happy path -----------------------------------------------------------
@@ -194,7 +193,7 @@ def test_token_usage_is_summed_across_every_stage(pr, repo):
 # --- the merge ----------------------------------------------------------------
 
 def _out(spec, findings, summary=""):
-    return multi.ReviewerOutput(spec, summary=summary, findings=findings)
+    return pipeline.ReviewerOutput(spec, summary=summary, findings=findings)
 
 
 def test_merge_discards_findings_outside_the_reviewers_categories():
@@ -202,14 +201,14 @@ def test_merge_discards_findings_outside_the_reviewers_categories():
         _out(DIFF_LOCAL, [Finding("warning", "tests", "not mine", "a.py", 1)]),
         _out(REPO_CONTEXT, [Finding("warning", "tests", "mine", "a.py", 1)]),
     ]
-    merged, off_scope, deduplicated = multi.merge_findings(outputs)
+    merged, off_scope, deduplicated = pipeline.merge_findings(outputs)
     assert [f.message for f in merged] == ["mine"]
     assert off_scope == 1 and deduplicated == 0
 
 
 def test_merge_allows_general_from_any_reviewer():
     outputs = [_out(CHANGE_INTENT, [Finding("nit", "general", "dead code", "a.py", 4)])]
-    merged, off_scope, _ = multi.merge_findings(outputs)
+    merged, off_scope, _ = pipeline.merge_findings(outputs)
     assert len(merged) == 1 and off_scope == 0
 
 
@@ -219,7 +218,7 @@ def test_merge_folds_same_file_line_category_keeping_the_more_severe():
         _out(REPO_CONTEXT, [Finding("warning", "general", "second", "a.py", 4)]),
         _out(CHANGE_INTENT, [Finding("nit", "general", "third", "a.py", 4)]),
     ]
-    merged, _, deduplicated = multi.merge_findings(outputs)
+    merged, _, deduplicated = pipeline.merge_findings(outputs)
     assert [(f.severity, f.message) for f in merged] == [("warning", "second")]
     assert deduplicated == 2
 
@@ -228,7 +227,7 @@ def test_merge_never_folds_pr_level_findings():
     outputs = [
         _out(CHANGE_INTENT, [Finding("nit", "pr_drift", "a"), Finding("nit", "pr_drift", "b")]),
     ]
-    merged, _, deduplicated = multi.merge_findings(outputs)
+    merged, _, deduplicated = pipeline.merge_findings(outputs)
     assert len(merged) == 2 and deduplicated == 0
 
 
@@ -238,12 +237,12 @@ def test_summary_leads_with_the_reviewer_holding_the_most_serious_finding():
         _out(REPO_CONTEXT, [Finding("warning", "tests", "t")], summary="Untested."),
         _out(CHANGE_INTENT, [], summary="   "),
     ]
-    assert multi.compose_summary(outputs) == "Untested. Docs nit."
+    assert pipeline.compose_summary(outputs) == "Untested. Docs nit."
 
 
 def test_summary_when_nobody_found_anything():
     outputs = [_out(DIFF_LOCAL, []), _out(CHANGE_INTENT, [])]
-    assert multi.compose_summary(outputs) == (
+    assert pipeline.compose_summary(outputs) == (
         "No issues found by the diff_local, change_intent reviewers."
     )
 
@@ -300,7 +299,7 @@ def test_an_explicit_plan_is_honoured(pr, repo):
 
 
 def test_scout_turn_cap_comes_from_settings(pr, repo, monkeypatch):
-    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_max_turns=1))
+    monkeypatch.setattr(pipeline, "settings", Settings(_env_file=None, review_scout_max_turns=1))
     sync = _sync(
         [_use("grep", pattern="x")],  # turn 1, the cap
         [_use("submit_brief", brief="forced")],
@@ -347,27 +346,6 @@ def test_verifier_is_skipped_when_there_is_nothing_to_verify(pr, repo):
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(pr, repo, sync, async_client, verify=True)
     assert result.verified is False and len(sync.messages.calls) == 1
-
-
-# --- dispatch from the single entry point --------------------------------------
-
-def test_review_pull_request_dispatches_on_the_flag(pr, repo, monkeypatch):
-    from app.agent import reviewer
-
-    monkeypatch.setattr(reviewer, "settings", Settings(_env_file=None, review_multi_agent=True))
-    sync = _sync(*SCOUT)
-    async_client = _async(WARM, _submit("via flag", []), _submit("", []), _submit("", []))
-    result = review_pull_request(pr, repo, client=sync, async_client=async_client)
-    assert result.mode == "multi" and result.summary == "via flag"
-
-
-def test_review_pull_request_flag_off_never_touches_the_async_client(pr, repo):
-    sync = _sync(_submit("single loop", []))
-    async_client = _async()
-    result = review_pull_request(pr, repo, client=sync, async_client=async_client, multi=False)
-    assert result.mode == "single" and result.summary == "single loop"
-    assert async_client.messages.calls == []
-    assert result.stage_usage == {} and result.reviewers_run == []
 
 
 def test_empty_checkout_skips_the_scout_and_the_reviewers_still_run(pr, tmp_path):
@@ -485,7 +463,7 @@ def test_no_context_leaves_the_rc1_390_prefix_plus_the_tests_line(pr, repo):
         "directory found; changed source files: app/x.py):\n"
         "(no test files found in the repository)"
     )
-    assert prefix == multi.build_shared_prefix(
+    assert prefix == pipeline.build_shared_prefix(
         pr, None, SCOUT[0][0]["input"]["brief"], tests_block
     )
     assert "Repository conventions" not in prefix and "Callers of what changed" not in prefix
@@ -512,20 +490,6 @@ def test_context_survives_the_verifier(tmp_path):
     )
     assert result.verified
     assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
-
-
-def test_review_pull_request_threads_the_context_switch(pr, repo, monkeypatch):
-    seen = {}
-
-    def fake_multi(*args, **kwargs):
-        seen.update(kwargs)
-        from app.models import ReviewResult
-
-        return ReviewResult(mode="multi")
-
-    monkeypatch.setattr("app.agent.multi.review_pull_request_multi", fake_multi)
-    review_pull_request(pr, repo, client=_sync(), multi=True, model="m", repo_context=False)
-    assert seen["repo_context"] is False
 
 
 class _NoFileList(RepoTools):
@@ -570,7 +534,9 @@ def test_scout_turn_cap_shrinks_with_the_context_and_not_without(tmp_path, monke
 
 
 def test_scout_context_turns_come_from_settings(tmp_path, monkeypatch):
-    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_context_turns=1))
+    monkeypatch.setattr(
+        pipeline, "settings", Settings(_env_file=None, review_scout_context_turns=1)
+    )
     sync = _sync([_use("read_file", path="app/x.py")], [_use("submit_brief", brief="b")])
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     repo = _NoFileList(_repo_with_conventions(tmp_path).root)
@@ -579,7 +545,9 @@ def test_scout_context_turns_come_from_settings(tmp_path, monkeypatch):
 
 
 def test_scout_complete_turns_come_from_settings(tmp_path, monkeypatch):
-    monkeypatch.setattr(multi, "settings", Settings(_env_file=None, review_scout_complete_turns=1))
+    monkeypatch.setattr(
+        pipeline, "settings", Settings(_env_file=None, review_scout_complete_turns=1)
+    )
     sync = _sync([_use("read_file", path="app/x.py")], [_use("submit_brief", brief="b")])
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(_pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client)
@@ -663,7 +631,7 @@ def test_the_client_this_review_built_is_closed_on_its_own_loop(pr, repo, monkey
     fake_sdk = types.SimpleNamespace(AsyncAnthropic=FakeAsync, Anthropic=lambda **kw: _sync())
     monkeypatch.setitem(sys.modules, "anthropic", fake_sdk)
     plan = ReviewPlan(scout=True, reviewers=(DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT))
-    multi.review_pull_request_multi(pr, repo, client=_sync(*SCOUT), model="m", plan=plan)
+    pipeline.review_pull_request(pr, repo, client=_sync(*SCOUT), model="m", plan=plan)
     assert closed == [True]
 
     injected = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
@@ -704,22 +672,51 @@ def test_scout_ran_survives_the_verifier(pr, repo):
     assert result.verifier_model == "m"
 
 
-def test_the_workflow_span_is_opened_by_the_dispatcher_not_here(pr, repo, monkeypatch):
-    """One `pr_review` span per review, opened in `review_pull_request` so both
-    paths get the same root; this module opens only the stage spans."""
+def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(
+    pr, repo, monkeypatch
+):
+    """One `pr_review` span per review, opened here (RC1-395; the dispatcher
+    that used to open it went with the single loop in RC1-422), the stage
+    spans inside it, and the cost annotation before it closes so the cost
+    lands on the root."""
     from contextlib import contextmanager
 
-    opened = []
+    events = []
 
     @contextmanager
     def fake_span(kind, name):
-        opened.append((kind, name))
+        events.append(("open", kind, name))
         yield
+        events.append(("close", kind, name))
 
-    monkeypatch.setattr(multi, "stage_span", fake_span)
-    _run(
+    monkeypatch.setattr(pipeline, "stage_span", fake_span)
+    monkeypatch.setattr(
+        pipeline, "annotate_review_cost", lambda result: events.append(("priced",))
+    )
+    result = _run(
         pr, repo, _sync(*SCOUT), _async(WARM, _submit("a", []), _submit("b", []), _submit("c", [])),
         verify=False,
     )
-    assert ("workflow", "pr_review") not in opened
-    assert ("agent", "scout") in opened
+    assert events[0] == ("open", "workflow", "pr_review")
+    assert events[-1] == ("close", "workflow", "pr_review")
+    assert events[-2] == ("priced",)
+    assert ("open", "agent", "scout") in events
+    assert result.latency_ms > 0
+
+
+def test_the_verifier_defaults_to_the_settings_flag(pr, repo, monkeypatch):
+    """RC1-387's flag is read here now that this is the only entry point."""
+    monkeypatch.setattr(
+        pipeline, "settings", Settings(_env_file=None, review_verify_findings=True)
+    )
+    one = [_finding("warning", "security", "real")]
+    sync = _sync(*SCOUT, [_use("verify_findings", verdicts=[])])
+    async_client = _async(WARM, _submit("", one), _submit("", []), _submit("", []))
+    result = _run(pr, repo, sync, async_client)
+    assert result.verified is True and len(sync.messages.calls) == 2
+
+    monkeypatch.setattr(pipeline, "settings", Settings(_env_file=None))
+    sync = _sync(*SCOUT)
+    async_client = _async(WARM, _submit("", one), _submit("", []), _submit("", []))
+    result = _run(pr, repo, sync, async_client)
+    assert result.verified is False and len(sync.messages.calls) == 1

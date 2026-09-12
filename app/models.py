@@ -158,11 +158,12 @@ class ReviewResult:
     verifier_dropped: list[Finding] = field(default_factory=list)
     verifier_downgraded: int = 0
     verifier_usage: TokenUsage = field(default_factory=TokenUsage)
-    # RC1-390: which path produced the review. ``single`` is the one loop;
-    # ``multi`` is scout + routed reviewers + merge + verifier, and the rest
-    # of these fields are then filled in (``tool_turns`` and ``files_read``
-    # above are the scout's).
-    mode: str = "single"
+    # RC1-390: which path produced the review. Since RC1-422 there is one —
+    # ``multi``: context + [scout] + routed reviewers + merge + verifier —
+    # and the rest of these fields describe it (``tool_turns`` and
+    # ``files_read`` above are the scout's). Eval-store history still carries
+    # ``single`` rows from the retired loop.
+    mode: str = "multi"
     reviewers_run: list[str] = field(default_factory=list)
     brief: str = ""
     # Token spend per stage — ``scout``, ``warm_cache``, ``reviewer:<name>``,
@@ -194,7 +195,7 @@ class ReviewResult:
     # the fields above do not carry. ``verifier_model`` is the model the
     # verifier pass actually ran on (``review_verify_model`` may differ from
     # the review model, and its tokens are priced at its own rate); empty
-    # when the pass did not run. ``scout_ran`` is whether the multi path's
+    # when the pass did not run. ``scout_ran`` is whether the
     # scout made model calls — a skipped scout and a scout that ran both
     # leave a brief, and only the second cost anything. ``latency_ms`` is the
     # wall clock of the whole review, both paths, set by the dispatcher.

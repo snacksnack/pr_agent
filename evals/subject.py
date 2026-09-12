@@ -47,7 +47,7 @@ from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion,
 
 from app import review as review_cli
 from app.agent import prompts
-from app.agent.reviewer import review_pull_request
+from app.agent.pipeline import review_pull_request
 from app.agent.tools import IGNORED_DIRS
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult, TokenUsage
@@ -110,15 +110,16 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
 
         material = (verifier.VERIFIER_INSTRUCTIONS).encode()
         version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
-    if settings.review_multi_agent:
-        # RC1-390: the scout's and reviewers' instructions are the multi-agent
-        # path's prompt; a run with the flag on is its own subject version.
-        material = (
-            prompts.SCOUT_INSTRUCTIONS
-            + prompts.SCOUT_CONTEXT_NOTE
-            + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
-        ).encode()
-        version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    # RC1-390: the scout's and reviewers' instructions are the pipeline's
+    # prompt. Since RC1-422 this is the only pipeline, so the segment is
+    # always present; the eval store's earlier rows without it are the
+    # retired single loop's.
+    material = (
+        prompts.SCOUT_INSTRUCTIONS
+        + prompts.SCOUT_CONTEXT_NOTE
+        + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
+    ).encode()
+    version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
     if checkout:
         version += "+checkout"
     if not repo_context:
@@ -349,16 +350,16 @@ def run(
             # RC1-387: what the verifier did, when it ran. Zero and false when
             # the flag is off, so a flag-off run reads as such in the record.
             "verifier": _verifier_observations(result),
-            # RC1-390: which path ran and, when it was the multi-agent one,
-            # what each stage cost — the cache premise is read per reviewer
-            # call here, not inferred from the case total.
+            # RC1-390: what each stage cost — the cache premise is read per
+            # reviewer call here, not inferred from the case total. The key
+            # predates RC1-422, when there was a single loop to tell apart.
             "multi": _multi_observations(result, checkout=repo_path is not None),
         },
     )
 
 
 def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) -> dict:
-    if result is None or result.mode != "multi":
+    if result is None:
         return {"ran": False}
     reviewer_reads = [
         usage.cache_read_input_tokens

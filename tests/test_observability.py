@@ -122,7 +122,7 @@ def test_annotate_puts_cost_stages_and_latency_on_the_span(monkeypatch):
     assert metrics["stage_cost_usd_verifier"] == float(cost.stages["verifier"])
     assert all(isinstance(v, float) for v in metrics.values()), "LLMObs rejects Decimal"
     meta = annotation["metadata"]
-    assert meta["mode"] == "single" and meta["scout"] == "none" and meta["verified"] is True
+    assert meta["mode"] == "multi" and meta["scout"] == "skipped" and meta["verified"] is True
 
 
 def test_annotate_multi_carries_the_scout_and_its_turns(monkeypatch):

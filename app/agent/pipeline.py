@@ -1,7 +1,7 @@
-"""Scout, routed reviewers, merge, verifier: the multi-agent review (RC1-390).
+"""The review pipeline: context, routed reviewers, merge, verifier (RC1-390, RC1-422).
 
-The single loop in :mod:`app.agent.reviewer` explores and judges in one
-conversation. This path makes the review's graph explicit in plain Python:
+One production pipeline (RC1-422 retired the single loop that explored and
+judged in one conversation). The review's graph is explicit in plain Python:
 
     plan (router) -> context (Python) -> [scout] -> [warm cache] -> reviewers (gather)
         -> merge -> verifier
@@ -42,9 +42,12 @@ Two details of the cache are load-bearing and are measured, not assumed:
    calls the wrong tool is counted as unusable (zero findings), a verifier
    that does is read as "keep everything" — both safe, both visible.
 
-``review_pull_request`` in :mod:`app.agent.reviewer` dispatches here when
-``settings.review_multi_agent`` is on; with it off this module is never
-imported, which is how "flag off is byte-identical" holds.
+:func:`review_pull_request` is the one entry point: the webhook, the dry-run
+CLI, the eval corpus and the measurement scripts all call it, and it opens
+the one ``pr_review`` workflow span the review's cost and latency land on
+(RC1-395). The model-facing primitives it shares with the scout and the
+verifier — PR rendering, cache markers, response parsing — live in
+:mod:`app.agent.reviewer`.
 """
 from __future__ import annotations
 
@@ -71,9 +74,14 @@ from app.agent.tools import RepoTools
 from app.agent.verifier import VERIFY_TOOL, verify_findings
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult, TokenUsage
-from app.observability import annotate_span, stage_span
+from app.observability import (
+    annotate_review_cost,
+    annotate_review_identity,
+    annotate_span,
+    stage_span,
+)
 
-logger = logging.getLogger("app.agent.multi")
+logger = logging.getLogger("app.agent.pipeline")
 
 # Identical on every call that shares the prefix — see the module docstring.
 REVIEW_TOOLS = [SUBMIT_TOOL, VERIFY_TOOL]
@@ -287,7 +295,7 @@ def compose_summary(outputs: list[ReviewerOutput]) -> str:
 
 # --- the review -----------------------------------------------------------------
 
-def review_pull_request_multi(
+def review_pull_request(
     pull_request: PullRequest,
     repo_tools: RepoTools,
     *,
@@ -300,19 +308,75 @@ def review_pull_request_multi(
     scout_complete_turns: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
-    verify: bool = False,
+    verify: bool | None = None,
     plan: ReviewPlan | None = None,
     repo_context: bool = True,
 ) -> ReviewResult:
-    """Run the multi-agent review and return one :class:`ReviewResult`.
+    """Run the review and return one :class:`ReviewResult`.
+
+    ``precomputed_findings`` are findings from deterministic static checks
+    that ran first; they are shown to the model as already-recorded (so it
+    doesn't duplicate them) but are NOT merged here — the caller owns
+    merging them into the final result, keeping this function's output the
+    model's own. ``verify`` (RC1-387) runs the verifier over the merged
+    findings; ``None`` defers to ``settings.review_verify_findings``.
+    ``repo_context`` (RC1-393) is whether Python puts the conventions file,
+    callers and tests in the shared prefix; the eval turns it off to
+    measure it, nothing else does.
 
     ``client`` serves the scout and the verifier (sync); ``async_client``
     serves the warm call and the reviewers. Either may be a fake exposing
     ``messages.create``. Runs the fan-out on its own event loop, so call it
     from synchronous code — the CLI, the eval subject, or the webhook's
     background task, which Starlette runs in a worker thread.
+
+    The whole review runs inside one ``pr_review`` workflow span and is
+    priced while that span is open (RC1-395), so the trace carries the
+    review's cost and latency as metrics on its root.
     """
+    started_review = time.perf_counter()
+    with stage_span("workflow", "pr_review"):
+        annotate_review_identity(pull_request)
+        result = _review(
+            pull_request,
+            repo_tools,
+            client=client,
+            async_client=async_client,
+            model=model,
+            max_files_read=max_files_read,
+            scout_max_turns=scout_max_turns,
+            scout_context_turns=scout_context_turns,
+            scout_complete_turns=scout_complete_turns,
+            max_tokens=max_tokens,
+            precomputed_findings=precomputed_findings,
+            verify=verify,
+            plan=plan,
+            repo_context=repo_context,
+        )
+        result.latency_ms = (time.perf_counter() - started_review) * 1000
+        annotate_review_cost(result)
+    return result
+
+
+def _review(
+    pull_request: PullRequest,
+    repo_tools: RepoTools,
+    *,
+    client: Any | None,
+    async_client: Any | None,
+    model: str | None,
+    max_files_read: int | None,
+    scout_max_turns: int | None,
+    scout_context_turns: int | None,
+    scout_complete_turns: int | None,
+    max_tokens: int,
+    precomputed_findings: list[Finding] | None,
+    verify: bool | None,
+    plan: ReviewPlan | None,
+    repo_context: bool,
+) -> ReviewResult:
     model = model or settings.review_model
+    verify = settings.review_verify_findings if verify is None else verify
     max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
     scout_max_turns = (
         scout_max_turns if scout_max_turns is not None else settings.review_scout_max_turns
@@ -442,7 +506,7 @@ def review_pull_request_multi(
         scout_ran=not brief.skipped,
     )
     logger.info(
-        "multi_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
+        "review_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
         "context=%d out=%d",
         ",".join(plan.names),
         len(findings),
@@ -483,7 +547,7 @@ def review_pull_request_multi(
             )
         latency["verifier"] = _ms_since(started)
     logger.info(
-        "multi_latency %s",
+        "review_latency %s",
         " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
     )
     return result

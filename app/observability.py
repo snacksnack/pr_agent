@@ -183,7 +183,7 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
         metadata={
             "mode": result.mode,
             "scout": _scout_tag(result),
-            "scout_turns": result.tool_turns if result.mode == "multi" else None,
+            "scout_turns": result.tool_turns,
             "verified": result.verified,
             "conventions_file": result.conventions_file,
             "context_complete": result.context_complete,
@@ -202,8 +202,6 @@ def stage_metric_key(stage: str) -> str:
 
 
 def _scout_tag(result: ReviewResult) -> str:
-    if result.mode != "multi":
-        return "none"
     return "ran" if result.scout_ran else "skipped"
 
 

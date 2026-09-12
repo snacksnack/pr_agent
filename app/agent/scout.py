@@ -1,7 +1,7 @@
 """The scout: explore once, write a brief (RC1-390).
 
-The single loop (:mod:`app.agent.reviewer`) explores the repository and
-writes the review in one conversation. The multi-agent path separates the
+The retired single loop (RC1-110, removed in RC1-422) explored the repository and
+wrote the review in one conversation. The pipeline separates the
 two: this module is the exploring half, re-purposed to end in a
 ``submit_brief`` call instead of ``submit_review``. It is the only agent in
 the multi-agent review with tools, which is what keeps exploration paid for

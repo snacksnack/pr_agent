@@ -12,7 +12,6 @@ def test_defaults_load():
     assert s.review_model == "claude-sonnet-4-6"
     assert s.deep_review_model == "claude-opus-4-6"
     assert s.block_on == ["leaked_secret"]
-    assert s.max_tool_turns > 0
     assert s.max_files_read > 0
 
 
@@ -43,7 +42,7 @@ def test_skip_authors_empty_reviews_everyone():
 
 def test_limits_must_be_positive():
     with pytest.raises(ValueError):
-        Settings(_env_file=None, max_tool_turns=0)
+        Settings(_env_file=None, max_files_read=0)
 
 
 def test_verifier_is_off_by_default_and_parses_env_booleans():
@@ -53,10 +52,14 @@ def test_verifier_is_off_by_default_and_parses_env_booleans():
     assert Settings(_env_file=None, review_verify_model=None).review_verify_model is None
 
 
-def test_multi_agent_is_off_by_default_and_toggles_from_env(monkeypatch):
-    assert Settings(_env_file=None).review_multi_agent is False
+def test_retired_flags_in_the_environment_are_ignored(monkeypatch):
+    """RC1-422: Fly still carries REVIEW_MULTI_AGENT=1 until the secret is
+    unset, and an operator's .env may carry MAX_TOOL_TURNS; neither may
+    break boot or resurface as a setting."""
     monkeypatch.setenv("REVIEW_MULTI_AGENT", "1")
-    assert Settings(_env_file=None).review_multi_agent is True
+    monkeypatch.setenv("MAX_TOOL_TURNS", "20")
+    s = Settings(_env_file=None)
+    assert not hasattr(s, "review_multi_agent") and not hasattr(s, "max_tool_turns")
 
 
 def test_scout_turn_cap_must_be_positive():

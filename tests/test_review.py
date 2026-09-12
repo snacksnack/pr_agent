@@ -214,13 +214,12 @@ def test_format_review_without_pr_is_still_valid():
     assert "[NIT]" in text
 
 
-def test_format_review_names_the_multi_agent_path_and_its_merge(pr=None):
+def test_format_review_names_the_reviewers_and_the_merge(pr=None):
     result = _result([Finding("nit", "docs", "add docstring")])
-    result.mode = "multi"
     result.reviewers_run = ["diff_local", "repo_context", "change_intent"]
     result.off_scope_findings = 1
     text = cli.format_review(result)
-    assert "mode=multi reviewers=diff_local,repo_context,change_intent" in text
+    assert "reviewers=diff_local,repo_context,change_intent" in text
     assert "context(conventions=none, callers=0)" in text
     assert "merged(off_scope=1, deduplicated=0)" in text
     # The single loop's line is unchanged.

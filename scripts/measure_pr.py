@@ -1,7 +1,7 @@
 """Price a review of a real PR at its own head (RC1-393/394/396).
 
-    python scripts/measure_pr.py 35 33 39 --multi --verify
-    python scripts/measure_pr.py 8 --multi --verify \
+    python scripts/measure_pr.py 35 33 39 --verify
+    python scripts/measure_pr.py 8 --verify \
         --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
 
 For each PR: a git worktree at the PR's head SHA (the review must see the
@@ -30,7 +30,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.agent.reviewer import review_pull_request
+from app.agent.pipeline import review_pull_request
 from app.agent.tools import RepoTools
 from app.config import settings
 from app.github import fetch_pull_request
@@ -59,7 +59,6 @@ def _origin(cwd: Path) -> tuple[str, str]:
 def measure(
     number: int,
     *,
-    multi: bool,
     verify: bool,
     repo_dir: Path = Path("."),
     overlay: tuple[str, ...] = (),
@@ -85,7 +84,7 @@ def measure(
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
             result = review_pull_request(
-                pr, RepoTools(worktree), multi=multi, verify=verify, repo_context=True
+                pr, RepoTools(worktree), verify=verify, repo_context=True
             )
             wall_s = time.perf_counter() - started
         finally:
@@ -130,7 +129,6 @@ def measure(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("numbers", nargs="+", type=int)
-    parser.add_argument("--multi", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument(
         "--repo-dir",
@@ -150,7 +148,6 @@ def main(argv: list[str] | None = None) -> int:
     for number in args.numbers:
         row = measure(
             number,
-            multi=args.multi,
             verify=args.verify,
             repo_dir=args.repo_dir,
             overlay=tuple(args.overlay),

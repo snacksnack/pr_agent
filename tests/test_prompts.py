@@ -8,7 +8,8 @@ required review dimension.
 from __future__ import annotations
 
 from app.agent import prompts
-from app.agent.reviewer import ALL_TOOLS
+from app.agent.pipeline import REVIEW_TOOLS
+from app.agent.scout import SCOUT_TOOLS
 from app.models import SEVERITY_ORDER, Finding
 
 # --- finding schema contract ---------------------------------------------
@@ -99,23 +100,18 @@ def test_system_prompt_embeds_rubric_and_severity_guidance():
     assert "advisory" in prompts.SYSTEM_PROMPT.lower()
 
 
-def test_instructions_require_single_submission():
-    text = prompts.INSTRUCTIONS.lower()
-    assert "submit_review" in text
-    assert "exactly once" in text
-
-
 def test_categories_have_no_duplicates():
     assert len(prompts.CATEGORIES) == len(set(prompts.CATEGORIES))
 
 
-# --- loop wiring still intact --------------------------------------------
+# --- pipeline wiring still intact ------------------------------------------
 
-def test_submit_tool_is_offered_to_the_model():
-    names = {t["name"] for t in ALL_TOOLS}
-    assert "submit_review" in names
-    # The repo-exploration tools must still be present alongside it.
-    assert {"read_file", "list_dir", "grep"} <= names
+def test_the_scout_gets_the_repo_tools_and_the_reviewers_get_submit_review():
+    scout = {t["name"] for t in SCOUT_TOOLS}
+    assert {"read_file", "list_dir", "grep", "submit_brief"} <= scout
+    assert "submit_review" not in scout
+    reviewers = {t["name"] for t in REVIEW_TOOLS}
+    assert "submit_review" in reviewers and not ({"read_file", "list_dir", "grep"} & reviewers)
 
 
 # --- RC1-390: the rubric sliced by evidence ----------------------------------

@@ -17,8 +17,10 @@ posts a single structured review (summary + inline comments, severity-tagged).
 ## Architecture (target)
 
 Custom **GitHub App** (account-wide) → **Python / FastAPI** service on **Fly.io**
-→ an **agentic review loop** (Anthropic SDK) that explores the repo before
-commenting. Reviews are **advisory by default**; they escalate to "Request
+→ one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`): Python
+gathers the repository context, a scout explores only when that context is
+incomplete, three evidence-scoped reviewers fan out on one cached prefix,
+Python merges. Reviews are **advisory by default**; they escalate to "Request
 changes" only on a committed secret (`block_on`).
 
 ## Build plan & status
@@ -64,8 +66,9 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       (`app/agent/verifier.py`, `REVIEW_VERIFY_FINDINGS`; decision record
       with the flag-off/flag-on numbers in `docs/rc1-387-verifier.md`)
 - [x] RC1-390 scout + three evidence-scoped reviewers + Python router
-      (`app/agent/router.py`, `scout.py`, `multi.py`; `REVIEW_MULTI_AGENT`,
-      default off; numbers and the decision in `docs/rc1-390-multi-agent.md`)
+      (`app/agent/router.py`, `scout.py`, `pipeline.py` — then `multi.py`
+      behind `REVIEW_MULTI_AGENT`; numbers and the decision in
+      `docs/rc1-390-multi-agent.md`)
 - [x] RC1-393 cheap exploration: conventions file + callers by grep into the
       shared prefix by Python, scout cap follows the context
       (`app/agent/context.py`, `router.scout_turns`; `REVIEW_SCOUT_CONTEXT_TURNS`;
@@ -91,6 +94,12 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       skip the scout; `measure_pr.py --repo-dir/--overlay` measures a file
       against a PR that predates it (before/after in
       `docs/rc1-396-conventions-files.md`)
+- [x] RC1-421 LangGraph spike removed; asyncio is the one orchestrator.
+- [x] RC1-422 the pipeline is the one production path: the single loop,
+      `REVIEW_MULTI_AGENT` and `MAX_TOOL_TURNS` are gone, `multi.py` is
+      `pipeline.py`, `review_pull_request` lives there and opens the
+      `pr_review` span itself; corpus and live-PR numbers against the
+      recorded band in `docs/rc1-422-single-pipeline.md`
 - [x] RC1-398 the verifier's category tie-break, measured before any
       cross-category dedupe rule: boundary cases in `evals/boundary.py`
       (one defect, two categories, the pair of findings), scoring in
@@ -118,14 +127,16 @@ app/
                 workflow span and the per-review metric (RC1-395)
   agent/
     tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
-    reviewer.py the loop: review_pull_request(...)
-    verifier.py second pass over the loop's findings, flag-gated (RC1-387)
+    pipeline.py the review: review_pull_request(...) — context -> [scout] -> warm cache
+                -> reviewers (gather) -> merge -> [verifier]; opens the pr_review span (RC1-390/422)
+    reviewer.py model-facing primitives every stage shares: render_pr, cache-marked
+                _create, response normalization, parse_findings (RC1-110/422)
+    verifier.py second pass over the merged findings, flag-gated (RC1-387)
     router.py   RC1-390: which reviewers run, decided from the file list;
                 RC1-393/394: the scout's turn cap, decided from the context
     context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
                 into the prefix; `complete` when all three are answered
-    scout.py    RC1-390: the exploring half of the loop, ends in a brief
-    multi.py    RC1-390: context -> [scout] -> warm cache -> reviewers (gather) -> merge -> verifier
+    scout.py    RC1-390: explore once with tools, end in a brief
     prompts.py  rubric/system prompt (RC1-111); reviewer specs + scout prompt (RC1-390)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
@@ -148,17 +159,18 @@ tests/          pytest, offline
   turns, and files read are all capped (cost/context guardrails).
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
-  (`["leaked_secret"]`), `max_tool_turns`, `max_files_read`,
+  (`["leaked_secret"]`), `max_files_read`,
   `review_verify_findings` (off; RC1-387 experiment, see
-  docs/rc1-387-verifier.md before turning it on), `review_multi_agent` (off;
-  RC1-390, see docs/rc1-390-multi-agent.md), `review_scout_max_turns`,
+  docs/rc1-387-verifier.md before turning it on), `review_scout_max_turns`,
   `review_scout_context_turns` (RC1-393: the scout's cap once Python has put
   the conventions file and callers in the prefix but the tests search was cut
   off), `review_scout_complete_turns` (RC1-394: the cap once tests are in the
   prefix too; 0 skips the scout, which is the default).
-- **Flag off must stay byte-identical.** `app/agent/multi.py` is imported only
-  when `review_multi_agent` is on; changes to the single loop's request shape
-  need a corpus run either way.
+- **One pipeline; the request shape is measured, not assumed.** Any change to
+  what the scout, the reviewers or the verifier send (prefix, tools,
+  `tool_choice`, cache markers) needs a corpus run (`python -m evals
+  --repo-path .`) against the band in `docs/rc1-422-single-pipeline.md`, and
+  a `scripts/measure_pr.py` run on the three reference PRs for cost.
 
 ## Testing
 
@@ -182,9 +194,9 @@ python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
 python -m evals --repo-path .  # ...with a checkout every case explores (RC1-393; the
                                # scout runs on every case, so ~2-3x the diff-only cost)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
-python scripts/measure_pr.py 35 33 39 --multi --verify
+python scripts/measure_pr.py 35 33 39 --verify
                                # price reviews of real PRs at their own head (BILLED; RC1-391)
-python scripts/measure_pr.py 8 --multi --verify --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
+python scripts/measure_pr.py 8 --verify --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
                                # ...another repo's PR, with a working-tree file laid over the head (RC1-396)
 PYTHONPATH=. python scripts/measure_tiebreak.py history    # the eval store's on-plant survivors (free; RC1-398)
 PYTHONPATH=. python scripts/measure_tiebreak.py probe --runs 5     # BILLED: the verifier over each boundary pair, both orders

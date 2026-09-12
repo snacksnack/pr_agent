@@ -27,7 +27,7 @@ answers Python can fetch with no model turn at all:
   skips the scout (:func:`app.agent.router.scout_turns`).
 
 :func:`build_repo_context` runs all three and renders one block of text
-that :mod:`app.agent.multi` puts in the shared prefix and the scout's seed.
+that :mod:`app.agent.pipeline` puts in the shared prefix and the scout's seed.
 The scout, when one still runs, is told to look only for what the block
 does not say. Nothing here raises: a repository with no conventions file
 and a diff with no symbols produce an empty context, and the review
