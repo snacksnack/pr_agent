@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # Transient failures (5xx / rate limit / dropped connection) back off
     # between attempts; see ``app.retry`` (RC1-120).
     github_max_attempts: int = 4
+    # RC1-423: the durable job store — a SQLite file, on the Fly volume in
+    # production (fly.toml sets JOBS_DB_PATH=/data/jobs.db) — and the
+    # worker's retry policy: how many claims a job gets in all, and the
+    # delay after the first transient failure (doubling after each later one).
+    jobs_db_path: str = "jobs.db"
+    job_max_attempts: int = 3
+    job_retry_base_s: float = 60.0
 
     # --- Live GitHub App (RC1-115 / RC1-116); unset during the dry-run phase ---
     github_app_id: str | None = None
@@ -72,7 +79,7 @@ class Settings(BaseSettings):
         """
         return [item.strip() for item in self.review_skip_authors.split(",") if item.strip()]
 
-    @field_validator("remote_api_budget", "github_max_attempts")
+    @field_validator("remote_api_budget", "github_max_attempts", "job_max_attempts")
     @classmethod
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:
