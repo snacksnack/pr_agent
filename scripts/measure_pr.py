@@ -82,7 +82,7 @@ def measure(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
-            result = review_pull_request(pr, LocalRepository(worktree), repo_context=repo_context)
+            outcome = review_pull_request(pr, LocalRepository(worktree), repo_context=repo_context)
             wall_s = time.perf_counter() - started
         finally:
             subprocess.run(
@@ -90,7 +90,8 @@ def measure(
                 capture_output=True,
                 cwd=repo_dir,
             )
-    cost = review_cost(result)
+    review, metrics = outcome.review, outcome.metrics
+    cost = review_cost(metrics)
     return {
         "repo": f"{owner}/{repo}",
         "pr": number,
@@ -98,28 +99,28 @@ def measure(
         "repo_context": repo_context,
         "head": head[:7],
         "files": len(pr.files),
-        "mode": result.mode,
+        "mode": metrics.mode,
         "cost_usd": float(cost.total),
         "stages_usd": {k: float(v) for k, v in cost.stages.items()},
         "wall_s": round(wall_s, 1),
-        "stage_latency_ms": {k: round(v) for k, v in result.stage_latency_ms.items()},
-        "findings": len(result.findings),
+        "stage_latency_ms": {k: round(v) for k, v in metrics.stage_latency_ms.items()},
+        "findings": len(review.findings),
         "by_severity": {
-            s: sum(1 for f in result.findings if f.severity == s)
+            s: sum(1 for f in review.findings if f.severity == s)
             for s in ("blocker", "warning", "nit")
         },
-        "verifier_dropped": len(result.verifier_dropped),
-        "context_complete": result.context_complete,
+        "verifier_dropped": len(metrics.verifier_dropped),
+        "context_complete": metrics.context_complete,
         "min_reviewer_cache_read": min(
             (
                 u.cache_read_input_tokens
-                for k, u in result.stage_usage.items()
+                for k, u in metrics.stage_usage.items()
                 if k.startswith("reviewer:")
             ),
             default=0,
         ),
         "messages": [f"[{f.severity}/{f.category}] {f.file}:{f.line} {f.message[:100]}"
-                     for f in result.findings],
+                     for f in review.findings],
     }
 
 

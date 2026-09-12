@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.models import ReviewResult, TokenUsage
+from app.models import RunMetrics, TokenUsage
 
 #: When these prices were last verified against the published price list.
 AS_OF = "2026-09-07"
@@ -92,36 +92,36 @@ class ReviewCost:
     stages: dict[str, Decimal]
 
 
-def review_cost(result: ReviewResult) -> ReviewCost:
-    """Price a finished review from the token counts it carries.
+def review_cost(metrics: RunMetrics) -> ReviewCost:
+    """Price a finished review from the token counts its metrics carry (RC1-429).
 
     The pipeline (RC1-390) records every stage — ``warm_cache``,
     ``reviewer:<name>``, ``verifier``; ``scout`` in rows from before RC1-427 —
     so each is priced on its own and the
-    total is their sum. A result with no stage breakdown (the retired single
-    loop's rows in the eval store, a bare result in a test) is priced from
+    total is their sum. Metrics with no stage breakdown (the retired single
+    loop's rows in the eval store, bare metrics in a test) is priced from
     its totals as ``loop`` (the total less the verifier) and, when the pass
-    ran, ``verifier``. The verifier is priced at the model the result
-    records for it (``verifier_model``; the same as the review model since
+    ran, ``verifier``. The verifier is priced at the model the metrics
+    record for it (``verifier_model``; the same as the review model since
     RC1-428 retired the override, and rows in the eval store from before
     that may differ); everything else at the review model.
 
     Raises :class:`UnknownModelPrice` for a model not in the table.
     """
-    verifier_model = result.verifier_model or result.model
+    verifier_model = metrics.verifier_model or metrics.model
     stages: dict[str, Decimal] = {}
-    if result.stage_usage:
-        for stage, usage in result.stage_usage.items():
-            model = verifier_model if stage == "verifier" else result.model
+    if metrics.stage_usage:
+        for stage, usage in metrics.stage_usage.items():
+            model = verifier_model if stage == "verifier" else metrics.model
             stages[stage] = cost_usd(model, usage)
         return ReviewCost(total=sum(stages.values(), Decimal(0)), stages=stages)
 
-    total = cost_usd(result.model, result.usage)
-    if result.verified:
-        verifier = cost_usd(verifier_model, result.verifier_usage)
+    total = cost_usd(metrics.model, metrics.usage)
+    if metrics.verified:
+        verifier = cost_usd(verifier_model, metrics.verifier_usage)
         # The totals include the verifier at the review model's price; when
         # the verifier ran on a different model, price its share at that one.
-        loop = total - cost_usd(result.model, result.verifier_usage)
+        loop = total - cost_usd(metrics.model, metrics.verifier_usage)
         stages = {"loop": loop, "verifier": verifier}
         return ReviewCost(total=loop + verifier, stages=stages)
     return ReviewCost(total=total, stages={"loop": total})

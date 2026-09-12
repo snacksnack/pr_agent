@@ -1,9 +1,11 @@
 """Normalized internal models for a pull request under review (RC1-108).
 
 These are source-agnostic: the dry-run CLI populates them from the GitHub REST
-API via a PAT, and the webhook service (RC1-116) will populate the same shapes
-using installation-token auth. Everything downstream — the agent loop, rubric,
-and checks — consumes these models, not raw GitHub JSON.
+API via a PAT, and the webhook service (RC1-116) populates the same shapes
+using installation-token auth. Everything downstream — the pipeline, rubric,
+and checks — consumes these models, not raw GitHub JSON. The pipeline's
+output is two objects (RC1-429): the :class:`ReviewResult` that is posted
+and the :class:`RunMetrics` that is priced and shipped.
 """
 from __future__ import annotations
 
@@ -122,97 +124,17 @@ class TokenUsage:
 
 @dataclass
 class ReviewResult:
-    """The structured outcome of a review, ready for downstream formatting."""
+    """The review itself: what is posted, printed and gated on (RC1-429).
+
+    Summary and findings, nothing else. Everything about *how* the review
+    was produced — tokens, latency, which reviewers ran, what the verifier
+    dropped, what the checks found — is :class:`RunMetrics`, and the two
+    travel together as a :class:`ReviewOutcome`. Verdict and posting read
+    only this class, so a telemetry field can never leak into a review.
+    """
 
     summary: str = ""
     findings: list[Finding] = field(default_factory=list)
-    # Run metadata.
-    model: str = ""
-    # Findings the model submitted that could not be read (missing
-    # severity or message) and skipped. Counted rather than silently dropped
-    # (RC1-387): three corpus misses in a row returned zero findings on a diff
-    # with an obvious defect, and the record could not say whether the model
-    # found nothing or the loop threw its answer away.
-    malformed_findings: int = 0
-    # Findings whose severity was not one of blocker/warning/nit and was
-    # coerced to warning (RC1-387: the corrected flag-on run returned one
-    # with severity "breaking_change" — the tool schema's enum is advisory to
-    # the model, not enforced — and the loop would have posted it as-is).
-    coerced_findings: int = 0
-    # Token spend summed across every model call in the review, so a caller
-    # can price it (RC1-269). The
-    # verifier pass (RC1-387), when it ran, is included in these totals and
-    # also broken out in ``verifier_usage`` so the two can be compared.
-    # ``input_tokens`` is the uncached input only; see :class:`TokenUsage`.
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    # RC1-387: what the verifier pass did. ``verified`` is False when the pass
-    # made no call (nothing to verify; RC1-428 made it a stage, not a
-    # switch); the rest are then empty.
-    verified: bool = False
-    verifier_dropped: list[Finding] = field(default_factory=list)
-    verifier_downgraded: int = 0
-    verifier_usage: TokenUsage = field(default_factory=TokenUsage)
-    # RC1-390: which path produced the review. Since RC1-422 there is one —
-    # ``multi``: context + routed reviewers + merge + verifier — and the rest
-    # of these fields describe it. Eval-store history still carries ``single``
-    # rows from the retired loop, and ``scout`` stages from the retired scout
-    # (RC1-427).
-    mode: str = "multi"
-    reviewers_run: list[str] = field(default_factory=list)
-    # Token spend per stage — ``warm_cache``, ``reviewer:<name>``,
-    # ``verifier`` — so the cache premise (reviewers read the prefix, they do
-    # not write it) is checkable per call, not inferred from the total.
-    stage_usage: dict[str, TokenUsage] = field(default_factory=dict)
-    # Wall clock per stage (``context``, ``fan_out``, ``verifier``), so the
-    # latency claim — three reviewers cost one reviewer's wall clock, not
-    # three — is a number in the record.
-    stage_latency_ms: dict[str, float] = field(default_factory=dict)
-    # Findings a reviewer raised outside its categories and the merge
-    # discarded; findings the merge folded into an earlier one at the same
-    # file, line and category; reviewer calls that came back without a
-    # usable submit_review.
-    off_scope_findings: int = 0
-    deduplicated_findings: int = 0
-    unusable_reviewer_calls: int = 0
-    # RC1-393: what Python put in the shared prefix before any model ran —
-    # the conventions file it found (``None`` when the repo has none) and
-    # how many caller rows the grep produced.
-    conventions_file: str | None = None
-    callers_found: int = 0
-    # RC1-394: test rows Python found for the changed paths, and whether all
-    # three kinds of evidence were answered.
-    tests_found: int = 0
-    context_complete: bool = False
-    # RC1-395: the two facts pricing and the per-review metric need that the
-    # fields above do not carry. ``verifier_model`` is the model the verifier
-    # pass actually ran on (the review model since RC1-428 retired the
-    # override; eval-store rows from before may differ, and its tokens are
-    # priced at its own rate); empty when the pass made no call.
-    # ``latency_ms`` is the wall clock of the whole review, set by
-    # ``review_pull_request``.
-    verifier_model: str = ""
-    latency_ms: float = 0.0
-    # RC1-425: the deterministic checks the pipeline ran before any model
-    # call — which completed, which raised (logged, non-fatal), and how many
-    # of ``findings`` they contributed. Their findings sit after the
-    # model's, went into the prefix as already-recorded, and never through
-    # the verifier.
-    checks_run: list[str] = field(default_factory=list)
-    checks_failed: list[str] = field(default_factory=list)
-    deterministic_findings: int = 0
-
-    @property
-    def usage(self) -> TokenUsage:
-        """The whole review's token counts, verifier included."""
-        return TokenUsage(
-            self.input_tokens,
-            self.output_tokens,
-            self.cache_creation_input_tokens,
-            self.cache_read_input_tokens,
-        )
 
     @property
     def sorted_findings(self) -> list[Finding]:
@@ -229,3 +151,68 @@ class ReviewResult:
     @property
     def has_blocking(self) -> bool:
         return any(f.severity == "blocker" for f in self.findings)
+
+
+@dataclass(frozen=True)
+class RunMetrics:
+    """Execution telemetry of one review (RC1-429): what pricing, Datadog,
+    the eval store and the CLI's diagnostics line read. Immutable; the
+    pipeline builds it once, after the last stage. It carries no summary
+    and no kept finding — ``verifier_dropped`` is the record of what the
+    verifier removed, diagnostics rather than review — so it cannot be
+    posted by mistake.
+    """
+
+    # The review model; ``mode`` names the path — ``multi`` since RC1-422 is
+    # the only one, and eval-store rows before it carry ``single``.
+    model: str = ""
+    mode: str = "multi"
+    reviewers_run: tuple[str, ...] = ()
+    # Token spend summed across every model call in the review, verifier
+    # included (RC1-269); per stage — ``warm_cache``, ``reviewer:<name>``,
+    # ``verifier`` — so the cache premise is checkable per call (RC1-390).
+    # ``input_tokens`` is the uncached input only; see :class:`TokenUsage`.
+    usage: TokenUsage = TokenUsage()
+    stage_usage: dict[str, TokenUsage] = field(default_factory=dict)
+    # Wall clock per stage (``checks``, ``context``, ``fan_out``,
+    # ``verifier``) and of the whole review, set by ``review_pull_request``.
+    stage_latency_ms: dict[str, float] = field(default_factory=dict)
+    latency_ms: float = 0.0
+    # Findings the model submitted that could not be read (RC1-387), or
+    # whose severity was coerced to warning; findings the merge discarded as
+    # off-scope or folded into an earlier one; reviewer calls that came
+    # back without a usable submit_review (RC1-390).
+    malformed_findings: int = 0
+    coerced_findings: int = 0
+    off_scope_findings: int = 0
+    deduplicated_findings: int = 0
+    unusable_reviewer_calls: int = 0
+    # RC1-393/394: what Python put in the shared prefix before any model ran.
+    conventions_file: str | None = None
+    callers_found: int = 0
+    tests_found: int = 0
+    context_complete: bool = False
+    # RC1-387: what the verifier pass did. ``verified`` is False when the
+    # pass made no call (nothing to verify); the rest are then empty.
+    # ``verifier_model`` is the model the pass actually ran on (the review
+    # model since RC1-428; eval-store rows from before may differ).
+    verified: bool = False
+    verifier_dropped: tuple[Finding, ...] = ()
+    verifier_downgraded: int = 0
+    verifier_usage: TokenUsage = TokenUsage()
+    verifier_model: str = ""
+    # RC1-425: the deterministic checks — which completed, which raised, and
+    # how many findings they contributed to the review.
+    checks_run: tuple[str, ...] = ()
+    checks_failed: tuple[str, ...] = ()
+    deterministic_findings: int = 0
+
+
+@dataclass(frozen=True)
+class ReviewOutcome:
+    """What one call of the pipeline returns (RC1-429): the review, and the
+    metrics of the run that produced it. Callers publish the one and ship
+    the other; nothing downstream needs both."""
+
+    review: ReviewResult
+    metrics: RunMetrics

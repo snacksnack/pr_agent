@@ -44,7 +44,7 @@ def _pr(files=None) -> PullRequest:
 
 
 def _result(findings, summary="Looks mostly fine.") -> ReviewResult:
-    return ReviewResult(summary=summary, findings=findings, model="m")
+    return ReviewResult(summary=summary, findings=findings)
 
 
 # --- pure functions -------------------------------------------------------

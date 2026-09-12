@@ -51,7 +51,7 @@ from app.agent import prompts
 from app.agent.pipeline import review_pull_request
 from app.agent.repository import IGNORED_DIRS
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult, TokenUsage
+from app.models import Finding, PullRequest, ReviewOutcome, RunMetrics, TokenUsage
 from evals import corpus
 
 NAME = "pr-review"
@@ -265,7 +265,7 @@ def run(
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
-        exit_code, findings, result = _review(
+        exit_code, findings, outcome = _review(
             planted, pr, repo_path=repo_path, repo_context=repo_context
         )
     except Exception as exc:
@@ -275,6 +275,8 @@ def run(
             error=f"{type(exc).__name__}: {exc}",
         )
     latency_ms = (time.perf_counter() - started) * 1000
+    # RC1-429: the observations read the run's metrics, never the review.
+    metrics = outcome.metrics if outcome else None
 
     if planted.category:
         results = _score_planted(planted, findings)
@@ -304,7 +306,7 @@ def run(
     return CaseResult(
         case_id=case.id,
         characteristics=results,
-        usage=_usage(latency_ms, result),
+        usage=_usage(latency_ms, metrics),
         observations={
             "exit_code": exit_code,
             "findings": len(findings),
@@ -325,16 +327,16 @@ def run(
             ),
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
             # RC1-387: the four token counts, so cache behaviour is visible.
-            "tokens": _token_breakdown(result.usage) if result else {},
+            "tokens": _token_breakdown(metrics.usage) if metrics else {},
             # RC1-387: how the model calls ended, so a zero-finding miss can be
             # read as "the model submitted nothing" versus "it submitted
             # findings that could not be parsed". The key predates RC1-427,
             # when a tool loop still ran.
             "loop": {
-                "malformed_findings": result.malformed_findings,
-                "coerced_findings": result.coerced_findings,
+                "malformed_findings": metrics.malformed_findings,
+                "coerced_findings": metrics.coerced_findings,
             }
-            if result
+            if metrics
             else {},
             # RC1-387: what the decoy drew, by severity, on a precision case.
             "decoy_by_severity": {
@@ -347,64 +349,66 @@ def run(
             else {},
             # RC1-387: what the verifier did, when it ran. Zero and false when
             # the flag is off, so a flag-off run reads as such in the record.
-            "verifier": _verifier_observations(result),
+            "verifier": _verifier_observations(metrics),
             # RC1-390: what each stage cost — the cache premise is read per
             # reviewer call here, not inferred from the case total. The key
             # predates RC1-422, when there was a single loop to tell apart.
-            "multi": _multi_observations(result, checkout=repo_path is not None),
+            "multi": _multi_observations(metrics, checkout=repo_path is not None),
         },
     )
 
 
-def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) -> dict:
-    if result is None:
+def _multi_observations(metrics: RunMetrics | None, *, checkout: bool = False) -> dict:
+    if metrics is None:
         return {"ran": False}
     reviewer_reads = [
         usage.cache_read_input_tokens
-        for stage, usage in result.stage_usage.items()
+        for stage, usage in metrics.stage_usage.items()
         if stage.startswith("reviewer:")
     ]
     return {
         "ran": True,
-        "reviewers": list(result.reviewers_run),
+        "reviewers": list(metrics.reviewers_run),
         "stages": {
             stage: {
                 **_token_breakdown(usage),
-                "cost_usd": str(_cost_usd(result.model, usage)),
+                "cost_usd": str(_cost_usd(metrics.model, usage)),
             }
-            for stage, usage in result.stage_usage.items()
+            for stage, usage in metrics.stage_usage.items()
         },
         # The design's premise: every reviewer read the shared prefix from
         # cache. Zero on any of them means it was written, not read.
         "min_reviewer_cache_read": min(reviewer_reads, default=0),
-        "latency_ms": {k: round(v) for k, v in result.stage_latency_ms.items()},
-        "off_scope": result.off_scope_findings,
-        "deduplicated": result.deduplicated_findings,
-        "unusable_reviewer_calls": result.unusable_reviewer_calls,
+        "latency_ms": {k: round(v) for k, v in metrics.stage_latency_ms.items()},
+        "off_scope": metrics.off_scope_findings,
+        "deduplicated": metrics.deduplicated_findings,
+        "unusable_reviewer_calls": metrics.unusable_reviewer_calls,
         # RC1-393: whether the case had a repository to explore, and what
         # Python put in the prefix.
         "checkout": checkout,
         "context": {
-            "conventions_file": result.conventions_file,
-            "callers": result.callers_found,
+            "conventions_file": metrics.conventions_file,
+            "callers": metrics.callers_found,
             # RC1-394: the tests rows, and whether the context was complete.
-            "tests": result.tests_found,
-            "complete": result.context_complete,
+            "tests": metrics.tests_found,
+            "complete": metrics.context_complete,
         },
     }
 
 
-def _verifier_observations(result: ReviewResult | None) -> dict:
-    if result is None:
+def _verifier_observations(metrics: RunMetrics | None) -> dict:
+    if metrics is None:
         return {"ran": False}
     return {
-        "ran": result.verified,
-        "dropped": len(result.verifier_dropped),
-        "downgraded": result.verifier_downgraded,
-        "tokens": _token_breakdown(result.verifier_usage),
-        "cost_usd": str(_cost_usd(result.model, result.verifier_usage)) if result.verified else "0",
+        "ran": metrics.verified,
+        "dropped": len(metrics.verifier_dropped),
+        "downgraded": metrics.verifier_downgraded,
+        "tokens": _token_breakdown(metrics.verifier_usage),
+        "cost_usd": (
+            str(_cost_usd(metrics.model, metrics.verifier_usage)) if metrics.verified else "0"
+        ),
         "dropped_messages": [
-            f"[{f.severity}/{f.category}] {f.message[:120]}" for f in result.verifier_dropped
+            f"[{f.severity}/{f.category}] {f.message[:120]}" for f in metrics.verifier_dropped
         ],
     }
 
@@ -534,7 +538,7 @@ def _token_breakdown(usage: TokenUsage) -> dict[str, int]:
     }
 
 
-def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
+def _usage(latency_ms: float, metrics: RunMetrics | None) -> Usage:
     """Priced from the loop's summed token counts (RC1-269), cache included.
 
     Recording $0 for a billed suite is RC1-254's exact finding; the guard stays
@@ -544,15 +548,15 @@ def _usage(latency_ms: float, result: ReviewResult | None) -> Usage:
     remainder, the cache counts carry the rest, and `Usage.context_tokens`
     is the whole prompt for anyone comparing against pre-caching runs.
     """
-    if result is None:
+    if metrics is None:
         return Usage(latency_ms=latency_ms)
-    usage = result.usage
+    usage = metrics.usage
     return Usage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
-        cost_usd=_cost_usd(result.model, usage),
+        cost_usd=_cost_usd(metrics.model, usage),
         latency_ms=latency_ms,
     )
 
@@ -563,32 +567,32 @@ def _review(
     *,
     repo_path: str | Path | None = None,
     repo_context: bool = True,
-) -> tuple[int, list[Finding], ReviewResult | None]:
+) -> tuple[int, list[Finding], ReviewOutcome | None]:
     """Run the real CLI, capturing the merged result on the way past.
 
     `main` prints a report and returns an exit code; the findings themselves are
     not returned. Wrapping the review function is how both are obtained without
     reimplementing the pipeline — and the wrapper is transparent, so the n8n
     check, its merge (inside the pipeline since RC1-425) and the verdict still
-    happen exactly as they ship. The captured `ReviewResult` also carries the
+    happen exactly as they ship. The captured `ReviewOutcome` also carries the
     loop's token counts for pricing.
 
     The review function is the shipped `review_pull_request` with the CLI's
     defaults (`client=None`, so the SDK is built from settings) plus the one
     switch the CLI does not expose, `repo_context` (RC1-393).
     """
-    captured: list[ReviewResult] = []
+    captured: list[ReviewOutcome] = []
 
     def _capture(pull, repository):
-        result = review_pull_request(
+        outcome = review_pull_request(
             pull,
             repository,
             client=None,
             model=settings.review_model,
             repo_context=repo_context,
         )
-        captured.append(result)
-        return result
+        captured.append(outcome)
+        return outcome
 
     argv = ["--pr", f"{pr.ref.owner}/{pr.ref.repo}#{pr.ref.number}"]
     with tempfile.TemporaryDirectory(prefix="pr-eval-") as tmp:
@@ -598,6 +602,6 @@ def _review(
         exit_code = review_cli.main(
             argv, fetch=lambda _ref: pr, review=_capture, out=io.StringIO()
         )
-    result = captured[0] if captured else None
-    findings = list(result.findings) if result else []
-    return exit_code, findings, result
+    outcome = captured[0] if captured else None
+    findings = list(outcome.review.findings) if outcome else []
+    return exit_code, findings, outcome

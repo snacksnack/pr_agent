@@ -57,7 +57,10 @@ Two details of the cache are load-bearing and are measured, not assumed:
 :func:`review_pull_request` is the one entry point: the webhook, the dry-run
 CLI, the eval corpus and the measurement scripts all call it, and it opens
 the one ``pr_review`` workflow span the review's cost and latency land on
-(RC1-395). The model-facing primitives it shares with the verifier — PR
+(RC1-395). It returns a :class:`ReviewOutcome` (RC1-429): the
+:class:`ReviewResult` a caller publishes and the :class:`RunMetrics` it
+prices and ships, built separately so neither can be mistaken for the
+other. The model-facing primitives it shares with the verifier — PR
 rendering, cache markers, response parsing — live in
 :mod:`app.agent.reviewer`.
 """
@@ -67,7 +70,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.agent.checks import CHECKS, Check, CheckRun, run_deterministic_checks
@@ -84,9 +87,9 @@ from app.agent.reviewer import (
     render_pr,
 )
 from app.agent.router import ReviewPlan, plan_review
-from app.agent.verifier import VERIFY_TOOL, verify_findings
+from app.agent.verifier import VERIFY_TOOL, Verification, verify_findings
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult, TokenUsage
+from app.models import Finding, PullRequest, ReviewOutcome, ReviewResult, RunMetrics, TokenUsage
 from app.observability import (
     annotate_review_cost,
     annotate_review_identity,
@@ -318,23 +321,24 @@ def review_pull_request(
     checks: Sequence[Check] = CHECKS,
     plan: ReviewPlan | None = None,
     repo_context: bool = True,
-) -> ReviewResult:
-    """Run the review and return one complete :class:`ReviewResult`.
+) -> ReviewOutcome:
+    """Run the review and return its :class:`ReviewOutcome`: the review and
+    the run's metrics.
 
-    The result carries the model's findings, verified, followed by the
+    The review carries the model's findings, verified, followed by the
     deterministic ``checks``' findings (RC1-425): the caller merges nothing.
     ``checks`` is the registry by default; tests inject their own. A check
-    that fails is named in ``checks_failed`` and costs the review nothing
-    else. ``repo_context`` (RC1-393) is whether Python puts the conventions
-    file, callers and tests in the shared prefix; the eval turns it off to
-    measure it, nothing else does.
+    that fails is named in the metrics and costs the review nothing else.
+    ``repo_context`` (RC1-393) is whether Python puts the conventions file,
+    callers and tests in the shared prefix; the eval turns it off to measure
+    it, nothing else does.
 
     ``client`` serves the verifier (sync) and is built only when there is
-    something to verify; ``async_client`` serves the warm call and the reviewers. Either
-    may be a fake exposing ``messages.create``. Runs the fan-out on its own
-    event loop, so call it from synchronous code — the CLI, the eval
-    subject, or the webhook's background task, which Starlette runs in a
-    worker thread.
+    something to verify; ``async_client`` serves the warm call and the
+    reviewers. Either may be a fake exposing ``messages.create``. Runs the
+    fan-out on its own event loop, so call it from synchronous code — the
+    CLI, the eval subject, or the webhook's background task, which
+    Starlette runs in a worker thread.
 
     The whole review runs inside one ``pr_review`` workflow span and is
     priced while that span is open (RC1-395), so the trace carries the
@@ -343,7 +347,7 @@ def review_pull_request(
     started_review = time.perf_counter()
     with stage_span("workflow", "pr_review"):
         annotate_review_identity(pull_request)
-        result = _review(
+        review, metrics = _review(
             pull_request,
             repository,
             client=client,
@@ -354,9 +358,9 @@ def review_pull_request(
             plan=plan,
             repo_context=repo_context,
         )
-        result.latency_ms = (time.perf_counter() - started_review) * 1000
-        annotate_review_cost(result)
-    return result
+        metrics = replace(metrics, latency_ms=(time.perf_counter() - started_review) * 1000)
+        annotate_review_cost(metrics)
+    return ReviewOutcome(review=review, metrics=metrics)
 
 
 def _review(
@@ -370,7 +374,7 @@ def _review(
     checks: Sequence[Check],
     plan: ReviewPlan | None,
     repo_context: bool,
-) -> ReviewResult:
+) -> tuple[ReviewResult, RunMetrics]:
     model = model or settings.review_model
     owns_async_client = async_client is None
     if async_client is None:
@@ -438,29 +442,7 @@ def _review(
     total = TokenUsage()
     for used in stage_usage.values():
         total = total + used
-
-    result = ReviewResult(
-        summary=compose_summary(outputs),
-        findings=findings,
-        model=model,
-        malformed_findings=sum(o.malformed for o in outputs),
-        coerced_findings=sum(o.coerced for o in outputs),
-        input_tokens=total.input_tokens,
-        output_tokens=total.output_tokens,
-        cache_creation_input_tokens=total.cache_creation_input_tokens,
-        cache_read_input_tokens=total.cache_read_input_tokens,
-        mode="multi",
-        reviewers_run=plan.names,
-        stage_usage=stage_usage,
-        stage_latency_ms=latency,
-        off_scope_findings=off_scope,
-        deduplicated_findings=deduplicated,
-        unusable_reviewer_calls=sum(1 for o in outputs if not o.usable),
-        conventions_file=context.conventions_path,
-        callers_found=len(context.callers),
-        tests_found=len(context.tests),
-        context_complete=context.complete,
-    )
+    unusable = sum(1 for o in outputs if not o.usable)
     logger.info(
         "review_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
         "context=%d out=%d",
@@ -468,7 +450,7 @@ def _review(
         len(findings),
         off_scope,
         deduplicated,
-        result.unusable_reviewer_calls,
+        unusable,
         total.context_tokens,
         total.output_tokens,
     )
@@ -491,39 +473,64 @@ def _review(
     )
 
     # The verifier judges the model's claims only (RC1-387): the checks'
-    # findings are not in ``result`` yet, so they cannot be dropped, folded
-    # or downgraded by it.
-    if result.findings:
+    # findings are not in the list, so they cannot be dropped, folded or
+    # downgraded by it.
+    verification = Verification(kept=tuple(findings))
+    if findings:
         if client is None:
             from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 
             client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
         started = time.perf_counter()
         with stage_span("agent", "verifier"):
-            result = verify_findings(
-                result,
+            verification = verify_findings(
+                findings,
                 client=client,
                 prefix=prefix,
                 tools=REVIEW_TOOLS,
                 tool_choice=TOOL_CHOICE_ANY,
+                model=model,
             )
         latency["verifier"] = _ms_since(started)
+        stage_usage["verifier"] = verification.usage
+        total = total + verification.usage
     logger.info(
         "review_latency %s",
         " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
     )
-    return _assemble(result, check_run)
 
-
-def _assemble(result: ReviewResult, check_run: CheckRun) -> ReviewResult:
-    """The one place deterministic and model findings meet (RC1-425): the
-    verified model findings, then each check's findings exactly once, and
-    the record of which checks ran or failed."""
-    result.findings = [*result.findings, *check_run.findings]
-    result.checks_run = list(check_run.ran)
-    result.checks_failed = list(check_run.failed)
-    result.deterministic_findings = len(check_run.findings)
-    return result
+    # The one place deterministic and model findings meet (RC1-425): the
+    # verified model findings, then each check's findings exactly once. The
+    # metrics are built beside the review, never inside it (RC1-429).
+    review = ReviewResult(
+        summary=compose_summary(outputs),
+        findings=[*verification.kept, *check_run.findings],
+    )
+    metrics = RunMetrics(
+        model=model,
+        reviewers_run=tuple(plan.names),
+        usage=total,
+        stage_usage=stage_usage,
+        stage_latency_ms=latency,
+        malformed_findings=sum(o.malformed for o in outputs),
+        coerced_findings=sum(o.coerced for o in outputs),
+        off_scope_findings=off_scope,
+        deduplicated_findings=deduplicated,
+        unusable_reviewer_calls=unusable,
+        conventions_file=context.conventions_path,
+        callers_found=len(context.callers),
+        tests_found=len(context.tests),
+        context_complete=context.complete,
+        verified=verification.ran,
+        verifier_dropped=verification.dropped,
+        verifier_downgraded=verification.downgraded,
+        verifier_usage=verification.usage,
+        verifier_model=verification.model,
+        checks_run=tuple(check_run.ran),
+        checks_failed=tuple(check_run.failed),
+        deterministic_findings=len(check_run.findings),
+    )
+    return review, metrics
 
 
 def _ms_since(started: float) -> float:
