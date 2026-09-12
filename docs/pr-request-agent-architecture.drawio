@@ -18,7 +18,7 @@
         <mxCell id="developer" value="&lt;b&gt;Developer / CI&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;python -m app.review&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#0F172A;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
           <mxGeometry x="50" y="276" width="190" height="76" as="geometry"/>
         </mxCell>
-        <mxCell id="anthropic" value="&lt;b&gt;Anthropic API&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;sync + async SDK clients&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
+        <mxCell id="anthropic" value="&lt;b&gt;Anthropic API&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;async SDK client&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
           <mxGeometry x="1020" y="1005" width="250" height="76" as="geometry"/>
         </mxCell>
         <mxCell id="datadog" value="&lt;b&gt;Datadog&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;LLM Obs · cost · latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
@@ -35,10 +35,10 @@
         <mxCell id="webhook" value="&lt;b&gt;POST /webhook&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;HMAC verify · parse event&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=14;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
           <mxGeometry x="25" y="50" width="235" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="ack" value="202 Accepted&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;background task&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#06B6D4;fontColor=#155E75;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
-          <mxGeometry x="25" y="135" width="110" height="58" as="geometry"/>
+        <mxCell id="ack" value="Persist the job, then 202&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;SQLite on the Fly volume&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#06B6D4;fontColor=#155E75;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+          <mxGeometry x="25" y="135" width="235" height="58" as="geometry"/>
         </mxCell>
-        <mxCell id="dedup" value="&lt;b&gt;Dedup / staleness gates&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;delivery · head SHA · latest head&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+        <mxCell id="dedup" value="&lt;b&gt;Worker drains the queue&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;delivery id · head SHA · latest head&lt;br&gt;bounded retries · recovery at startup&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
           <mxGeometry x="25" y="220" width="235" height="62" as="geometry"/>
         </mxCell>
         <mxCell id="appauth" value="GitHub App auth&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;JWT → installation token&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
@@ -78,7 +78,7 @@
         <mxCell id="engine" value="SHARED REVIEW ENGINE · review_pull_request()" style="swimlane;html=1;horizontal=1;startSize=32;rounded=1;fillColor=#EDE9FE;swimlaneFillColor=#FDFBFF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#5B21B6;fontFamily=Helvetica;fontSize=13;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
           <mxGeometry x="610" y="55" width="520" height="755" as="geometry"/>
         </mxCell>
-        <mxCell id="router" value="&lt;b&gt;Entry point · pipeline.py&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;async · one client · awaited by the webhook, asyncio.run in the CLI&lt;br&gt;one pr_review span · cost + latency on its root&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B5CF6;fontColor=#3B0764;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+        <mxCell id="router" value="&lt;b&gt;Entry point · pipeline.py&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;async coroutine · one client · one pr_review span&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B5CF6;fontColor=#3B0764;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
           <mxGeometry x="125" y="48" width="270" height="62" as="geometry"/>
         </mxCell>
         <mxCell id="multi-boundary" value="REVIEW PIPELINE" style="swimlane;html=1;horizontal=1;startSize=26;rounded=1;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#6B21A8;fontFamily=Helvetica;fontSize=11;fontStyle=1;arcSize=5;collapsible=0;" vertex="1" parent="engine">

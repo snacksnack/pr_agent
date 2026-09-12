@@ -1,8 +1,9 @@
 # PR Review Agent — container image for the live webhook service (RC1-119).
 #
-# Runs the FastAPI receiver (app/webhook.py) under uvicorn. The agentic review
-# loop runs in-process on a background task, so a single small machine is enough;
-# Fly auto-stops it when idle (see fly.toml).
+# Runs the FastAPI receiver (app/webhook.py) under uvicorn. The review worker
+# runs in-process on the same loop over a SQLite job store on the mounted
+# volume (RC1-423), so a single small machine is enough; Fly auto-stops it
+# when idle (see fly.toml).
 FROM python:3.12-slim
 
 # - PYTHONUNBUFFERED: stream logs straight to stdout so `fly logs` is live.
@@ -40,6 +41,6 @@ ENV DD_GIT_COMMIT_SHA=$GIT_SHA \
 EXPOSE 8080
 
 # Exec form so uvicorn is PID 1 and receives SIGTERM for a graceful shutdown.
-# One worker: reviews are bounded background tasks and a re-push is deduped, so a
-# single process keeps the in-memory dedup state coherent.
+# One uvicorn worker: the job store is one SQLite writer, and one process is
+# the whole of the durable worker (RC1-423).
 CMD ["uvicorn", "app.webhook:app", "--host", "0.0.0.0", "--port", "8080"]

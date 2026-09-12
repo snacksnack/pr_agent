@@ -1,29 +1,32 @@
-"""Tests for the FastAPI webhook receiver (RC1-116).
+"""Tests for the FastAPI webhook receiver (RC1-116, RC1-423).
 
-Fully offline: the review worker is replaced with a recorder, signatures are
-computed with a known test secret, and requests go through Starlette's
-``TestClient`` (which runs background tasks synchronously after the response, so
-we can assert dispatch right after the call returns).
+Fully offline: the job store is SQLite in a temp dir, the worker's runner is
+a fake, signatures are computed with a known test secret, and requests go
+through Starlette's ``TestClient``. Outside a ``with TestClient(...)`` block
+the lifespan does not run, so the worker is idle and a persisted job stays
+``queued`` — which is exactly what the endpoint is responsible for.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from app import jobs
 from app.config import Settings
+from app.jobs import JobStore
 from app.webhook import (
-    WebhookEvent,
     WebhookParseError,
     configure_logging,
     create_app,
     parse_pull_request_event,
-    process_event,
     verify_signature,
 )
 
@@ -60,18 +63,16 @@ def _post(client: TestClient, payload: dict, *, event: str = "pull_request",
     return client.post("/webhook", content=body, headers=headers)
 
 
-class Recorder:
-    """Stand-in background worker that records the events it's handed."""
-
-    def __init__(self) -> None:
-        self.events: list[WebhookEvent] = []
-
-    def __call__(self, event: WebhookEvent) -> None:
-        self.events.append(event)
+def _store() -> JobStore:
+    return JobStore(Path(tempfile.mkdtemp(prefix="pr-webhook-")) / "jobs.db")
 
 
-def _client(recorder: Recorder | None = None, *, secret: str | None = SECRET) -> TestClient:
-    return TestClient(create_app(secret=secret, processor=recorder or Recorder()))
+async def _never_run(job, store):  # the worker is idle without the lifespan anyway
+    raise AssertionError("the runner ran")
+
+
+def _client(store: JobStore | None = None, *, secret: str | None = SECRET) -> TestClient:
+    return TestClient(create_app(secret=secret, store=store or _store(), runner=_never_run))
 
 
 # --- verify_signature -----------------------------------------------------
@@ -124,31 +125,45 @@ def test_parse_pull_request_event_tolerates_missing_installation():
 # --- endpoint: happy path + dispatch --------------------------------------
 
 @pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
-def test_processed_actions_ack_202_and_dispatch(action):
-    rec = Recorder()
-    resp = _post(_client(rec), _pr_payload(action))
+def test_processed_actions_are_persisted_before_the_202(action):
+    store = _store()
+    resp = _post(_client(store), _pr_payload(action))
     assert resp.status_code == 202
-    assert len(rec.events) == 1
-    assert rec.events[0].action == action
-    assert rec.events[0].slug == "octo/hello#42"
+    [job] = store.jobs()
+    assert (job.state, job.action, job.slug, job.delivery_id) == (
+        jobs.QUEUED, action, "octo/hello#42", "d-1"
+    )
+    assert job.head_sha == "abc123def4567890" and job.installation_id == 999
 
 
-def test_ignored_action_acks_200_without_dispatch():
-    rec = Recorder()
-    resp = _post(_client(rec), _pr_payload("closed"))
+def test_a_redelivery_is_acked_without_a_second_job(caplog):
+    store = _store()
+    client = _client(store)
+    assert _post(client, _pr_payload(), delivery="d-1").status_code == 202
+    with caplog.at_level(logging.INFO, logger="app.webhook"):
+        assert _post(client, _pr_payload(), delivery="d-1").status_code == 202
+    assert len(store.jobs()) == 1
+    assert "duplicate_delivery" in caplog.text
+    assert _post(client, _pr_payload(), delivery="d-2").status_code == 202
+    assert len(store.jobs()) == 2
+
+
+def test_ignored_action_acks_200_without_a_job():
+    store = _store()
+    resp = _post(_client(store), _pr_payload("closed"))
     assert resp.status_code == 200
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 # --- endpoint: skipped authors (RC1-359 cost guardrail) -------------------
 
 @pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
-def test_dependabot_pr_acks_200_without_dispatch(action, caplog):
-    rec = Recorder()
+def test_dependabot_pr_acks_200_without_a_job(action, caplog):
+    store = _store()
     with caplog.at_level(logging.INFO, logger="app.webhook"):
-        resp = _post(_client(rec), _pr_payload(action, author="dependabot[bot]"))
+        resp = _post(_client(store), _pr_payload(action, author="dependabot[bot]"))
     assert resp.status_code == 200
-    assert rec.events == []
+    assert store.jobs() == []
     assert "skip_author author=dependabot[bot]" in caplog.text
 
 
@@ -160,34 +175,34 @@ def test_skip_authors_is_configurable(monkeypatch):
     monkeypatch.setattr(
         app.webhook, "settings", Settings(_env_file=None, review_skip_authors="renovate[bot]")
     )
-    rec = Recorder()
-    assert _post(_client(rec), _pr_payload(author="renovate[bot]")).status_code == 200
-    assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
-    assert [e.author for e in rec.events] == ["dependabot[bot]"]
+    store = _store()
+    assert _post(_client(store), _pr_payload(author="renovate[bot]")).status_code == 200
+    assert _post(_client(store), _pr_payload(author="dependabot[bot]")).status_code == 202
+    assert [j.author for j in store.jobs()] == ["dependabot[bot]"]
 
 
 def test_empty_skip_list_reviews_everyone(monkeypatch):
     import app.webhook
 
     monkeypatch.setattr(app.webhook, "settings", Settings(_env_file=None, review_skip_authors=""))
-    rec = Recorder()
-    assert _post(_client(rec), _pr_payload(author="dependabot[bot]")).status_code == 202
-    assert len(rec.events) == 1
+    store = _store()
+    assert _post(_client(store), _pr_payload(author="dependabot[bot]")).status_code == 202
+    assert len(store.jobs()) == 1
 
 
 def test_missing_author_is_still_reviewed():
-    rec = Recorder()
-    assert _post(_client(rec), _pr_payload(author=None)).status_code == 202
-    assert len(rec.events) == 1
+    store = _store()
+    assert _post(_client(store), _pr_payload(author=None)).status_code == 202
+    assert len(store.jobs()) == 1
 
 
 # --- endpoint: signature gate ---------------------------------------------
 
 def test_forged_signature_rejected_401_no_dispatch():
-    rec = Recorder()
-    resp = _post(_client(rec), _pr_payload(), secret="wrong-secret")
+    store = _store()
+    resp = _post(_client(store), _pr_payload(), secret="wrong-secret")
     assert resp.status_code == 401
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 def test_missing_signature_rejected_401():
@@ -196,33 +211,33 @@ def test_missing_signature_rejected_401():
 
 
 def test_unconfigured_secret_returns_500():
-    rec = Recorder()
+    store = _store()
     # No signature header is even needed: the server bails before verification.
-    resp = _post(_client(rec, secret=None), _pr_payload(), sign=False)
+    resp = _post(_client(store, secret=None), _pr_payload(), sign=False)
     assert resp.status_code == 500
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 # --- endpoint: event filtering + bad input --------------------------------
 
 def test_ping_event_acks_200():
-    rec = Recorder()
-    resp = _post(_client(rec), {"zen": "Keep it logically awesome."}, event="ping")
+    store = _store()
+    resp = _post(_client(store), {"zen": "Keep it logically awesome."}, event="ping")
     assert resp.status_code == 200
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 def test_other_event_type_acks_200_without_dispatch():
-    rec = Recorder()
-    resp = _post(_client(rec), {"action": "created"}, event="issue_comment")
+    store = _store()
+    resp = _post(_client(store), {"action": "created"}, event="issue_comment")
     assert resp.status_code == 200
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 def test_signed_but_malformed_json_returns_400():
-    rec = Recorder()
+    store = _store()
     body = b"{not valid json"
-    resp = _client(rec).post(
+    resp = _client(store).post(
         "/webhook",
         content=body,
         headers={
@@ -232,202 +247,65 @@ def test_signed_but_malformed_json_returns_400():
         },
     )
     assert resp.status_code == 400
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 def test_pull_request_missing_fields_returns_400():
-    rec = Recorder()
+    store = _store()
     payload = _pr_payload()
     del payload["repository"]
-    resp = _post(_client(rec), payload)
+    resp = _post(_client(store), payload)
     assert resp.status_code == 400
-    assert rec.events == []
+    assert store.jobs() == []
 
 
 # --- health check ---------------------------------------------------------
 
-def test_healthz_ok():
-    assert _client().get("/healthz").json() == {"status": "ok"}
+def test_healthz_reports_the_queue(caplog):
+    store = _store()
+    client = _client(store)
+    empty = {"queued": 0, "running": 0, "succeeded": 0, "skipped": 0, "failed": 0}
+    assert client.get("/healthz").json() == {"status": "ok", "jobs": empty}
+    _post(client, _pr_payload())
+    assert client.get("/healthz").json()["jobs"] == {**empty, "queued": 1}
 
 
-# --- default processor wires ingest -> review -> post ---------------------
+# --- the lifespan: recovery at startup, the worker drains what the endpoint queued ----
 
-def _wire_fakes(monkeypatch, pr, posted):
-    """Stub the lazily-imported deps of process_event; return nothing."""
-    import app.agent.pipeline
-    import app.auth
-    import app.posting
-    from app.models import ReviewOutcome, ReviewResult, RunMetrics
+def test_the_worker_runs_a_persisted_job_end_to_end_under_the_lifespan():
+    store = _store()
+    ran = []
 
-    class FakeClient:
-        def fetch_pull_request(self, ref):
-            return pr
+    async def runner(job, s):
+        ran.append(job.delivery_id)
+        return None
 
-        def get_file_text(self, ref, path, *, git_ref=None):
-            return None  # no workflow files in the base fixture
-
-    class FakeAuth:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def client_for_repo(self, owner, repo):
-            return FakeClient()
-
-    async def fake_review(pull_request, repository, client=None):
-        posted["reviewed"] = posted.get("reviewed", 0) + 1
-        posted["repository"] = repository
-        return ReviewOutcome(ReviewResult(summary="ok"), RunMetrics(model="m"))
-
-    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
-        posted.update(pr=pull_request, block_on=block_on, commit_id=commit_id)
-        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
-                "review_id": 5, "event": "COMMENT"}
-
-    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
-    monkeypatch.setattr(app.agent.pipeline, "review_pull_request", fake_review)
-    monkeypatch.setattr(app.posting, "post_review", fake_post)
+    with TestClient(create_app(secret=SECRET, store=store, runner=runner)) as client:
+        assert _post(client, _pr_payload()).status_code == 202
+        deadline = time.monotonic() + 5
+        while store.jobs()[0].state != jobs.SUCCEEDED and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert ran == ["d-1"]
+    assert store.jobs()[0].state == jobs.SUCCEEDED
 
 
-def test_process_event_ingests_reviews_and_posts(monkeypatch):
-    from app.dedup import DedupStore
-    from app.models import PRRef, PullRequest
-
-    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
-    posted: dict = {}
-    _wire_fakes(monkeypatch, pr, posted)
-
-    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999)
-    asyncio.run(process_event(event, store=DedupStore()))
-
-    assert posted["pr"] is pr
-    assert posted["commit_id"] == "abc123def4567890"
-    assert "leaked_secret" in posted["block_on"]
-    # RC1-364: the live agent explores the repo through the API at the PR head,
-    # not an empty temp dir.
-    from app.agent.github_repository import GitHubRepository
-    assert isinstance(posted["repository"], GitHubRepository)
-    assert posted["repository"].api_calls == 0  # nothing spent until the pipeline reads
-
-
-def test_process_event_skips_duplicate_delivery_and_reviewed_sha(monkeypatch):
-    from app.dedup import DedupStore
-    from app.models import PRRef, PullRequest
-
-    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="sha-head")
-    posted: dict = {}
-    _wire_fakes(monkeypatch, pr, posted)
-    store = DedupStore()
-
-    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "sha-head", 1)
-    asyncio.run(process_event(event, store=store))
-    assert posted.get("reviewed") == 1
-
-    # Same delivery id again -> skipped before any work.
-    asyncio.run(process_event(event, store=store))
-    assert posted.get("reviewed") == 1
-
-    # New delivery, but the same head SHA was already reviewed -> skipped.
-    again = WebhookEvent("d-2", "synchronize", "octo", "hello", 42, "sha-head", 1)
-    asyncio.run(process_event(again, store=store))
-    assert posted.get("reviewed") == 1
-
-
-def test_process_event_skips_stale_head(monkeypatch):
-    from app.dedup import DedupStore
-    from app.models import PRRef, PullRequest
-
-    # The PR's current head has moved past the event's SHA -> stale, skip.
-    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="newer-sha")
-    posted: dict = {}
-    _wire_fakes(monkeypatch, pr, posted)
-
-    event = WebhookEvent("d-1", "synchronize", "octo", "hello", 42, "older-sha", 1)
-    asyncio.run(process_event(event, store=DedupStore()))
-    assert "reviewed" not in posted  # never ran the review
-
-
-# --- the webhook loads and publishes; the pipeline owns the checks (RC1-425) --------
-
-def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
-    # The deterministic n8n check runs inside the pipeline (RC1-425). The
-    # webhook hands it a repository served at the PR head and posts exactly
-    # the result it returns — nothing is added, merged or re-run here.
-    import app.agent.pipeline
-    import app.auth
-    import app.posting
-    from app.agent.github_repository import GitHubRepository
-    from app.dedup import DedupStore
-    from app.models import (
-        ChangedFile,
-        Finding,
-        PRRef,
-        PullRequest,
-        ReviewOutcome,
-        ReviewResult,
-        RunMetrics,
+def test_startup_recovers_a_job_the_last_process_left_running():
+    store = _store()
+    store.enqueue(
+        parse_pull_request_event("d-old", _pr_payload())
     )
+    store.claim_next()  # the last process died here
+    ran = []
 
-    pr = PullRequest(
-        ref=PRRef("octo", "hello", 42),
-        title="Add workflow",
-        head_sha="abc123def4567890",
-        files=[ChangedFile(filename="flows/poll.json", status="added")],
-    )
-    fetched: list = []
+    async def runner(job, s):
+        ran.append((job.delivery_id, job.attempts))
+        return None
 
-    class FakeClient:
-        def fetch_pull_request(self, ref):
-            return pr
-
-        def get_file_text(self, ref, path, *, git_ref=None):
-            fetched.append((path, git_ref))
-            return "{}"
-
-    class FakeAuth:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def client_for_repo(self, owner, repo):
-            return FakeClient()
-
-    findings = [
-        Finding("warning", "security", "model claim", file="flows/poll.json", line=1),
-        Finding("warning", "n8n", "cron fires every minute", file="flows/poll.json"),
-    ]
-    seen: dict = {}
-
-    async def fake_review(pull_request, repository, client=None):
-        seen["repository"] = repository
-        review = ReviewResult(summary="ok", findings=list(findings))
-        return ReviewOutcome(review, RunMetrics(model="m"))
-
-    posted: dict = {}
-
-    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
-        posted["result"] = result
-        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
-                "review_id": 5, "event": "COMMENT"}
-
-    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
-    monkeypatch.setattr(app.agent.pipeline, "review_pull_request", fake_review)
-    monkeypatch.setattr(app.posting, "post_review", fake_post)
-
-    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
-    asyncio.run(process_event(event, store=DedupStore()))
-
-    assert posted["result"].findings == findings
-    # The webhook read nothing itself; the pipeline's repository reads at the head.
-    assert fetched == []
-    repository = seen["repository"]
-    assert isinstance(repository, GitHubRepository)
-    assert repository.read_text("flows/poll.json") == "{}"
-    assert fetched == [("flows/poll.json", "abc123def4567890")]
+    with TestClient(create_app(secret=SECRET, store=store, runner=runner)):
+        deadline = time.monotonic() + 5
+        while store.jobs()[0].state != jobs.SUCCEEDED and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert ran == [("d-old", 2)]
 
 
 # --- logging never leaks secrets ------------------------------------------
@@ -464,29 +342,3 @@ def test_configure_logging_attaches_one_handler_and_is_idempotent():
     # INFO lifecycle lines must be emittable, and we don't double-print via root.
     assert app_logger.level <= logging.INFO
     assert app_logger.propagate is False
-
-
-def test_process_event_ships_one_cost_point_per_review(monkeypatch):
-    """RC1-395: the metric leaves from the webhook only, tagged with the repo."""
-    import app.webhook
-    from app.dedup import DedupStore
-    from app.models import PRRef, PullRequest
-
-    pr = PullRequest(ref=PRRef("octo", "hello", 42), title="T", head_sha="abc123def4567890")
-    posted: dict = {}
-    _wire_fakes(monkeypatch, pr, posted)
-    shipped = []
-    monkeypatch.setattr(
-        app.webhook, "ship_review_metrics", lambda result, *, repo: shipped.append((result, repo))
-    )
-
-    asyncio.run(
-        process_event(
-            WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 999),
-            store=DedupStore(),
-        )
-    )
-
-    assert len(shipped) == 1
-    metrics, repo = shipped[0]
-    assert repo == "octo/hello" and metrics.model == "m", "the run's metrics, not the review"

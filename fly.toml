@@ -18,6 +18,15 @@ primary_region = "iad"
 # behavior can also be tuned via `fly secrets`/`[env]` without a rebuild.
 [env]
   LOG_LEVEL = "INFO"
+  # RC1-423: the durable job store lives on the volume mounted below, so a
+  # 202 to GitHub means the job survives a restart of the process or the
+  # machine. Create the volume once, before the first deploy that mounts it:
+  #   fly volumes create pr_review_jobs --region iad --size 1 -a pr-review-agent-snacksnack
+  JOBS_DB_PATH = "/data/jobs.db"
+
+[mounts]
+  source = "pr_review_jobs"
+  destination = "/data"
 
 [http_service]
   # Must match EXPOSE/$PORT in the Dockerfile.
@@ -26,7 +35,9 @@ primary_region = "iad"
   force_https = true
   # Idle cost control: scale to zero when there's no traffic and cold-start a
   # machine on the next webhook delivery. GitHub retries failed deliveries, so a
-  # brief wake-up latency is safe.
+  # brief wake-up latency is safe. A job the stop interrupts is re-queued at the
+  # next start (RC1-423); .github/workflows/wake.yml pings /healthz every 15
+  # minutes so a queued job never waits for the next delivery to be run.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0

@@ -11,19 +11,19 @@ a 2xx inside ~10s or GitHub marks them failed and retries):
       -> filter to pull_request opened/synchronize/reopened
       -> normalize into a WebhookEvent
       -> drop PRs from skipped authors (Dependabot by default)   (cost guardrail)
-      -> schedule the review on a BackgroundTask, return 202 immediately
+      -> persist the job in the durable store, return 202 (RC1-423)
 
 Signature verification runs on *every* delivery against the raw bytes (re-encoding
 the parsed JSON would change the bytes and break the HMAC). Anything unsigned or
 forged is rejected with 401 before we parse or schedule anything.
 
-The background *processor* is injectable so tests run offline; the default
-(:func:`process_event`) mints an installation token, ingests the PR, awaits the
-review pipeline, and posts the review (RC1-117), with re-push dedup (RC1-118).
-It is a coroutine (RC1-426): Starlette runs it on the receiver's loop after
-the 202, and the GitHub calls around the pipeline — synchronous httpx — go
-to the default executor so the loop keeps acknowledging deliveries and
-answering the health check while a review is on.
+The endpoint only verifies, parses and persists (RC1-423). A 202 means the
+job is in :class:`app.jobs.JobStore` — SQLite on the machine's volume — and
+the review itself is run by :class:`app.worker.Worker`, one task on this
+loop that the app's lifespan starts and the endpoint nudges after every
+persisted delivery. Redeliveries are the same delivery id and are not
+queued twice; an already-reviewed head and a stale head are the worker's
+to skip. The store and the runner are injectable so tests run offline.
 """
 from __future__ import annotations
 
@@ -31,17 +31,16 @@ import asyncio
 import hashlib
 import hmac
 import logging
-from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response
 
 from app.config import settings
-from app.observability import enable_llm_obs, ship_review_metrics
-
-if TYPE_CHECKING:  # avoid importing this at module load; worker imports lazily
-    from app.dedup import DedupStore
+from app.jobs import JobStore
+from app.observability import enable_llm_obs
+from app.worker import JobRunner, Worker, process_job, startup
 
 logger = logging.getLogger("app.webhook")
 
@@ -77,10 +76,6 @@ PROCESSED_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
 SIGNATURE_HEADER = "X-Hub-Signature-256"
 EVENT_HEADER = "X-GitHub-Event"
 DELIVERY_HEADER = "X-GitHub-Delivery"
-
-# Type of the worker the endpoint dispatches to: a coroutine function (RC1-426).
-Processor = Callable[["WebhookEvent"], Awaitable[None]]
-
 
 @dataclass(frozen=True)
 class WebhookEvent:
@@ -151,96 +146,6 @@ def parse_pull_request_event(delivery_id: str, payload: dict[str, Any]) -> Webho
     )
 
 
-# --- default background processor ----------------------------------------
-
-async def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> None:
-    """Run the review for a delivered PR and post it back (default worker).
-
-    Mints an installation token, ingests the PR, hands the pipeline a
-    repository served from the Contents and Trees APIs at the PR head
-    (RC1-364; no checkout, one tree call plus a budget of file reads), and
-    posts/refreshes what comes back via :func:`app.posting.post_review`.
-    The pipeline owns the rest — the deterministic n8n check over the changed
-    workflow JSON, the reviewers, the verifier and the one result they add
-    up to (RC1-425) — so this worker loads and publishes, as the dry-run CLI
-    loads and prints.
-
-    Async (RC1-426): the pipeline is awaited on this loop; the token mint,
-    the PR fetch and the posting are synchronous GitHub calls and run in the
-    default executor so they never block the receiver.
-
-    Dedup (RC1-118): skip webhook redeliveries (same delivery id), commits we've
-    already reviewed (same head SHA), and *stale* events — if the PR's current
-    head has moved past the event's SHA, a newer push will (or already did)
-    trigger its own review, so only the latest head is reviewed.
-
-    Exceptions are swallowed and logged — a background task has no client to
-    return an error to, and one bad delivery must not take the worker down.
-    """
-    from app.agent.github_repository import GitHubRepository
-    from app.agent.pipeline import review_pull_request
-    from app.auth import GitHubAppAuth
-    from app.dedup import dedup_store
-    from app.models import PRRef
-    from app.posting import post_review
-
-    store = store if store is not None else dedup_store
-    log = _event_logger(event)
-
-    if store.seen_delivery(event.delivery_id):
-        log.info("skip_duplicate_delivery")
-        return
-    if store.already_reviewed(event.slug, event.head_sha):
-        log.info("skip_already_reviewed")
-        return
-
-    try:
-        with GitHubAppAuth() as auth:
-            gh = await asyncio.to_thread(auth.client_for_repo, event.owner, event.repo)
-            pr = await asyncio.to_thread(
-                gh.fetch_pull_request, PRRef(event.owner, event.repo, event.number)
-            )
-            if pr.head_sha and pr.head_sha != event.head_sha:
-                log.info("skip_stale_head current=%s", pr.head_sha[:12])
-                return
-            repository = GitHubRepository(
-                gh,
-                pr.ref,
-                pr.head_sha,
-                changed_files=[f.filename for f in pr.files],
-                api_budget=settings.remote_api_budget,
-            )
-            reviewed = await review_pull_request(pr, repository)
-            log.info(
-                "repository api_calls=%d tree=%s", repository.api_calls, repository.tree_available
-            )
-            # RC1-395: one cost point per review, from here only — the
-            # dry-run CLI and the eval corpus run the same review function
-            # and must not write into the production series.
-            ship_review_metrics(reviewed.metrics, repo=f"{event.owner}/{event.repo}")
-            outcome = await asyncio.to_thread(
-                post_review,
-                gh,
-                pr,
-                reviewed.review,
-                block_on=settings.block_on,
-                commit_id=event.head_sha,
-            )
-        store.mark_reviewed(event.slug, event.head_sha)
-    except Exception:  # noqa: BLE001 — background worker is the last line of defense
-        log.exception("review_failed")
-        return
-
-    log.info(
-        "review_posted findings=%d event=%s summary=%s new_comments=%d dismissed=%d",
-        len(reviewed.review.findings),
-        outcome["event"],
-        outcome["summary_action"],
-        outcome["new_comments"],
-        outcome["dismissed"],
-    )
-
-
 # --- structured logging ---------------------------------------------------
 
 def _event_logger(event: WebhookEvent) -> logging.LoggerAdapter:
@@ -262,30 +167,53 @@ def _event_logger(event: WebhookEvent) -> logging.LoggerAdapter:
 def create_app(
     *,
     secret: str | None = None,
-    processor: Processor | None = None,
+    store: JobStore | None = None,
+    runner: JobRunner | None = None,
 ) -> FastAPI:
     """Build the webhook FastAPI app.
 
-    ``secret`` and ``processor`` are injectable for tests; in production both
-    fall back to the configured webhook secret and the real :func:`process_event`
-    worker. Resolving the secret per-request (not captured here) means rotating
+    ``secret``, ``store`` and ``runner`` are injectable for tests; in
+    production they fall back to the configured webhook secret, a
+    :class:`JobStore` at ``settings.jobs_db_path`` and :func:`process_job`.
+    Resolving the secret per-request (not captured here) means rotating
     ``GITHUB_WEBHOOK_SECRET`` doesn't require rebuilding the app.
+
+    The lifespan (RC1-423) re-queues jobs the last process left running,
+    prunes old history, and runs the worker until shutdown; a shutdown
+    mid-review cancels the review, leaves the job ``running``, and the next
+    startup recovers it.
     """
     configure_logging()
     # RC1-322: reviews triggered by webhooks become LLM Obs traces; a no-op
     # without DD_API_KEY.
     enable_llm_obs("pr-review-agent", service="webhook")
-    app = FastAPI(title="PR Review Agent webhook", version="RC1-116")
-    worker = processor or process_event
+    job_store = store if store is not None else JobStore(settings.jobs_db_path)
+    worker = Worker(job_store, runner or process_job)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        recovered = startup(job_store)
+        logger.info("worker_started recovered=%d %s", len(recovered), job_store.counts())
+        task = asyncio.create_task(worker.run_forever(), name="review-worker")
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            job_store.close()
+
+    app = FastAPI(title="PR Review Agent webhook", version="RC1-116", lifespan=lifespan)
+    app.state.store = job_store
+    app.state.worker = worker
 
     @app.get("/healthz")
-    def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz() -> dict[str, Any]:
+        # RC1-423: the queue's state rides on the health check, which is also
+        # what the wake cron reads.
+        return {"status": "ok", "jobs": job_store.counts()}
 
     @app.post("/webhook")
-    async def github_webhook(
-        request: Request, background_tasks: BackgroundTasks
-    ) -> Response:
+    async def github_webhook(request: Request) -> Response:
         configured_secret = secret if secret is not None else settings.github_webhook_secret
         if not configured_secret:
             logger.error("webhook_misconfigured: GITHUB_WEBHOOK_SECRET is not set")
@@ -336,13 +264,20 @@ def create_app(
         # RC1-359: bot-authored PRs (Dependabot by default) are acknowledged but
         # never reviewed. Each review is a billed model call, and enabling
         # Dependabot alerts can open a dozen version-bump PRs at once; the
-        # skip runs before dispatch so no token is minted and no repo is read.
+        # skip runs before persisting so no job is written and no token is minted.
+        log = _event_logger(event)
         if event.author in settings.skip_authors:
-            _event_logger(event).info("skip_author author=%s", event.author)
+            log.info("skip_author author=%s", event.author)
             return Response(status_code=200)
 
-        _event_logger(event).info("accepted")
-        background_tasks.add_task(worker, event)
+        # RC1-423: on disk before the 202. A redelivery carries the delivery id
+        # already on file and is acknowledged without a second job.
+        job = job_store.enqueue(event)
+        if job is None:
+            log.info("duplicate_delivery")
+            return Response(status_code=202)
+        log.info("job_queued id=%d", job.id)
+        worker.nudge()
         # 202: accepted for async processing, review not done yet.
         return Response(status_code=202)
 

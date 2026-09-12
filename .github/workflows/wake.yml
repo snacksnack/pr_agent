@@ -1,0 +1,22 @@
+# RC1-423: wake the review service so queued jobs run.
+#
+# The Fly machine scales to zero when idle, and only an inbound request
+# starts it. A job that a stop or a crash interrupted sits in the durable
+# store until the machine is next up; without this, that is the next
+# webhook delivery, which could be days. One GET every 15 minutes starts
+# the machine, whose lifespan re-queues interrupted jobs and drains the
+# queue, and prints the queue counts /healthz returns into this log.
+name: Wake
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping /healthz (starts the machine; the worker drains queued jobs)
+        run: curl -fsS --max-time 60 https://pr-review-agent-snacksnack.fly.dev/healthz
