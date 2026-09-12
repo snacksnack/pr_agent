@@ -101,9 +101,10 @@ def review_cost(result: ReviewResult) -> ReviewCost:
     total is their sum. A result with no stage breakdown (the retired single
     loop's rows in the eval store, a bare result in a test) is priced from
     its totals as ``loop`` (the total less the verifier) and, when the pass
-    ran, ``verifier``. The verifier
-    is priced at the model it actually used (``review_verify_model`` may
-    differ from the review model); everything else at the review model.
+    ran, ``verifier``. The verifier is priced at the model the result
+    records for it (``verifier_model``; the same as the review model since
+    RC1-428 retired the override, and rows in the eval store from before
+    that may differ); everything else at the review model.
 
     Raises :class:`UnknownModelPrice` for a model not in the table.
     """

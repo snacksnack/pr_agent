@@ -103,13 +103,13 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
 
     material = (prompts.REVIEW_RUBRIC + prompts.SEVERITY_GUIDANCE + prompts.SYSTEM_PROMPT).encode()
     version = f"rubric-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
-    if settings.review_verify_findings:
-        # RC1-387: a run with the verifier on is a different subject version —
-        # the two are compared against each other, never averaged together.
-        from app.agent import verifier
+    # RC1-387: the verifier's instructions are part of the prompt. Rows
+    # without this segment are from before the flag went on, or from the
+    # flag-off arms of RC1-387/RC1-428; since RC1-428 it is always present.
+    from app.agent import verifier
 
-        material = (verifier.VERIFIER_INSTRUCTIONS).encode()
-        version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
+    material = (verifier.VERIFIER_INSTRUCTIONS).encode()
+    version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
     # RC1-390: the reviewers' instructions are the pipeline's prompt. Since
     # RC1-422 this is the only pipeline, so the segment is always present;
     # the eval store's earlier rows without it are the retired single

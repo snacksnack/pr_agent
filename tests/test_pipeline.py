@@ -12,7 +12,6 @@ from app.agent import pipeline
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT
 from app.agent.router import ReviewPlan
 from app.agent.tools import RepoTools
-from app.config import Settings
 from app.models import ChangedFile, Finding, PRRef, PullRequest, TokenUsage
 
 
@@ -103,7 +102,7 @@ def _run(pr, repo, sync, async_client, **kw):
 # --- the happy path -----------------------------------------------------------
 
 def test_three_reviewers_then_merge(pr, repo):
-    sync = _sync()
+    sync = _sync([_use("verify_findings", verdicts=[])])
     async_client = _async(
         WARM,
         _submit("A secret is committed.", [_finding("blocker", "leaked_secret", "key in code")]),
@@ -119,10 +118,11 @@ def test_three_reviewers_then_merge(pr, repo):
         ("warning", "tests"),
     ]
     assert result.summary == "A secret is committed. No tests cover x."
-    assert result.verified is False
-    assert sync.messages.calls == [], "no scout (RC1-427): the sync client serves the verifier only"
+    # RC1-428: the verifier is a stage; the sync client serves it and nothing else.
+    assert result.verified is True and len(sync.messages.calls) == 1
     assert set(result.stage_usage) == {
         "warm_cache", "reviewer:diff_local", "reviewer:repo_context", "reviewer:change_intent",
+        "verifier",
     }
 
 
@@ -137,7 +137,7 @@ def test_every_call_that_shares_the_prefix_sends_it_identically(pr, repo):
         _submit("", []),
         _submit("", []),
     )
-    _run(pr, repo, sync, async_client, verify=True)
+    _run(pr, repo, sync, async_client)
 
     calls = async_client.messages.calls + [sync.messages.calls[-1]]
     assert len(calls) == 5
@@ -250,7 +250,7 @@ def test_reviewer_calling_the_wrong_tool_is_counted_not_crashed(pr, repo):
         [{"type": "text", "text": "no tool at all"}],
         _submit("fine", [_finding("nit", "pr_drift", "d", file=None, line=None)]),
     )
-    result = _run(pr, repo, _sync(), async_client)
+    result = _run(pr, repo, _sync([_use("verify_findings", verdicts=[])]), async_client)
     assert result.unusable_reviewer_calls == 2
     assert [f.category for f in result.findings] == ["pr_drift"]
     assert result.summary == "fine"
@@ -263,7 +263,7 @@ def test_malformed_and_coerced_findings_are_counted_across_reviewers(pr, repo):
         _submit("", [{"category": "tests"}]),  # no severity or message
         _submit("", []),
     )
-    result = _run(pr, repo, _sync(), async_client)
+    result = _run(pr, repo, _sync([_use("verify_findings", verdicts=[])]), async_client)
     assert result.coerced_findings == 1 and result.malformed_findings == 1
     assert result.findings[0].severity == "warning"
 
@@ -311,7 +311,7 @@ def test_verifier_runs_on_the_merged_findings_and_reads_the_shared_prefix(pr, re
         _submit("", [_finding("warning", "tests", "untested", line=9)]),
         _submit("", []),
     )
-    result = _run(pr, repo, sync, async_client, verify=True)
+    result = _run(pr, repo, sync, async_client)
 
     assert result.verified is True
     assert [f.category for f in result.findings] == ["tests"]
@@ -325,7 +325,7 @@ def test_verifier_runs_on_the_merged_findings_and_reads_the_shared_prefix(pr, re
 def test_verifier_is_skipped_when_there_is_nothing_to_verify(pr, repo):
     sync = _sync()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    result = _run(pr, repo, sync, async_client, verify=True)
+    result = _run(pr, repo, sync, async_client)
     assert result.verified is False and sync.messages.calls == []
 
 
@@ -344,7 +344,7 @@ def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
     async_client = _async(
         WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
     )
-    result = _run(pr, repo, sync, async_client, verify=True)
+    result = _run(pr, repo, sync, async_client)
     assert set(result.stage_latency_ms) == {"context", "fan_out", "verifier"}
     assert all(v >= 0 for v in result.stage_latency_ms.values())
 
@@ -447,7 +447,7 @@ def test_context_survives_the_verifier(tmp_path):
         WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
     )
     result = _run(
-        _pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client, verify=True
+        _pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client
     )
     assert result.verified
     assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
@@ -479,7 +479,7 @@ def test_the_verifier_gets_the_absence_rule_on_this_path_only(tmp_path):
     async_client = _async(
         WARM, _submit("s", [finding]), _submit("", []), _submit("", [])
     )
-    result = _run(_pr_changing_helper(), repo, sync, async_client, verify=True)
+    result = _run(_pr_changing_helper(), repo, sync, async_client)
     assert result.verified
     suffix = sync.messages.calls[0]["messages"][0]["content"][1]["text"]
     assert ABSENCE_RULE in suffix
@@ -535,7 +535,6 @@ def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(
     )
     result = _run(
         pr, repo, _sync(), _async(WARM, _submit("a", []), _submit("b", []), _submit("c", [])),
-        verify=False,
     )
     assert events[0] == ("open", "workflow", "pr_review")
     assert events[-1] == ("close", "workflow", "pr_review")
@@ -543,20 +542,3 @@ def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(
     assert ("open", "task", "repo_context") in events
     assert result.latency_ms > 0
 
-
-def test_the_verifier_defaults_to_the_settings_flag(pr, repo, monkeypatch):
-    """RC1-387's flag is read here now that this is the only entry point."""
-    monkeypatch.setattr(
-        pipeline, "settings", Settings(_env_file=None, review_verify_findings=True)
-    )
-    one = [_finding("warning", "security", "real")]
-    sync = _sync([_use("verify_findings", verdicts=[])])
-    async_client = _async(WARM, _submit("", one), _submit("", []), _submit("", []))
-    result = _run(pr, repo, sync, async_client)
-    assert result.verified is True and len(sync.messages.calls) == 1
-
-    monkeypatch.setattr(pipeline, "settings", Settings(_env_file=None))
-    sync = _sync()
-    async_client = _async(WARM, _submit("", one), _submit("", []), _submit("", []))
-    result = _run(pr, repo, sync, async_client)
-    assert result.verified is False and sync.messages.calls == []

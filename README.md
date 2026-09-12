@@ -43,9 +43,10 @@ everything, which is the failure this agent's own prompt warns about:
 *"over-flagging trains people to ignore reviews."* Recall is **12–13 of 13 per
 run** — four consecutive baselines each missed at most one case, a different one
 each time — so a single run cannot show a one-case change. Latest pair
-(2026-09-06, [decision record](docs/rc1-387-verifier.md)): flag off 12/13,
-2 nits on the clean diff, 1/2 decoys held, $0.44; flag on 13/13, 1 nit, 2/2,
-$0.55. Two precision cases each plant a *decoy* — a pattern the rubric names
+(2026-09-12, [decision record](docs/rc1-428-verifier-policy.md)): verifier
+off 13/13, 1 nit on the clean diff, 1/2 decoys held, $0.58; verifier on
+13/13, nothing on the clean diff, 1/2, $0.69 — and since RC1-428 the
+verifier is a stage, not a flag. Two precision cases each plant a *decoy* — a pattern the rubric names
 as a defect, in a context where it is fine — and score the reviewer on leaving
 it alone.
 
@@ -245,7 +246,7 @@ app/
     reviewer.py        # model-facing primitives every stage shares: rendering, cache marker, parsing
     router.py          # which reviewers run, and whether there is a repository to grep (RC1-390)
     context.py         # conventions file + callers + tests by grep, into the prefix (RC1-393/394)
-    verifier.py        # optional second pass over the merged findings (RC1-387)
+    verifier.py        # second pass over the merged findings: drop, downgrade, fold (RC1-387/428)
     prompts.py         # review rubric, reviewer specs + structured-output schema (RC1-111/390)
     checks/
       n8n.py           # n8n execution-cost static check (RC1-112)
@@ -264,7 +265,6 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_MODEL` | Workhorse review model | `claude-sonnet-4-6` |
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
-| `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |

@@ -60,11 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
 
-    verify = "on" if settings.review_verify_findings else "off"
     checkout = f"checkout {args.repo_path}" if args.repo_path else "diff-only"
     context = "repo context on" if repo_context else "repo context OFF"
     print(
-        f"{len(cases)} case(s) against {settings.review_model}, verifier {verify}, "
+        f"{len(cases)} case(s) against {settings.review_model}, "
         f"{checkout}, {context} — this spends money.\n"
     )
     # RC1-322: billed spend is traced spend; a no-op without DD_API_KEY.
