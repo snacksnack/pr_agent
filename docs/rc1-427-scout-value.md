@@ -191,4 +191,39 @@ router's reviewer choice, the fan-out, the merge and the optional verifier
 metric. The read-and-grep methods on both tool backends stay for RC1-424 to
 shape into the one interface.
 
-REMOVAL_CHECK
+## The removal, checked
+
+The shared prefix lost its "Scout's brief" line and the reviewers' suffix
+its instruction to read one, so the request changed and the eval store
+records the removal under a new subject version
+(`+multi-sha256:25e6b663…`). Both checks the decision required:
+
+| | RC1-422 (C0, with the scout's skipped-brief line) | **After removal** |
+| --- | --- | --- |
+| Corpus run | `…T011615` | `…T022357` |
+| Recall | 13 / 13 | **13 / 13** |
+| Categorized correctly | 13 / 13 | 13 / 13 |
+| Precision | 1 / 2, no blocker | 1 / 2 (the same case), no blocker |
+| Clean diff | 0 findings | **0 findings** |
+| Cases passing | 15 / 16 | 15 / 16 |
+| Verifier | 16 dropped, 5 downgraded | 25 dropped, 5 downgraded |
+| Cost | $0.72 (4.5 ¢ / case) | $0.73 (4.6 ¢) |
+| Wall clock per case | 4–22 s, median 18 | 4–24 s, median 18 |
+
+| PR | RC1-422 (C0) | **After removal** | Within 25 %? |
+| --- | --- | --- | --- |
+| #35 | 5.8 ¢, 13 s, 0 | 6.5 ¢, 14 s, 3 nits | yes (+11 %) |
+| #33 | 12.4 ¢, 27 s, 3 nits | 12.2 ¢, 24 s, 1 warning / 3 nits | yes (−1 %) |
+| #39 | 21.3 ¢, 58 s, 5 / 6 | 17.6 ¢, 47 s, 7 / 6 | yes (−17 %) |
+
+The context was complete on every corpus case and every PR; nothing that
+reached the model changed except the two lines about a brief.
+
+**Handed to RC1-428.** The post-removal review of #39 carries three
+warnings from the tests reviewer that `router.py`, `scout.py` and the
+verifier's shared-prefix path have no tests. All three test files exist at
+that head; the reviewer read the tests list, which is capped at thirty
+rows and names the rest as not searched, as an absence. The verifier's
+absence rule (RC1-394) is written for exactly this and let them through in
+RC1-422's run and this one. Whether the verifier stays, and with what
+instruction, is RC1-428's decision, and this is a case for it.
