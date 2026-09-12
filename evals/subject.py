@@ -110,15 +110,11 @@ def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
 
         material = (verifier.VERIFIER_INSTRUCTIONS).encode()
         version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
-    # RC1-390: the scout's and reviewers' instructions are the pipeline's
-    # prompt. Since RC1-422 this is the only pipeline, so the segment is
-    # always present; the eval store's earlier rows without it are the
-    # retired single loop's.
-    material = (
-        prompts.SCOUT_INSTRUCTIONS
-        + prompts.SCOUT_CONTEXT_NOTE
-        + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
-    ).encode()
+    # RC1-390: the reviewers' instructions are the pipeline's prompt. Since
+    # RC1-422 this is the only pipeline, so the segment is always present;
+    # the eval store's earlier rows without it are the retired single
+    # loop's, and rows before RC1-427 hashed the scout's prompt in too.
+    material = "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS).encode()
     version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
     if checkout:
         version += "+checkout"
@@ -251,15 +247,18 @@ def _name(rank: int) -> str:
 
 
 def run(
-    case: Case, *, repo_path: str | Path | None = None, repo_context: bool = True
+    case: Case,
+    *,
+    repo_path: str | Path | None = None,
+    repo_context: bool = True,
 ) -> CaseResult:
     """Score one case.
 
     ``repo_path`` (RC1-393) gives every case a checkout to explore — the
-    corpus is diff-only, so without one the scout runs on the single case
-    that materialises files, and the cost of exploration is invisible.
-    ``repo_context`` is the deterministic context switch, off for the
-    control run.
+    corpus is diff-only, so without one the context is gathered on the
+    single case that materialises files, and the cost of exploration is
+    invisible. ``repo_context`` is the deterministic context switch, off
+    for the control run.
     """
     planted = corpus.BY_ID[case.input["case_id"]]
     pr = corpus.pull_request(planted)
@@ -326,13 +325,11 @@ def run(
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
             # RC1-387: the four token counts, so cache behaviour is visible.
             "tokens": _token_breakdown(result.usage) if result else {},
-            # RC1-387: how the loop ended, so a zero-finding miss can be read
-            # as "the model submitted nothing" versus "it ran out of turns"
-            # versus "it submitted findings the loop could not parse".
+            # RC1-387: how the model calls ended, so a zero-finding miss can be
+            # read as "the model submitted nothing" versus "it submitted
+            # findings that could not be parsed". The key predates RC1-427,
+            # when a tool loop still ran.
             "loop": {
-                "tool_turns": result.tool_turns,
-                "files_read": result.files_read,
-                "truncated": result.truncated,
                 "malformed_findings": result.malformed_findings,
                 "coerced_findings": result.coerced_findings,
             }
@@ -369,8 +366,6 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
     return {
         "ran": True,
         "reviewers": list(result.reviewers_run),
-        "scout_skipped": result.brief.startswith("(scout skipped"),
-        "brief_chars": len(result.brief),
         "stages": {
             stage: {
                 **_token_breakdown(usage),
@@ -386,13 +381,12 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
         "deduplicated": result.deduplicated_findings,
         "unusable_reviewer_calls": result.unusable_reviewer_calls,
         # RC1-393: whether the case had a repository to explore, and what
-        # Python put in the prefix before the scout ran.
+        # Python put in the prefix.
         "checkout": checkout,
         "context": {
             "conventions_file": result.conventions_file,
             "callers": result.callers_found,
-            # RC1-394: the tests rows, and whether the context was complete
-            # enough for the router to skip the scout.
+            # RC1-394: the tests rows, and whether the context was complete.
             "tests": result.tests_found,
             "complete": result.context_complete,
         },

@@ -53,12 +53,15 @@ it alone.
 split the original single loop into a scout, three reviewers scoped by the
 evidence each needs (the hunk; the repository; the PR's stated intent), a
 Python router and a Python merge. RC1-393/394 then had Python gather the
-conventions file, callers and tests into the reviewers' shared prefix, which
-skips the scout on any repository with a conventions file. Measured on real
-PRs of this repository the pipeline costs 5–20 ¢ a review against the single
-loop's 48 ¢–$1.10, with corpus recall held at 13/13, so RC1-422 retired the
-loop and the flag; [the decision record](docs/rc1-422-single-pipeline.md)
-has the go/no-go numbers and the earlier records
+conventions file, callers and tests into the reviewers' shared prefix.
+Measured on real PRs of this repository the pipeline costs 5–20 ¢ a review
+against the single loop's 48 ¢–$1.10, with corpus recall held at 13/13, so
+RC1-422 retired the loop and the flag, and RC1-427 measured the scout on
+top of that context (no defect found that the review otherwise missed,
+noise wherever it ran) and retired it too; the
+[RC1-422](docs/rc1-422-single-pipeline.md) and
+[RC1-427](docs/rc1-427-scout-value.md) records have the go/no-go numbers
+and the earlier records
 ([RC1-390](docs/rc1-390-multi-agent.md), [RC1-393](docs/rc1-393-cheap-exploration.md),
 [RC1-394](docs/rc1-394-tests-by-python.md)) the stage-by-stage history.
 
@@ -237,11 +240,10 @@ app/
   review.py            # local dry-run CLI: `python -m app.review` (RC1-113)
   agent/
     tools.py           # repo-exploration tools: read / list / grep (RC1-109)
-    pipeline.py        # the review: context -> [scout] -> reviewers -> merge -> verifier (RC1-390/422)
-    reviewer.py        # model-facing primitives every stage shares: rendering, cache markers, parsing
-    router.py          # which reviewers run, and the scout's turn cap (RC1-390/393/394)
+    pipeline.py        # the review: context -> reviewers -> merge -> verifier (RC1-390/422/427)
+    reviewer.py        # model-facing primitives every stage shares: rendering, cache marker, parsing
+    router.py          # which reviewers run, and whether there is a repository to grep (RC1-390)
     context.py         # conventions file + callers + tests by grep, into the prefix (RC1-393/394)
-    scout.py           # explore once with tools, write a brief (RC1-390)
     verifier.py        # optional second pass over the merged findings (RC1-387)
     prompts.py         # review rubric, reviewer specs + structured-output schema (RC1-111/390)
     checks/
@@ -261,10 +263,8 @@ All settings load from environment variables (and an optional `.env`). See
 | `REVIEW_MODEL` | Workhorse review model | `claude-sonnet-4-6` |
 | `REVIEW_BLOCK_ON` | Categories that block a merge (CSV; empty = advisory only) | `leaked_secret` |
 | `REVIEW_SKIP_AUTHORS` | PR authors acknowledged but never reviewed (CSV of logins; empty = review all) (RC1-359) | `dependabot[bot]` |
-| `MAX_FILES_READ` | File-read budget for the scout | `40` |
 | `REVIEW_VERIFY_FINDINGS` | Verifier pass: re-read each finding against the diff, drop or downgrade unsupported ones (RC1-387) | `false` |
 | `REVIEW_VERIFY_MODEL` | Model for the verifier pass; unset = `REVIEW_MODEL` | — |
-| `REVIEW_SCOUT_MAX_TURNS` | Turn cap for the scout when Python found no repository context; with a conventions file, callers and tests in the prefix the scout is skipped (RC1-390/394) | `8` |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub App auth for the live service (RC1-115) | — |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for verifying webhook deliveries (RC1-116) | — |
 | `GITHUB_MAX_ATTEMPTS` | GitHub API attempts per request before giving up (RC1-120) | `4` |

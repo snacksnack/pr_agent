@@ -34,8 +34,6 @@ def _result(findings=None, summary="looks good") -> ReviewResult:
         summary=summary,
         findings=list(findings or []),
         model="claude-sonnet-4-6",
-        tool_turns=2,
-        files_read=1,
     )
 
 

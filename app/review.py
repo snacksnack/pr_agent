@@ -160,15 +160,8 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
     nits = sum(1 for f in findings if f.severity == "nit")
     lines.append(f"Totals: {blockers} blocker(s), {warnings} warning(s), {nits} nit(s)")
 
-    meta = (
-        f"model={result.model or 'n/a'}  turns={result.tool_turns}  "
-        f"files_read={result.files_read}"
-    )
-    if result.truncated:
-        meta += "  (truncated: hit a turn/file budget)"
-    # RC1-390: turns/files above are the scout's; the reviewers ran once each.
-    meta += f"  reviewers={','.join(result.reviewers_run)}"
-    # RC1-393: what Python put in the prefix before the scout ran.
+    meta = f"model={result.model or 'n/a'}  reviewers={','.join(result.reviewers_run)}"
+    # RC1-393: what Python put in the prefix before the reviewers ran.
     meta += (
         f"  context(conventions={result.conventions_file or 'none'},"
         f" callers={result.callers_found})"

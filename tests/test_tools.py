@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.tools import TOOL_SCHEMAS, RepoTools, ToolError, is_secret_file
+from app.agent.tools import RepoTools, ToolError, is_secret_file
 
 
 @pytest.fixture()
@@ -161,63 +161,6 @@ def test_list_dir_hides_secret_but_shows_template(repo):
     assert "  .env (" not in out  # the real .env entry (name + size) is hidden
 
 
-def test_dispatch_read_secret_returns_error_string(repo):
-    out = repo.dispatch("read_file", {"path": ".env"})
-    assert out.startswith("Error:") and "secrets" in out.lower()
-
-
-# --- dispatch + schemas ---------------------------------------------------
-
-def test_dispatch_returns_error_string_not_raise(repo):
-    # Traversal via dispatch must be reported as a string, not raised.
-    out = repo.dispatch("read_file", {"path": "../secret.txt"})
-    assert out.startswith("Error:")
-
-
-def test_dispatch_missing_arg(repo):
-    assert repo.dispatch("grep", {}).startswith("Error:")
-
-
-def test_dispatch_unknown_tool(repo):
-    assert repo.dispatch("frobnicate", {}).startswith("Error:")
-
-
-def test_dispatch_happy_path(repo):
-    assert "src/" in repo.dispatch("list_dir", {"path": "."})
-
-
-def test_tool_schemas_shape():
-    names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"read_file", "list_dir", "grep"}
-    for tool in TOOL_SCHEMAS:
-        assert tool["description"]
-        schema = tool["input_schema"]
-        assert schema["type"] == "object"
-        assert "properties" in schema
-        assert "required" in schema
-
-
-# --- dispatch survives what the model actually sends (RC1-364 follow-up) --
-
-def test_dispatch_accepts_line_numbers_sent_as_strings(repo):
-    out = repo.dispatch("read_file", {"path": "src/app.py", "start_line": "1", "end_line": "2"})
-    assert "1  def hello():" in out and "Bye" not in out
-
-
-def test_dispatch_reports_a_bad_line_number_instead_of_raising(repo):
-    out = repo.dispatch("read_file", {"path": "src/app.py", "start_line": "twelve"})
-    assert out == "Error: start_line must be an integer, got 'twelve'"
-
-
-def test_dispatch_turns_any_unexpected_exception_into_a_tool_error(repo, monkeypatch):
-    def boom(*a, **k):
-        raise RuntimeError("disk on fire")
-
-    monkeypatch.setattr(repo, "grep", boom)
-    out = repo.dispatch("grep", {"pattern": "x"})
-    assert out.startswith("Error: grep failed (RuntimeError: disk on fire)")
-
-
 # --- lock files are noise, not context (RC1-365) --------------------------
 
 @pytest.fixture()
@@ -252,14 +195,9 @@ def test_grep_and_list_dir_skip_lock_files(repo_with_lock):
     assert "package-lock.json" not in listing and "uv.lock" not in listing
 
 
-def test_the_read_file_schema_tells_the_model_lock_files_are_off_limits():
-    read_tool = next(t for t in TOOL_SCHEMAS if t["name"] == "read_file")
-    assert "lock files" in read_tool["description"]
-
-
 def test_explorable_is_false_for_an_empty_root(tmp_path):
-    """RC1-390: the dry-run CLI hands the agent an empty directory when it
-    has no checkout; the router skips the scout on it."""
+    """RC1-390: the dry-run CLI hands the pipeline an empty directory when
+    it has no checkout; the router skips the repository context on it."""
     from app.agent.tools import RepoTools
 
     empty = tmp_path / "empty"

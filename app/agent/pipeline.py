@@ -1,27 +1,28 @@
 """The review pipeline: context, routed reviewers, merge, verifier (RC1-390, RC1-422).
 
 One production pipeline (RC1-422 retired the single loop that explored and
-judged in one conversation). The review's graph is explicit in plain Python:
+judged in one conversation; RC1-427 retired the scout that explored for the
+reviewers). The review's graph is explicit in plain Python:
 
-    plan (router) -> context (Python) -> [scout] -> [warm cache] -> reviewers (gather)
+    plan (router) -> context (Python) -> warm cache -> reviewers (gather)
         -> merge -> verifier
 
 * **Context** (:mod:`app.agent.context`, RC1-393, RC1-394) is the
   repository's own conventions file, a grep for callers of what the diff
   changed, and the tests touching the changed paths, put in the shared
-  prefix and the scout's seed by Python with no model turn. It is the part
-  of exploration that is a property of the repository, done once and
-  cheaply. When all three are answered the context is complete and the
-  router skips the scout (RC1-394): exploration is Python's alone, and the
-  review is one prefix write plus four cached reads.
+  prefix by Python with no model turn. It is the review's whole
+  exploration: a property of the repository, done once and cheaply. The
+  scout that used to explore on top of it was measured in RC1-427 (no
+  defect found that the review otherwise missed, noise added wherever it
+  ran) and retired, so the review is one prefix write plus four cached
+  reads.
 * **Router** (:mod:`app.agent.router`) decides from the file list which
-  reviewers run and on which dimensions. The model never routes.
-* **Scout** (:mod:`app.agent.scout`) explores once, with tools, and writes a
-  brief. Exploration is paid for once per review, not once per reviewer.
+  reviewers run and on which dimensions, and whether there is a repository
+  to gather context from. The model never routes.
 * **Reviewers** are three single calls, one per kind of evidence, fanned out
   with ``asyncio.gather`` so wall clock is the slowest of them rather than
   the sum. They have no tools. They share one prefix — system prompt, PR,
-  brief — under one cache breakpoint, so each reads it at cache-read price
+  context — under one cache breakpoint, so each reads it at cache-read price
   and only its own short suffix (its rubric slice and instructions) is new.
 * **Merge** is Python: a reviewer's finding outside its categories is
   discarded (another reviewer had that evidence), findings at the same file,
@@ -45,8 +46,8 @@ Two details of the cache are load-bearing and are measured, not assumed:
 :func:`review_pull_request` is the one entry point: the webhook, the dry-run
 CLI, the eval corpus and the measurement scripts all call it, and it opens
 the one ``pr_review`` workflow span the review's cost and latency land on
-(RC1-395). The model-facing primitives it shares with the scout and the
-verifier — PR rendering, cache markers, response parsing — live in
+(RC1-395). The model-facing primitives it shares with the verifier — PR
+rendering, cache markers, response parsing — live in
 :mod:`app.agent.reviewer`.
 """
 from __future__ import annotations
@@ -57,7 +58,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent import scout as scouting
 from app.agent.context import RepoContext, build_repo_context
 from app.agent.prompts import SUBMIT_TOOL, SYSTEM_PROMPT, ReviewerSpec, reviewer_instructions
 from app.agent.reviewer import (
@@ -69,7 +69,7 @@ from app.agent.reviewer import (
     parse_findings,
     render_pr,
 )
-from app.agent.router import ReviewPlan, plan_review, scout_turns
+from app.agent.router import ReviewPlan, plan_review
 from app.agent.tools import RepoTools
 from app.agent.verifier import VERIFY_TOOL, verify_findings
 from app.config import settings
@@ -109,12 +109,10 @@ class ReviewerOutput:
 def build_shared_prefix(
     pull_request: PullRequest,
     precomputed_findings: list[Finding] | None,
-    brief: str,
     context: str = "",
 ) -> str:
-    """The PR as the reviewers and the verifier all see it, the repository
-    context Python gathered (RC1-393; empty when there was none, and then
-    the prefix is the RC1-390 one), and the brief.
+    """The PR as the reviewers and the verifier all see it, then the
+    repository context Python gathered (RC1-393; empty when there was none).
 
     One string, one cache breakpoint. Everything that differs per call comes
     after it.
@@ -122,7 +120,6 @@ def build_shared_prefix(
     parts = [*render_pr(pull_request, precomputed_findings)]
     if context:
         parts += ["", context]
-    parts += ["", "Scout's brief:", brief]
     return "\n".join(parts)
 
 
@@ -302,10 +299,6 @@ def review_pull_request(
     client: Any | None = None,
     async_client: Any | None = None,
     model: str | None = None,
-    max_files_read: int | None = None,
-    scout_max_turns: int | None = None,
-    scout_context_turns: int | None = None,
-    scout_complete_turns: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
     verify: bool | None = None,
@@ -321,14 +314,15 @@ def review_pull_request(
     model's own. ``verify`` (RC1-387) runs the verifier over the merged
     findings; ``None`` defers to ``settings.review_verify_findings``.
     ``repo_context`` (RC1-393) is whether Python puts the conventions file,
-    callers and tests in the shared prefix; the eval turns it off to
-    measure it, nothing else does.
+    callers and tests in the shared prefix; the eval turns it off to measure
+    it, nothing else does.
 
-    ``client`` serves the scout and the verifier (sync); ``async_client``
-    serves the warm call and the reviewers. Either may be a fake exposing
-    ``messages.create``. Runs the fan-out on its own event loop, so call it
-    from synchronous code — the CLI, the eval subject, or the webhook's
-    background task, which Starlette runs in a worker thread.
+    ``client`` serves the verifier (sync) and is built only if that pass
+    runs; ``async_client`` serves the warm call and the reviewers. Either
+    may be a fake exposing ``messages.create``. Runs the fan-out on its own
+    event loop, so call it from synchronous code — the CLI, the eval
+    subject, or the webhook's background task, which Starlette runs in a
+    worker thread.
 
     The whole review runs inside one ``pr_review`` workflow span and is
     priced while that span is open (RC1-395), so the trace carries the
@@ -343,10 +337,6 @@ def review_pull_request(
             client=client,
             async_client=async_client,
             model=model,
-            max_files_read=max_files_read,
-            scout_max_turns=scout_max_turns,
-            scout_context_turns=scout_context_turns,
-            scout_complete_turns=scout_complete_turns,
             max_tokens=max_tokens,
             precomputed_findings=precomputed_findings,
             verify=verify,
@@ -365,10 +355,6 @@ def _review(
     client: Any | None,
     async_client: Any | None,
     model: str | None,
-    max_files_read: int | None,
-    scout_max_turns: int | None,
-    scout_context_turns: int | None,
-    scout_complete_turns: int | None,
     max_tokens: int,
     precomputed_findings: list[Finding] | None,
     verify: bool | None,
@@ -377,24 +363,6 @@ def _review(
 ) -> ReviewResult:
     model = model or settings.review_model
     verify = settings.review_verify_findings if verify is None else verify
-    max_files_read = max_files_read if max_files_read is not None else settings.max_files_read
-    scout_max_turns = (
-        scout_max_turns if scout_max_turns is not None else settings.review_scout_max_turns
-    )
-    scout_context_turns = (
-        scout_context_turns
-        if scout_context_turns is not None
-        else settings.review_scout_context_turns
-    )
-    scout_complete_turns = (
-        scout_complete_turns
-        if scout_complete_turns is not None
-        else settings.review_scout_complete_turns
-    )
-    if client is None:
-        from anthropic import Anthropic  # imported lazily so tests don't need the SDK
-
-        client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
     owns_async_client = async_client is None
     if async_client is None:
         from anthropic import AsyncAnthropic
@@ -403,65 +371,33 @@ def _review(
 
     plan = plan or plan_review(pull_request, explorable=getattr(repo_tools, "explorable", True))
     logger.info(
-        "plan scout=%s reviewers=%s reasons=%s", plan.scout, ",".join(plan.names), plan.reasons
+        "plan context=%s reviewers=%s reasons=%s",
+        plan.context,
+        ",".join(plan.names),
+        plan.reasons,
     )
 
     latency: dict[str, float] = {}
-    # RC1-393: the deterministic context is gathered wherever the scout
-    # would explore — same gate, so a docs-only change or an empty
-    # checkout pays for neither.
+    # RC1-393: the deterministic context is the review's exploration; a
+    # docs-only change or an empty checkout pays for none of it.
     started = time.perf_counter()
     context = RepoContext()
-    if plan.scout and repo_context:
+    if plan.context and repo_context:
         with stage_span("task", "repo_context"):
             context = build_repo_context(pull_request, repo_tools)
     context_text = context.render()
-    turns = scout_turns(
-        context,
-        full=scout_max_turns,
-        with_context=scout_context_turns,
-        when_complete=scout_complete_turns,
-    )
     latency["context"] = _ms_since(started)
     logger.info(
-        "context conventions=%s callers=%d unsearched=%d tests=%d untested=%d "
-        "complete=%s scout_turns=%d",
+        "context conventions=%s callers=%d unsearched=%d tests=%d untested=%d complete=%s",
         context.conventions_path,
         len(context.callers),
         len(context.symbols_unsearched),
         len(context.tests),
         len(context.untested),
         context.complete,
-        turns,
     )
 
-    started = time.perf_counter()
-    if plan.scout and turns == 0:
-        brief = scouting.skipped_brief(
-            "the conventions file, the callers of what changed and the tests "
-            "touching the changed paths are above, gathered without a model "
-            "turn; nothing left to explore"
-        )
-    elif plan.scout:
-        with stage_span("agent", "scout"):
-            brief = scouting.explore(
-                pull_request,
-                repo_tools,
-                client=client,
-                model=model,
-                max_tool_turns=turns,
-                max_files_read=max_files_read,
-                max_tokens=max_tokens,
-                precomputed_findings=precomputed_findings,
-                context=context_text,
-            )
-    else:
-        reason = plan.reasons[0] if plan.reasons else "nothing to explore"
-        brief = scouting.skipped_brief(reason)
-
-    latency["scout"] = _ms_since(started)
-
-    prefix = build_shared_prefix(pull_request, precomputed_findings, brief.text, context_text)
+    prefix = build_shared_prefix(pull_request, precomputed_findings, context_text)
     started = time.perf_counter()
     warm, outputs = asyncio.run(
         _fan_out_then_close(
@@ -471,7 +407,7 @@ def _review(
     latency["fan_out"] = _ms_since(started)
     findings, off_scope, deduplicated = merge_findings(outputs)
 
-    stage_usage = {"scout": brief.usage, "warm_cache": warm}
+    stage_usage: dict[str, TokenUsage] = {"warm_cache": warm}
     for out in outputs:
         stage_usage[f"reviewer:{out.spec.name}"] = out.usage
     total = TokenUsage()
@@ -482,9 +418,6 @@ def _review(
         summary=compose_summary(outputs),
         findings=findings,
         model=model,
-        tool_turns=brief.tool_turns,
-        files_read=brief.files_read,
-        truncated=brief.truncated,
         malformed_findings=sum(o.malformed for o in outputs),
         coerced_findings=sum(o.coerced for o in outputs),
         input_tokens=total.input_tokens,
@@ -493,7 +426,6 @@ def _review(
         cache_read_input_tokens=total.cache_read_input_tokens,
         mode="multi",
         reviewers_run=plan.names,
-        brief=brief.text,
         stage_usage=stage_usage,
         stage_latency_ms=latency,
         off_scope_findings=off_scope,
@@ -503,7 +435,6 @@ def _review(
         callers_found=len(context.callers),
         tests_found=len(context.tests),
         context_complete=context.complete,
-        scout_ran=not brief.skipped,
     )
     logger.info(
         "review_done reviewers=%s findings=%d off_scope=%d deduplicated=%d unusable=%d "
@@ -519,7 +450,7 @@ def _review(
     annotate_span(
         metadata={
             "reviewers": plan.names,
-            "scout": plan.scout,
+            "context": plan.context,
             "reasons": list(plan.reasons),
             "conventions_file": context.conventions_path,
             "context_complete": context.complete,
@@ -529,11 +460,14 @@ def _review(
             "off_scope": off_scope,
             "callers_found": len(context.callers),
             "tests_found": len(context.tests),
-            "scout_turn_cap": turns,
         },
     )
 
     if verify and result.findings:
+        if client is None:
+            from anthropic import Anthropic  # imported lazily so tests don't need the SDK
+
+            client = Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
         started = time.perf_counter()
         with stage_span("agent", "verifier"):
             result = verify_findings(

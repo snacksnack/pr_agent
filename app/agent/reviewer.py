@@ -2,17 +2,17 @@
 
 The review itself is :mod:`app.agent.pipeline`. What lives here is the part
 of talking to the model that every stage shares: the PR rendered the way the
-model reads it (:func:`render_pr`, one rendering for the scout, the
-reviewers and the verifier), the cache-marked request the scout's loop sends
-(:func:`_create`), the response shape normalized to plain blocks, the token
-counts read off a response, and the ``submit_review`` payload read into
-findings (:func:`parse_findings`).
+model reads it (:func:`render_pr`, one rendering for the reviewers and the
+verifier), the cache marker and system block every request carries, the
+token counts read off a response, and the ``submit_review`` payload read
+into findings (:func:`parse_findings`).
 
 RC1-110 built this as the single agentic loop — explore and judge in one
-conversation. RC1-390 split that into the scout and the routed reviewers,
-and RC1-422 retired the loop once the multi-agent path had been measured
-cheaper on live PRs, so only the primitives remain. The model client is
-injectable everywhere: any object exposing ``messages.create(...)``.
+conversation. RC1-390 split that into a scout and the routed reviewers,
+RC1-422 retired the loop, and RC1-427 retired the scout and with it the
+tool-loop mechanics that lived here, so only the primitives remain. The
+model client is injectable everywhere: any object exposing
+``messages.create(...)``.
 """
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from app.agent.prompts import SYSTEM_PROMPT, format_precomputed_findings
 from app.agent.tools import is_lockfile
 from app.models import SEVERITY_ORDER, Finding, PullRequest, TokenUsage
 
-# Max characters of inline diff to put in the seed prompt; the scout can read
-# full files via tools if it needs more than this.
+# Max characters of inline diff to put in the prefix. The context block
+# (conventions, callers, tests) carries what the reviewers need beyond it.
 MAX_DIFF_CHARS = 50_000
 DEFAULT_MAX_TOKENS = 4096
 # Per-request ceiling for the SDK clients the pipeline builds itself (RC1-387).
@@ -32,22 +32,15 @@ DEFAULT_MAX_TOKENS = 4096
 # long is not going to. Retries still apply on top of it.
 REQUEST_TIMEOUT_S = 180
 
-# Prompt caching (RC1-350). The scout's loop re-sends the whole conversation on
-# every turn, so two 5-minute-TTL breakpoints let turns 2+ read the prefix at
-# ~0.1x input price: one on the constant tools+system prefix (shared across
-# reviews too), one riding the latest turn. The moving marker is applied to a
-# copy at send time — the history itself never accumulates markers, keeping
-# each request at two of the API's four-breakpoint cap. The pipeline's fan-out
-# puts the same marker on its one shared prefix.
+# Prompt caching (RC1-350). Two 5-minute-TTL breakpoints per request: one on
+# the constant system block (shared across reviews), one on the review's
+# shared prefix, so the warm call writes it and every reviewer and the
+# verifier read it at ~0.1x input price.
 CACHE_CONTROL = {"type": "ephemeral"}
 
 SYSTEM_BLOCKS = [
     {"type": "text", "text": SYSTEM_PROMPT, "cache_control": CACHE_CONTROL}
 ]
-
-
-class ReviewError(RuntimeError):
-    """Raised when a stage cannot produce its structured output."""
 
 
 def _get(block: Any, key: str, default: Any = None) -> Any:
@@ -57,32 +50,13 @@ def _get(block: Any, key: str, default: Any = None) -> Any:
     return getattr(block, key, default)
 
 
-def _normalize_blocks(content: Any) -> list[dict]:
-    """Normalize model response content into plain dict blocks we can replay."""
-    blocks: list[dict] = []
-    for block in content or []:
-        btype = _get(block, "type")
-        if btype == "text":
-            blocks.append({"type": "text", "text": _get(block, "text", "")})
-        elif btype == "tool_use":
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": _get(block, "id"),
-                    "name": _get(block, "name"),
-                    "input": _get(block, "input") or {},
-                }
-            )
-    return blocks
-
-
 def render_pr(
     pr: PullRequest, precomputed_findings: list[Finding] | None = None
 ) -> list[str]:
     """The PR as the model sees it — metadata, description, bounded diff —
-    without any stage's instructions. One rendering for the scout's seed,
-    the reviewers' shared prefix and the verifier (RC1-387), so every pass
-    reads the same change the same way.
+    without any stage's instructions. One rendering for the reviewers'
+    shared prefix and the verifier (RC1-387), so every pass reads the same
+    change the same way.
 
     When ``precomputed_findings`` are supplied (from deterministic static
     checks that ran first), they are listed as already-recorded so the model
@@ -129,52 +103,6 @@ def render_pr(
     if precomputed:
         parts.append(precomputed)
     return parts
-
-
-def _user_text(text: str) -> dict:
-    """A user message in block form, so the prefix serializes identically
-    whether or not a cache marker rides the block on a given request."""
-    return {"role": "user", "content": [{"type": "text", "text": text}]}
-
-
-def _with_cache_marker(messages: list) -> list:
-    """Return ``messages`` with a cache breakpoint on the final content block.
-
-    Copies, never mutates: the scout's history stays unmarked so the
-    breakpoint moves forward each turn while earlier positions remain valid
-    read points.
-    """
-    if not messages or not isinstance(messages[-1].get("content"), list):
-        return messages
-    last = dict(messages[-1])
-    blocks = list(last["content"])
-    blocks[-1] = {**blocks[-1], "cache_control": CACHE_CONTROL}
-    last["content"] = blocks
-    return [*messages[:-1], last]
-
-
-def _create(
-    client: Any,
-    *,
-    model: str,
-    messages: list,
-    max_tokens: int,
-    tools: list[dict],
-    tool_choice: dict | None = None,
-    system: list[dict] | None = None,
-):
-    """One model call with the tool-loop cache markers applied: the
-    constant system block and the moving marker on the latest turn."""
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "system": SYSTEM_BLOCKS if system is None else system,
-        "messages": _with_cache_marker(messages),
-        "tools": tools,
-        "max_tokens": max_tokens,
-    }
-    if tool_choice is not None:
-        kwargs["tool_choice"] = tool_choice
-    return client.messages.create(**kwargs)
 
 
 def _tokens(response: Any) -> TokenUsage:

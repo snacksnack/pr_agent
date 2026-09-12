@@ -383,9 +383,7 @@ def test_multi_observations_carry_stages_and_the_cache_premise():
         model="claude-sonnet-4-6",
         mode="multi",
         reviewers_run=["diff_local", "change_intent"],
-        brief="(scout skipped: documentation-only change)",
         stage_usage={
-            "scout": TokenUsage(),
             "warm_cache": TokenUsage(0, 1, 900, 0),
             "reviewer:diff_local": TokenUsage(3, 40, 0, 900),
             "reviewer:change_intent": TokenUsage(3, 40, 0, 0),
@@ -396,7 +394,7 @@ def test_multi_observations_carry_stages_and_the_cache_premise():
     )
     obs = subject._multi_observations(result)
     assert obs["ran"] is True and obs["reviewers"] == ["diff_local", "change_intent"]
-    assert obs["scout_skipped"] is True
+    assert "scout_skipped" not in obs and "brief_chars" not in obs
     assert obs["min_reviewer_cache_read"] == 0, "one reviewer wrote the prefix: the premise failed"
     assert obs["stages"]["reviewer:diff_local"]["cache_read"] == 900
     assert obs["stages"]["warm_cache"]["cost_usd"] != "0"
@@ -414,6 +412,7 @@ def test_prompt_version_names_a_checkout_and_the_context_control(monkeypatch):
     assert subject.prompt_version(checkout=True, repo_context=False) == (
         plain + "+checkout+no-context"
     )
+
     assert subject.version(checkout=True).prompt_version.endswith("+checkout")
 
 

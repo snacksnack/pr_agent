@@ -122,26 +122,25 @@ def test_annotate_puts_cost_stages_and_latency_on_the_span(monkeypatch):
     assert metrics["stage_cost_usd_verifier"] == float(cost.stages["verifier"])
     assert all(isinstance(v, float) for v in metrics.values()), "LLMObs rejects Decimal"
     meta = annotation["metadata"]
-    assert meta["mode"] == "multi" and meta["scout"] == "skipped" and meta["verified"] is True
+    assert meta["mode"] == "multi" and meta["verified"] is True and "scout" not in meta
 
 
-def test_annotate_multi_carries_the_scout_and_its_turns(monkeypatch):
+def test_annotate_carries_the_context_and_one_metric_per_stage(monkeypatch):
     fake = RecordingLLMObs()
     monkeypatch.setattr(observability, "LLMObs", fake)
     result = _result(
-        mode="multi", scout_ran=True, tool_turns=3, conventions_file="CLAUDE.md",
+        mode="multi", conventions_file="CLAUDE.md", context_complete=True,
         stage_usage={
-            "scout": TokenUsage(output_tokens=50),
+            "warm_cache": TokenUsage(output_tokens=1, cache_creation_input_tokens=900),
             "reviewer:diff_local": TokenUsage(output_tokens=50),
         },
     )
     observability.annotate_review_cost(result)
     [annotation] = fake.annotations
-    assert annotation["metadata"]["scout"] == "ran"
-    assert annotation["metadata"]["scout_turns"] == 3
     assert annotation["metadata"]["conventions_file"] == "CLAUDE.md"
+    assert annotation["metadata"]["context_complete"] is True
     # LLM Obs drops a span whose metric key has a dot; stage names carry colons.
-    assert "stage_cost_usd_scout" in annotation["metrics"]
+    assert "stage_cost_usd_warm_cache" in annotation["metrics"]
     assert "stage_cost_usd_reviewer_diff_local" in annotation["metrics"]
     assert all(re.fullmatch(r"\w+", k) for k in annotation["metrics"])
 
@@ -186,7 +185,7 @@ def test_annotate_is_a_no_op_when_tracing_is_off(monkeypatch):
 
 
 def test_metric_points_are_one_per_review_with_the_tag_set():
-    result = _result(mode="multi", scout_ran=False, verified=True)
+    result = _result(mode="multi", verified=True)
     points = observability.review_metric_points(result, repo="o/r", at=1700000000)
     assert [p["metric"] for p in points] == [
         "pr_agent.review.cost_usd", "pr_agent.review.latency_s"
@@ -198,7 +197,6 @@ def test_metric_points_are_one_per_review_with_the_tag_set():
         "ml_app:pr-review-agent",
         "repo:o/r",
         "mode:multi",
-        "scout:skipped",
         "verified:true",
         "model:claude-sonnet-4-6",
     ]
