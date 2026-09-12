@@ -48,7 +48,7 @@
         <mxCell id="cli-lane" value="LOCAL DRY-RUN PATH" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#ECFDF5;swimlaneFillColor=#FBFFFD;strokeColor=#34D399;fontColor=#065F46;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
           <mxGeometry x="25" y="420" width="285" height="220" as="geometry"/>
         </mxCell>
-        <mxCell id="cli" value="&lt;b&gt;CLI&lt;/b&gt; · PR spec + options&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;PAT · optional local checkout&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#10B981;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="cli-lane">
+        <mxCell id="cli" value="&lt;b&gt;CLI&lt;/b&gt; · PR spec + options&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;gh token or PAT · optional local checkout&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#10B981;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="cli-lane">
           <mxGeometry x="25" y="52" width="235" height="62" as="geometry"/>
         </mxCell>
         <mxCell id="dryout" value="Formatted stdout&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;CI exit code 0 / 1 / 2&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontColor=#065F46;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="cli-lane">
@@ -105,8 +105,8 @@
         <mxCell id="verifier" value="&lt;b&gt;Verifier&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;drop/downgrade unsupported findings&lt;br&gt;fold one defect under two categories&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
           <mxGeometry x="28" y="622" width="467" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="result" value="&lt;b&gt;ReviewResult&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary · model findings (verified) + check findings, once · token usage · stage latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontColor=#312E81;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
-          <mxGeometry x="105" y="712" width="310" height="62" as="geometry"/>
+        <mxCell id="result" value="&lt;b&gt;ReviewOutcome&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;ReviewResult: summary · findings (verified model + checks, once)&lt;br&gt;RunMetrics: tokens · stages · latency · verifier · checks&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontColor=#312E81;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+          <mxGeometry x="80" y="700" width="360" height="90" as="geometry"/>
         </mxCell>
 
         <mxCell id="delivery" value="VERDICT + DELIVERY" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#DCFCE7;swimlaneFillColor=#FBFFFC;strokeColor=#22C55E;fontColor=#166534;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
@@ -128,21 +128,21 @@
         <mxCell id="obs" value="&lt;b&gt;Observability + pricing&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;pr_review workflow span&lt;br&gt;stage spans · token-based USD cost&lt;br&gt;per-review metrics&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ops">
           <mxGeometry x="23" y="48" width="229" height="96" as="geometry"/>
         </mxCell>
-        <mxCell id="config" value="Typed settings&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;env / .env · all flags and budgets&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ops">
+        <mxCell id="config" value="Typed settings&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;env / .env · budgets · retries · job store path&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ops">
           <mxGeometry x="23" y="165" width="229" height="52" as="geometry"/>
         </mxCell>
 
         <mxCell id="legend-solid" value="solid = runtime data/control" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontFamily=Helvetica;fontSize=11;fontColor=#64748B;" vertex="1" parent="fly-boundary">
           <mxGeometry x="30" y="822" width="190" height="20" as="geometry"/>
         </mxCell>
-        <mxCell id="legend-dash" value="dashed = optional / feature-flagged" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontFamily=Helvetica;fontSize=11;fontColor=#64748B;" vertex="1" parent="fly-boundary">
+        <mxCell id="legend-dash" value="dashed = reads through the repository contract" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontFamily=Helvetica;fontSize=11;fontColor=#64748B;" vertex="1" parent="fly-boundary">
           <mxGeometry x="230" y="822" width="220" height="20" as="geometry"/>
         </mxCell>
 
         <mxCell id="e-github-webhook" value="pull_request event" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0EA5E9;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=11;fontColor=#0369A1;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="github" target="webhook"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-dev-cli" value="run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=11;fontColor=#047857;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="developer" target="cli"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-webhook-ack" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#06B6D4;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="webhook" target="ack"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-webhook-dedup" value="async" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=10;fontColor=#0369A1;" edge="1" parent="fly-boundary" source="webhook" target="dedup"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-webhook-dedup" value="nudge" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=10;fontColor=#0369A1;" edge="1" parent="fly-boundary" source="webhook" target="dedup"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-dedup-auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="dedup" target="appauth"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-auth-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="appauth" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-cli-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="cli" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
@@ -164,7 +164,11 @@
         <mxCell id="e-result-cli" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="dryout"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-result-obs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;dashed=1;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="obs"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-obs-datadog" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="obs" target="datadog"><mxGeometry relative="1" as="geometry"/></mxCell>
-      </root>
+      <mxCell id="wake" value="&lt;b&gt;Wake cron&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;GitHub Actions · GET /healthz every 15 min&lt;br&gt;starts a stopped machine, the worker drains&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0C4A6E;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="50" y="376" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-wake-worker" value="wakes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;fontColor=#0C4A6E;fontSize=11;" edge="1" parent="1" source="wake" target="dedup"><mxGeometry relative="1" as="geometry"/></mxCell>
+        </root>
     </mxGraphModel>
   </diagram>
 </mxfile>
