@@ -1,7 +1,7 @@
 """Price a review of a real PR at its own head (RC1-393/394/396).
 
-    python scripts/measure_pr.py 35 33 39 --verify
-    python scripts/measure_pr.py 8 --verify \
+    python scripts/measure_pr.py 35 33 39
+    python scripts/measure_pr.py 8 \
         --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
 
 For each PR: a git worktree at the PR's head SHA (the review must see the
@@ -58,7 +58,6 @@ def _origin(cwd: Path) -> tuple[str, str]:
 def measure(
     number: int,
     *,
-    verify: bool,
     repo_dir: Path = Path("."),
     overlay: tuple[str, ...] = (),
     repo_context: bool = True,
@@ -83,9 +82,7 @@ def measure(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
-            result = review_pull_request(
-                pr, RepoTools(worktree), verify=verify, repo_context=repo_context
-            )
+            result = review_pull_request(pr, RepoTools(worktree), repo_context=repo_context)
             wall_s = time.perf_counter() - started
         finally:
             subprocess.run(
@@ -129,7 +126,6 @@ def measure(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("numbers", nargs="+", type=int)
-    parser.add_argument("--verify", action="store_true")
     parser.add_argument(
         "--no-repo-context", action="store_true", help="RC1-393 control: no context in the prefix"
     )
@@ -151,7 +147,6 @@ def main(argv: list[str] | None = None) -> int:
     for number in args.numbers:
         row = measure(
             number,
-            verify=args.verify,
             repo_dir=args.repo_dir,
             overlay=tuple(args.overlay),
             repo_context=not args.no_repo_context,

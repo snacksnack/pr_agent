@@ -28,7 +28,10 @@ reviewers). The review's graph is explicit in plain Python:
   discarded (another reviewer had that evidence), findings at the same file,
   line and category are folded into one, and the summary is assembled from
   the reviewers' one-sentence summaries, most serious first.
-* **Verifier** (RC1-387) then runs as before, reading the same shared prefix.
+* **Verifier** (RC1-387) then re-reads the merged findings against the same
+  shared prefix and may drop or downgrade them. It is a stage, not a switch
+  (RC1-428): it runs on every review that has findings and makes no call on
+  one that has none.
 
 Two details of the cache are load-bearing and are measured, not assumed:
 
@@ -301,7 +304,6 @@ def review_pull_request(
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     precomputed_findings: list[Finding] | None = None,
-    verify: bool | None = None,
     plan: ReviewPlan | None = None,
     repo_context: bool = True,
 ) -> ReviewResult:
@@ -311,14 +313,12 @@ def review_pull_request(
     that ran first; they are shown to the model as already-recorded (so it
     doesn't duplicate them) but are NOT merged here — the caller owns
     merging them into the final result, keeping this function's output the
-    model's own. ``verify`` (RC1-387) runs the verifier over the merged
-    findings; ``None`` defers to ``settings.review_verify_findings``.
-    ``repo_context`` (RC1-393) is whether Python puts the conventions file,
+    model's own. ``repo_context`` (RC1-393) is whether Python puts the conventions file,
     callers and tests in the shared prefix; the eval turns it off to measure
     it, nothing else does.
 
-    ``client`` serves the verifier (sync) and is built only if that pass
-    runs; ``async_client`` serves the warm call and the reviewers. Either
+    ``client`` serves the verifier (sync) and is built only when there is
+    something to verify; ``async_client`` serves the warm call and the reviewers. Either
     may be a fake exposing ``messages.create``. Runs the fan-out on its own
     event loop, so call it from synchronous code — the CLI, the eval
     subject, or the webhook's background task, which Starlette runs in a
@@ -339,7 +339,6 @@ def review_pull_request(
             model=model,
             max_tokens=max_tokens,
             precomputed_findings=precomputed_findings,
-            verify=verify,
             plan=plan,
             repo_context=repo_context,
         )
@@ -357,12 +356,10 @@ def _review(
     model: str | None,
     max_tokens: int,
     precomputed_findings: list[Finding] | None,
-    verify: bool | None,
     plan: ReviewPlan | None,
     repo_context: bool,
 ) -> ReviewResult:
     model = model or settings.review_model
-    verify = settings.review_verify_findings if verify is None else verify
     owns_async_client = async_client is None
     if async_client is None:
         from anthropic import AsyncAnthropic
@@ -463,7 +460,7 @@ def _review(
         },
     )
 
-    if verify and result.findings:
+    if result.findings:
         if client is None:
             from anthropic import Anthropic  # imported lazily so tests don't need the SDK
 
@@ -471,13 +468,11 @@ def _review(
         started = time.perf_counter()
         with stage_span("agent", "verifier"):
             result = verify_findings(
-                pull_request,
                 result,
                 client=client,
-                shared_prefix=prefix,
+                prefix=prefix,
                 tools=REVIEW_TOOLS,
                 tool_choice=TOOL_CHOICE_ANY,
-                absence_rule=True,
             )
         latency["verifier"] = _ms_since(started)
     logger.info(

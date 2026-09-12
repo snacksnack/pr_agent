@@ -149,7 +149,8 @@ class ReviewResult:
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     # RC1-387: what the verifier pass did. ``verified`` is False when the pass
-    # did not run (flag off, or nothing to verify); the rest are then empty.
+    # made no call (nothing to verify; RC1-428 made it a stage, not a
+    # switch); the rest are then empty.
     verified: bool = False
     verifier_dropped: list[Finding] = field(default_factory=list)
     verifier_downgraded: int = 0
@@ -187,10 +188,11 @@ class ReviewResult:
     context_complete: bool = False
     # RC1-395: the two facts pricing and the per-review metric need that the
     # fields above do not carry. ``verifier_model`` is the model the verifier
-    # pass actually ran on (``review_verify_model`` may differ from the
-    # review model, and its tokens are priced at its own rate); empty when
-    # the pass did not run. ``latency_ms`` is the wall clock of the whole
-    # review, set by ``review_pull_request``.
+    # pass actually ran on (the review model since RC1-428 retired the
+    # override; eval-store rows from before may differ, and its tokens are
+    # priced at its own rate); empty when the pass made no call.
+    # ``latency_ms`` is the wall clock of the whole review, set by
+    # ``review_pull_request``.
     verifier_model: str = ""
     latency_ms: float = 0.0
 

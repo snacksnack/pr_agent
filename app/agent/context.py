@@ -130,6 +130,11 @@ class RepoContext:
     test_roots: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
     untested: list[str] = field(default_factory=list)
+    # RC1-428: changed files that have tests, none of which fit under the
+    # row cap. Told apart from ``untested`` because the reviewers read the
+    # list literally: RC1-427's reference PR #39 drew three false "no tests"
+    # warnings from files whose rows the cap had refused.
+    tests_unlisted: list[str] = field(default_factory=list)
     tests_truncated: bool = False
     tests_searched: bool = False
     tests_stopped: bool = False
@@ -199,6 +204,11 @@ class RepoContext:
             lines.append(f"(no test references: {', '.join(self.untested)})")
         if self.tests_truncated:
             lines.append(f"... [tests list capped at {MAX_TEST_ROWS} rows]")
+        if self.tests_unlisted:
+            lines.append(
+                "(tests exist but did not fit under the cap for: "
+                f"{', '.join(self.tests_unlisted)})"
+            )
         if self.source_files_unsearched:
             lines.append(f"(not searched: {', '.join(self.source_files_unsearched)})")
         if self.tests_stopped:
@@ -445,14 +455,16 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
         if ctx.tests_stopped:
             ctx.source_files_unsearched.append(source)
             continue
-        found = 0
+        found = listed = 0
         for path in named_test_files(source, paths):
             row = f"{path}: (test file named for {source})"
-            if _add_test_row(ctx, row):
-                found += 1
+            found += 1
+            listed += _add_test_row(ctx, row)
         stem = module_stem(source)
         if any_tests and len(stem) >= 3:
-            found += _grep_tests(tools, ctx, stem, source)
+            hits, rows = _grep_tests(tools, ctx, stem, source)
+            found += hits
+            listed += rows
         if ctx.tests_stopped:
             # Cut off part-way through this file: what was found stays,
             # but the file was not searched, and is listed as such.
@@ -461,16 +473,22 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
         searched.append(source)
         if not found:
             ctx.untested.append(source)
+        elif not listed:
+            # RC1-428: tests exist, the cap refused every row. Not "untested",
+            # and the reviewers are told so, since they cannot see the rows.
+            ctx.tests_unlisted.append(source)
     if ctx.tests_stopped:
         ctx.source_files = searched
     ctx.tests_searched = not ctx.tests_stopped
     return ctx
 
 
-def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> int:
+def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> tuple[int, int]:
     """Grep each test root for ``stem`` as a whole word; rows into ``ctx``
-    up to the per-file cap. Returns how many rows were added."""
-    added = 0
+    up to the per-file cap. Returns ``(hits, rows listed)``: a hit the row
+    cap refused is still a test that exists (RC1-428), so the search keeps
+    counting after the list is full and stops at the per-file cap."""
+    hits = listed = 0
     for root in ctx.test_roots or ["."]:
         try:
             out = tools.grep(
@@ -479,22 +497,23 @@ def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> int:
         except ToolError as exc:
             logger.info("tests_search_stopped file=%s reason=%s", source, exc)
             ctx.tests_stopped = True
-            return added
+            return hits, listed
         for row in out.splitlines():
             if not _is_hit(row) or not is_test_path(row.split(":", 1)[0]):
                 continue
             if row.split(":", 1)[0].rsplit("/", 1)[-1] == source.rsplit("/", 1)[-1]:
                 continue  # the source is itself under a test root
-            if _add_test_row(ctx, row):
-                added += 1
-            if added >= MAX_TESTS_PER_FILE or ctx.tests_truncated:
-                return added
-    return added
+            hits += 1
+            listed += _add_test_row(ctx, row)
+            if hits >= MAX_TESTS_PER_FILE:
+                return hits, listed
+    return hits, listed
 
 
 def _add_test_row(ctx: RepoContext, row: str) -> bool:
+    """Put ``row`` in the list if it fits; whether it is listed."""
     if row in ctx.tests:
-        return True  # already there (the callers grep put it there): still a find
+        return True  # already there (the callers grep put it there)
     if len(ctx.tests) >= MAX_TEST_ROWS:
         ctx.tests_truncated = True
         return False

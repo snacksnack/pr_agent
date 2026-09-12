@@ -4,11 +4,9 @@ from __future__ import annotations
 import copy
 from types import SimpleNamespace
 
-import pytest
-
 from app.agent import verifier
 from app.config import Settings
-from app.models import Finding, PRRef, PullRequest, ReviewResult
+from app.models import Finding, ReviewResult
 
 
 class FakeMessages:
@@ -54,17 +52,26 @@ def _finding(severity="warning", category="security", message="thing", file="a.p
     return Finding(severity=severity, category=category, message=message, file=file, line=line)
 
 
-@pytest.fixture()
-def pr():
-    return PullRequest(
-        ref=PRRef("o", "r", 7), title="Add hello", body="adds a greeting",
-        base_sha="b" * 12, head_sha="h" * 12, changed_files_count=1,
-    )
-
-
 def _result(*findings):
     return ReviewResult(
         summary="s", findings=list(findings), model="m", input_tokens=100, output_tokens=10
+    )
+
+
+SHARED_TOOLS = [{"name": "submit_review"}, verifier.VERIFY_TOOL]
+TOOL_CHOICE_ANY = {"type": "any"}
+
+
+def _verify(result, client, **kwargs):
+    """The call as the pipeline makes it: the reviewers' prefix, tools and
+    tool choice (RC1-390); the one shape there is since RC1-428."""
+    return verifier.verify_findings(
+        result,
+        client=client,
+        prefix=kwargs.pop("prefix", "THE PREFIX"),
+        tools=SHARED_TOOLS,
+        tool_choice=TOOL_CHOICE_ANY,
+        **kwargs,
     )
 
 
@@ -131,13 +138,13 @@ def test_a_downgrade_does_not_mutate_the_original_finding():
 
 # --- the call ---------------------------------------------------------------
 
-def test_verify_findings_returns_a_new_result_with_the_pass_metered(pr):
+def test_verify_findings_returns_a_new_result_with_the_pass_metered():
     client = FakeClient(
         [_verdicts({"index": 1, "decision": "drop", "reason": "fixture"})], usages=[(500, 50)]
     )
     before = _result(_finding(message="real"), _finding(message="decoy"))
 
-    after = verifier.verify_findings(pr, before, client=client, model="verify-model")
+    after = _verify(before, client, model="verify-model")
 
     assert [f.message for f in after.findings] == ["real"]
     assert [f.message for f in after.verifier_dropped] == ["decoy"]
@@ -148,49 +155,50 @@ def test_verify_findings_returns_a_new_result_with_the_pass_metered(pr):
     assert after.model == "m", "the review's model, not the verifier's, names the result"
 
 
-def test_the_request_shares_the_system_block_and_forces_the_tool(pr):
+def test_the_request_reads_the_reviewers_prefix_and_sends_their_tools():
     client = FakeClient([_verdicts()])
-    verifier.verify_findings(pr, _result(_finding()), client=client, model="verify-model")
+    _verify(_result(_finding()), client, model="verify-model")
 
     call = client.messages.calls[0]
     assert call["model"] == "verify-model"
     assert call["system"][0]["text"] == verifier.SYSTEM_PROMPT
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert [t["name"] for t in call["tools"]] == ["verify_findings"]
-    assert call["tool_choice"] == {"type": "tool", "name": "verify_findings"}
-    text = call["messages"][0]["content"][0]["text"]
-    assert "Pull request: o/r#7" in text and "[0] warning / security" in text
-    assert text.rstrip().endswith("Call verify_findings exactly once.")
+    assert call["tools"] == SHARED_TOOLS and call["tool_choice"] == TOOL_CHOICE_ANY
+    prefix, suffix = call["messages"][0]["content"]
+    assert prefix == {"type": "text", "text": "THE PREFIX", "cache_control": {"type": "ephemeral"}}
+    assert "cache_control" not in suffix
+    assert suffix["text"].startswith("First-pass findings:")
+    assert "[0] warning / security" in suffix["text"]
+    assert suffix["text"].rstrip().endswith("Call verify_findings exactly once.")
 
 
-def test_a_result_with_no_findings_is_returned_unchanged_without_a_call(pr):
+def test_a_result_with_no_findings_is_returned_unchanged_without_a_call():
     client = FakeClient([])
     result = _result()
-    assert verifier.verify_findings(pr, result, client=client) is result
+    assert _verify(result, client) is result
     assert not client.messages.calls
 
 
-def test_a_response_without_the_tool_keeps_everything(pr):
+def test_a_response_without_the_tool_keeps_everything():
     client = FakeClient([[{"type": "text", "text": "I have nothing to say"}]])
-    after = verifier.verify_findings(pr, _result(_finding(), _finding()), client=client)
+    after = _verify(_result(_finding(), _finding()), client)
     assert len(after.findings) == 2 and after.verified
 
 
-def test_model_falls_back_to_the_review_model_then_settings(pr, monkeypatch):
+def test_model_falls_back_to_the_review_model_then_settings(monkeypatch):
+    client = FakeClient([_verdicts()])
+    _verify(_result(_finding()), client)
+    assert client.messages.calls[0]["model"] == "m", "the review's model"
+
     monkeypatch.setattr(
-        verifier, "settings", Settings(_env_file=None, review_verify_model="from-settings")
+        verifier, "settings", Settings(_env_file=None, review_model="from-settings")
     )
     client = FakeClient([_verdicts()])
-    verifier.verify_findings(pr, _result(_finding()), client=client)
+    _verify(ReviewResult(findings=[_finding()]), client)
     assert client.messages.calls[0]["model"] == "from-settings"
 
-    monkeypatch.setattr(verifier, "settings", Settings(_env_file=None))
-    client = FakeClient([_verdicts()])
-    verifier.verify_findings(pr, _result(_finding()), client=client)
-    assert client.messages.calls[0]["model"] == "m", "the result's model when nothing is configured"
 
-
-def test_cache_tokens_are_counted_on_the_verifier_call(pr):
+def test_cache_tokens_are_counted_on_the_verifier_call():
     """RC1-387: the verifier's call is mostly a fresh cache write; pricing
     the uncached input alone would make it look nearly free."""
     client = FakeClient([_verdicts()])
@@ -209,7 +217,7 @@ def test_cache_tokens_are_counted_on_the_verifier_call(pr):
         )
 
     client.messages.create = create
-    after = verifier.verify_findings(pr, _result(_finding()), client=client)
+    after = _verify(_result(_finding()), client)
     assert after.verifier_usage.cache_creation_input_tokens == 3000
     assert after.verifier_usage.cache_read_input_tokens == 200
     assert after.verifier_usage.context_tokens == 3210
@@ -218,67 +226,17 @@ def test_cache_tokens_are_counted_on_the_verifier_call(pr):
 
 # --- wiring into the loop -----------------------------------------------------
 
-# --- RC1-390: the shared-prefix mode -------------------------------------------
+# --- the instructions -----------------------------------------------------
 
-def test_default_request_is_the_rc1_387_shape(pr):
-    """One text block with everything, one tool, forced tool choice."""
+def test_the_instructions_carry_the_absence_rule_and_the_duplicate_fold():
+    """RC1-394's absence rule and RC1-398's duplicate-fold sentence are part
+    of the one instruction text since RC1-428; nothing is appended per call."""
     client = FakeClient([_verdicts()])
-    result = ReviewResult(findings=[_finding()], model="m")
-    verifier.verify_findings(pr, result, client=client)
-    call = client.messages.calls[0]
-    assert [t["name"] for t in call["tools"]] == ["verify_findings"]
-    assert call["tool_choice"] == {"type": "tool", "name": "verify_findings"}
-    content = call["messages"][0]["content"]
-    assert len(content) == 1 and content[0]["cache_control"] == {"type": "ephemeral"}
-    assert "Pull request:" in content[0]["text"] and "First-pass findings:" in content[0]["text"]
-
-
-def test_shared_prefix_mode_reads_the_prefix_verbatim_and_sends_the_shared_tools(pr):
-    client = FakeClient([_verdicts()])
-    result = ReviewResult(findings=[_finding()], model="m")
-    tools = [{"name": "submit_review"}, verifier.VERIFY_TOOL]
-    verifier.verify_findings(
-        pr,
-        result,
-        client=client,
-        shared_prefix="THE PREFIX",
-        tools=tools,
-        tool_choice={"type": "any"},
-    )
-    call = client.messages.calls[0]
-    assert call["tools"] == tools and call["tool_choice"] == {"type": "any"}
-    prefix, suffix = call["messages"][0]["content"]
-    assert prefix == {"type": "text", "text": "THE PREFIX", "cache_control": {"type": "ephemeral"}}
-    assert "cache_control" not in suffix
-    assert suffix["text"].startswith("First-pass findings:")
-    assert "Call verify_findings exactly once" in suffix["text"]
-
-
-def test_the_absence_rule_is_appended_only_when_asked(pr):
-    """RC1-394: the multi-agent path's verifier drops a claim resting on
-    what the bounded context did not find; the single loop's request is
-    byte for byte what it was."""
-    result = ReviewResult(findings=[_finding()], model="m")
-    client = FakeClient([_verdicts()])
-    verifier.verify_findings(pr, result, client=client)
-    text = client.messages.calls[0]["messages"][0]["content"][0]["text"]
-    assert verifier.ABSENCE_RULE not in text
+    _verify(_result(_finding()), client)
+    text = client.messages.calls[0]["messages"][0]["content"][1]["text"]
     assert text.endswith(verifier.VERIFIER_INSTRUCTIONS)
-
-    client = FakeClient([_verdicts()])
-    verifier.verify_findings(pr, result, client=client, absence_rule=True)
-    text = client.messages.calls[0]["messages"][0]["content"][0]["text"]
-    assert text.endswith(verifier.VERIFIER_INSTRUCTIONS + " " + verifier.ABSENCE_RULE)
+    assert verifier.ABSENCE_RULE in verifier.VERIFIER_INSTRUCTIONS
     assert "absence from a bounded search is not evidence" in verifier.ABSENCE_RULE
     assert "not a blocker" in verifier.ABSENCE_RULE
-
-
-def test_wrong_tool_from_the_verifier_keeps_everything(pr):
-    """Under tool_choice 'any' the model could call submit_review instead;
-    that reads as no verdicts, so nothing is dropped."""
-    client = FakeClient([[_submit("v1", "oops", [])]])
-    result = ReviewResult(findings=[_finding(), _finding(message="two")], model="m")
-    out = verifier.verify_findings(
-        pr, result, client=client, shared_prefix="p", tools=[], tool_choice={"type": "any"}
-    )
-    assert out.verified is True and len(out.findings) == 2 and out.verifier_dropped == []
+    assert "Their order in the list above means nothing" in verifier.VERIFIER_INSTRUCTIONS
+    assert "do not keep both because their wording differs" in verifier.VERIFIER_INSTRUCTIONS

@@ -111,6 +111,13 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       (one defect, two categories, the pair of findings), scoring in
       `evals/tiebreak.py`, `scripts/measure_tiebreak.py history|probe|pipeline`
       (decision in `docs/rc1-398-category-tiebreak.md`)
+- [x] RC1-428 the verifier is a permanent stage (RC1-400 folded in): the
+      corpus both ways, the three reference PRs both ways and the boundary
+      probe against five thresholds declared first; `REVIEW_VERIFY_FINDINGS`,
+      `REVIEW_VERIFY_MODEL`, the `verify` switch and `measure_pr.py --verify`
+      are gone, the fold sentence and the absence rule are the one
+      instruction text; a tests-list cap bug that produced false "no tests"
+      warnings fixed in `context.py` (record in `docs/rc1-428-verifier-policy.md`)
 
 ## Layout
 
@@ -134,10 +141,11 @@ app/
   agent/
     tools.py    RepoTools: read_text/read_file/list_dir/grep/paths, bounded (RC1-109)
     pipeline.py the review: review_pull_request(...) — context -> warm cache
-                -> reviewers (gather) -> merge -> [verifier]; opens the pr_review span (RC1-390/422/427)
+                -> reviewers (gather) -> merge -> verifier; opens the pr_review span (RC1-390/422/427/428)
     reviewer.py model-facing primitives every stage shares: render_pr, the cache
                 marker + system block, _tokens, parse_findings (RC1-110/422/427)
-    verifier.py second pass over the merged findings, flag-gated (RC1-387)
+    verifier.py second pass over the merged findings: drop, downgrade, fold one
+                defect under two categories; a stage, not a flag (RC1-387/428)
     router.py   RC1-390: which reviewers run, decided from the file list, and
                 whether there is a repository to gather context from
     context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
@@ -165,8 +173,7 @@ tests/          pytest, offline
   turns, and files read are all capped (cost/context guardrails).
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
-  (`["leaked_secret"]`), `review_verify_findings` (off; RC1-387 experiment,
-  see docs/rc1-387-verifier.md before turning it on), `remote_api_budget`
+  (`["leaked_secret"]`), `remote_api_budget`
   (the Contents/Trees calls one live review may spend).
 - **One pipeline; the request shape is measured, not assumed.** Any change to
   what the reviewers or the verifier send (prefix, tools,
@@ -195,9 +202,9 @@ python -m evals --list        # the planted-defect corpus (free)
 python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
 python -m evals --repo-path .  # ...with a checkout every case greps for context (RC1-393)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
-python scripts/measure_pr.py 35 33 39 --verify
+python scripts/measure_pr.py 35 33 39
                                # price reviews of real PRs at their own head (BILLED; RC1-391)
-python scripts/measure_pr.py 8 --verify --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
+python scripts/measure_pr.py 8 --repo-dir ../n8n-concert-intelligence --overlay CLAUDE.md
                                # ...another repo's PR, with a working-tree file laid over the head (RC1-396)
 PYTHONPATH=. python scripts/measure_tiebreak.py history    # the eval store's on-plant survivors (free; RC1-398)
 PYTHONPATH=. python scripts/measure_tiebreak.py probe --runs 5     # BILLED: the verifier over each boundary pair, both orders

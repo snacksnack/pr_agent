@@ -160,35 +160,6 @@ def summarize_history(rows: list[HistoryRow]) -> dict[str, Any]:
 
 # --- probe: the verifier alone ----------------------------------------------
 
-#: The shipped tie-break sentence in ``verifier.VERIFIER_INSTRUCTIONS``.
-SHIPPED_TIEBREAK = (
-    "When two findings describe the same defect, keep the one whose category "
-    "names it best, at the higher of their severities, and drop the other; "
-    "never drop a finding as redundant unless a kept finding states the same "
-    "defect."
-)
-#: A candidate replacement, measured by the probe and not shipped: it names
-#: the two things the shipped sentence leaves open — that a differently-worded
-#: pair is still one defect, and that list order is not a tie-break.
-CANDIDATE_TIEBREAK = (
-    "When two findings point at the same line and the same defect — even if "
-    "they describe it from different angles — keep exactly one: the one whose "
-    "category is the rubric dimension that names the defect, at the higher of "
-    "their severities, and drop the other. Their order in the list above means "
-    "nothing: do not keep the earlier one because it came first, and do not keep "
-    "both because their wording differs. Never drop a finding as redundant "
-    "unless a kept finding states the same defect."
-)
-RULES = {"shipped": SHIPPED_TIEBREAK, "candidate": CANDIDATE_TIEBREAK}
-
-
-def instructions_with(rule: str) -> str:
-    """``VERIFIER_INSTRUCTIONS`` with the tie-break sentence swapped for ``rule``."""
-    if SHIPPED_TIEBREAK not in verifier.VERIFIER_INSTRUCTIONS:
-        raise RuntimeError("the shipped tie-break sentence has changed; update SHIPPED_TIEBREAK")
-    return verifier.VERIFIER_INSTRUCTIONS.replace(SHIPPED_TIEBREAK, RULES[rule])
-
-
 INTENDED_FIRST = "intended-first"
 RIVAL_FIRST = "rival-first"
 ORDERS = (INTENDED_FIRST, RIVAL_FIRST)
@@ -274,40 +245,30 @@ def probe_case(
     *,
     client: Any,
     model: str | None = None,
-    rule: str = "shipped",
 ) -> dict[str, Any]:
-    """One verifier call over the case's pair in the given order. ``rule``
-    swaps the tie-break sentence of the verifier's instructions for the run
-    (module state, restored after), so a candidate wording is measured by
-    the same probe without touching the shipped path."""
+    """One verifier call over the case's pair in the given order, with the
+    shipped instructions. (RC1-398 measured a candidate wording here by
+    swapping the sentence for the run; RC1-428 shipped it.)"""
     intended, rival = case.pair
     findings = [intended, rival] if order == INTENDED_FIRST else [rival, intended]
-    model = model or settings.review_verify_model or settings.review_model
+    model = model or settings.review_model
     first_pass = ReviewResult(findings=findings, model=model, mode="multi")
     recorder = RecordingClient(client)
-    shipped = verifier.VERIFIER_INSTRUCTIONS
-    verifier.VERIFIER_INSTRUCTIONS = instructions_with(rule)
     started = time.perf_counter()
-    try:
-        verified = verifier.verify_findings(
-            boundary.pull_request(case),
-            first_pass,
-            client=recorder,
-            model=model,
-            shared_prefix=probe_prefix(case),
-            tools=REVIEW_TOOLS,
-            tool_choice=TOOL_CHOICE_ANY,
-            absence_rule=True,
-        )
-    finally:
-        verifier.VERIFIER_INSTRUCTIONS = shipped
+    verified = verifier.verify_findings(
+        first_pass,
+        client=recorder,
+        model=model,
+        prefix=probe_prefix(case),
+        tools=REVIEW_TOOLS,
+        tool_choice=TOOL_CHOICE_ANY,
+    )
     latency_ms = (time.perf_counter() - started) * 1000
     by_index = {v.get("index"): v for v in recorder.verdicts() if isinstance(v.get("index"), int)}
     return {
         "case": case.id,
         "pair": list(case.categories),
         "order": order,
-        "rule": rule,
         "first": findings[0].category,
         "kept": kept_of_pair(case, verified.findings),
         "kept_categories": [f.category for f in verified.findings],

@@ -39,13 +39,6 @@ class Settings(BaseSettings):
     # bursts once alerts are enabled and carry nothing for a reviewer to judge,
     # so they stay off the billed review path (RC1-359).
     review_skip_authors: str = "dependabot[bot]"
-    # RC1-387: second pass that re-reads each finding against the diff before
-    # it is posted, and may drop or downgrade it. Off by default; the corpus
-    # is run with it both ways and the ADR (docs/rc1-387-verifier.md) says
-    # what the numbers were. Never adds findings, never raises severity.
-    review_verify_findings: bool = False
-    # Model for the verifier pass; unset means the same model as the review.
-    review_verify_model: str | None = None
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.

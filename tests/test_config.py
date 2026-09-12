@@ -43,13 +43,6 @@ def test_limits_must_be_positive():
         Settings(_env_file=None, remote_api_budget=0)
 
 
-def test_verifier_is_off_by_default_and_parses_env_booleans():
-    """RC1-387: the verifier is an experiment behind a flag until the ADR says otherwise."""
-    assert Settings(_env_file=None).review_verify_findings is False
-    assert Settings(_env_file=None, review_verify_findings="1").review_verify_findings is True
-    assert Settings(_env_file=None, review_verify_model=None).review_verify_model is None
-
-
 def test_retired_flags_in_the_environment_are_ignored(monkeypatch):
     """RC1-422: Fly still carries REVIEW_MULTI_AGENT=1 until the secret is
     unset, and an operator's .env may carry MAX_TOOL_TURNS; neither may
@@ -58,6 +51,12 @@ def test_retired_flags_in_the_environment_are_ignored(monkeypatch):
     monkeypatch.setenv("MAX_TOOL_TURNS", "20")
     s = Settings(_env_file=None)
     assert not hasattr(s, "review_multi_agent") and not hasattr(s, "max_tool_turns")
+    # RC1-428: the verifier is a stage; Fly carries REVIEW_VERIFY_FINDINGS=1
+    # until that secret is unset too.
+    monkeypatch.setenv("REVIEW_VERIFY_FINDINGS", "1")
+    monkeypatch.setenv("REVIEW_VERIFY_MODEL", "claude-haiku-4-5")
+    s = Settings(_env_file=None)
+    assert not hasattr(s, "review_verify_findings") and not hasattr(s, "review_verify_model")
     # RC1-427: the scout's settings went with it.
     monkeypatch.setenv("REVIEW_SCOUT_MAX_TURNS", "8")
     monkeypatch.setenv("MAX_FILES_READ", "40")

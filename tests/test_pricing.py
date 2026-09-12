@@ -88,7 +88,7 @@ def test_single_loop_splits_the_verifier_out_of_the_total():
 
 
 def test_verifier_is_priced_at_its_own_model():
-    """`review_verify_model` may differ from the review model; its tokens are
+    """A verifier that ran on another model (rows from before RC1-428); its tokens are
     in the totals at the review model's rate, so the split re-prices them."""
     verifier = TokenUsage(input_tokens=10, output_tokens=300, cache_read_input_tokens=9000)
     result = _single(verified=True, verifier_usage=verifier, verifier_model="claude-haiku-4-5")

@@ -138,20 +138,6 @@ def test_cost_prices_cache_writes_and_reads_not_just_uncached_input():
     assert recorded.cost_usd == expected
 
 
-def test_prompt_version_changes_when_the_verifier_is_on(monkeypatch):
-    """A flag-on run is a different subject version, never averaged with flag-off."""
-    from app.config import Settings
-
-    monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
-    off = subject.prompt_version()
-    monkeypatch.setattr(subject, "settings", Settings(_env_file=None, review_verify_findings=True))
-    on = subject.prompt_version()
-    assert "+verify-sha256:" in on and "+verify-sha256:" not in off
-    # The verifier's segment is inserted ahead of the pipeline's, which keeps
-    # a verifier-on version byte for byte what RC1-394's runs recorded.
-    assert on.replace(on[on.index("+verify-sha256:"):on.index("+multi-sha256:")], "") == off
-
-
 def test_case_ids_are_unique():
     ids = [c.id for c in corpus.CASES]
     assert len(ids) == len(set(ids))
@@ -356,20 +342,12 @@ def test_the_corpus_covers_every_gating_category():
 # --- RC1-390: the multi-agent path in the record -------------------------------
 
 
-def test_prompt_version_always_carries_the_pipeline_prompts(monkeypatch):
-    """RC1-422: the scout's and reviewers' instructions are the prompt, so
-    their hash is always in the version; the verifier's goes in front of it
-    when that pass is on."""
-    from app.config import Settings
-
-    monkeypatch.setattr(subject, "settings", Settings(_env_file=None))
-    plain = subject.prompt_version()
-    assert "+multi-sha256:" in plain
-    monkeypatch.setattr(
-        subject, "settings", Settings(_env_file=None, review_verify_findings=True)
-    )
-    both = subject.prompt_version()
-    assert "+verify-sha256:" in both and both.endswith(plain.split("+")[-1])
+def test_prompt_version_always_carries_the_pipeline_prompts():
+    """RC1-422: the reviewers' instructions are the prompt, so their hash is
+    always in the version, after the verifier's (RC1-428)."""
+    version = subject.prompt_version()
+    assert "+multi-sha256:" in version
+    assert version.index("+verify-sha256:") < version.index("+multi-sha256:")
 
 
 def test_multi_observations_read_false_when_there_is_no_result():

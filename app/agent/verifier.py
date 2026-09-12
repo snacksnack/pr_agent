@@ -1,6 +1,6 @@
-"""Verifier pass over the loop's findings (RC1-387).
+"""Verifier pass over the merged findings (RC1-387; a permanent stage since RC1-428).
 
-A second, tool-less model call that re-reads every finding the review loop
+A second, tool-less model call that re-reads every finding the reviewers
 submitted against the same rendering of the diff, and returns a verdict per
 finding: **keep**, **drop**, or **downgrade**. Python applies the verdicts
 under three rules the model cannot override:
@@ -15,11 +15,10 @@ merges them after the loop, and they are not the model's to second-guess.
 Why a separate pass rather than a better prompt: the corpus (RC1-253) shows
 recall at ceiling, and the number it cannot see is precision on live PRs. The
 pattern that moves precision without touching recall is a reader with one job
-— "does the diff support this claim" — and no incentive to look thorough. The
-review loop's cache prefix is ``tools -> system``; this pass sends the same
-system block but its own single tool, so it caches its *own* prefix across
-calls rather than sharing the loop's. That is a few thousand tokens per
-review at cache-read price and is measured, not assumed, in the ADR.
+— "does the diff support this claim" — and no incentive to look thorough.
+It reads the reviewers' shared prefix from cache and adds only the numbered
+findings and its instructions (RC1-390); the cost is measured, not assumed,
+in the decision records (docs/rc1-387-verifier.md, docs/rc1-428-verifier-policy.md).
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ from typing import Any
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.config import settings
-from app.models import Finding, PullRequest, ReviewResult, TokenUsage
+from app.models import Finding, ReviewResult, TokenUsage
 
 logger = logging.getLogger("app.agent.verifier")
 
@@ -39,6 +38,19 @@ _ONE_STEP_DOWN = {"blocker": "warning", "warning": "nit"}
 
 CACHE_CONTROL = {"type": "ephemeral"}
 SYSTEM_BLOCKS = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": CACHE_CONTROL}]
+
+# RC1-394: the reviewers have no tools and read a bounded, grep-built
+# context. RC1-393's run C showed them escalating "not found" into blockers
+# on files that were simply not in the checkout; the context block is the
+# thing that can be read that way. Part of the instructions since RC1-428.
+ABSENCE_RULE = (
+    "The repository context above was gathered by a bounded grep. Drop a "
+    "finding whose only evidence is that something was not found there — a "
+    "file, module, caller or symbol the context does not mention: absence "
+    "from a bounded search is not evidence of absence. A changed path the "
+    "tests list names as untested is a fair 'tests' finding at warning; it "
+    "is not a blocker."
+)
 
 VERIFIER_INSTRUCTIONS = (
     "You are now verifying a first-pass review of this pull request, not "
@@ -57,25 +69,17 @@ VERIFIER_INSTRUCTIONS = (
     "\n"
     "Rules: judge only what is in front of you — do not investigate further. "
     "Do not add findings. Do not raise a severity. When in doubt, keep. A real "
-    "committed secret is always kept at blocker. When two findings describe "
-    "the same defect, keep the one whose category names it best, at the "
-    "higher of their severities, and drop the other; never drop a finding as "
-    "redundant unless a kept finding states the same defect. Give a "
-    "one-sentence reason for every drop and downgrade. Call verify_findings "
-    "exactly once."
-)
-
-# RC1-394: appended for the pipeline, whose reviewers have no tools and read
-# a bounded, grep-built context. RC1-393's run C showed them escalating "the
-# scout found nothing" into blockers on files that were simply not in the
-# checkout; the context block is the thing that can be read that way.
-ABSENCE_RULE = (
-    "The repository context above was gathered by a bounded grep. Drop a "
-    "finding whose only evidence is that something was not found there — a "
-    "file, module, caller or symbol the context does not mention: absence "
-    "from a bounded search is not evidence of absence. A changed path the "
-    "tests list names as untested is a fair 'tests' finding at warning; it "
-    "is not a blocker."
+    "committed secret is always kept at blocker. When two findings point at "
+    "the same line and the same defect — even if they describe it from "
+    "different angles — keep exactly one: the one whose category is the "
+    "rubric dimension that names the defect, at the higher of their "
+    "severities, and drop the other. Their order in the list above means "
+    "nothing: do not keep the earlier one because it came first, and do not "
+    "keep both because their wording differs. Never drop a finding as "
+    "redundant unless a kept finding states the same defect. "
+    + ABSENCE_RULE
+    + " Give a one-sentence reason for every drop and downgrade. Call "
+    "verify_findings exactly once."
 )
 
 VERIFY_TOOL = {
@@ -214,56 +218,44 @@ def apply_verdicts(
 
 
 def verify_findings(
-    pull_request: PullRequest,
     result: ReviewResult,
     *,
     client: Any,
+    prefix: str,
+    tools: list[dict],
+    tool_choice: dict,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-    shared_prefix: str | None = None,
-    tools: list[dict] | None = None,
-    tool_choice: dict | None = None,
-    absence_rule: bool = False,
 ) -> ReviewResult:
     """Run the verifier over ``result.findings`` and return a new result.
 
     The returned result carries the kept findings, the dropped ones, the
     downgrade count, and the pass's own token spend both folded into the
-    totals and broken out. A result with no findings is returned unchanged.
+    totals and broken out. A result with no findings is returned unchanged,
+    with no model call: a clean review pays nothing here.
 
-    By default the pass renders the PR itself and sends its one tool, which
-    is the RC1-387 request byte for byte (the tie-break probe still sends
-    it). The pipeline (RC1-390) passes ``shared_prefix`` — the PR and the
-    repository context exactly as the reviewers saw them — with their ``tools``
-    and ``tool_choice``, so this call reads their cached prefix instead of
-    writing its own. ``absence_rule`` (RC1-394) adds the rule that a claim
-    resting only on what the bounded context did not find is dropped.
+    ``prefix`` is the PR and the repository context exactly as the reviewers
+    saw them, sent under the same cache breakpoint with their ``tools`` and
+    ``tool_choice``, so this call reads their cached prefix instead of
+    writing its own (RC1-390). The RC1-387 shape that rendered the PR itself
+    went with the flag in RC1-428.
     """
     if not result.findings:
         return result
-    from app.agent.reviewer import render_pr  # noqa: PLC0415 — sibling module; avoids a cycle
-
-    model = model or settings.review_verify_model or result.model or settings.review_model
-    instructions = VERIFIER_INSTRUCTIONS + (" " + ABSENCE_RULE if absence_rule else "")
+    model = model or result.model or settings.review_model
     suffix = "\n".join(
-        [format_findings_for_verification(result.findings), "", instructions]
+        [format_findings_for_verification(result.findings), "", VERIFIER_INSTRUCTIONS]
     )
-    if shared_prefix is None:
-        text = "\n".join([*render_pr(pull_request), "", suffix])
-        content = [{"type": "text", "text": text, "cache_control": CACHE_CONTROL}]
-    else:
-        content = [
-            {"type": "text", "text": shared_prefix, "cache_control": CACHE_CONTROL},
-            {"type": "text", "text": suffix},
-        ]
+    content = [
+        {"type": "text", "text": prefix, "cache_control": CACHE_CONTROL},
+        {"type": "text", "text": suffix},
+    ]
     response = client.messages.create(
         model=model,
         system=SYSTEM_BLOCKS,
         messages=[{"role": "user", "content": content}],
-        tools=[VERIFY_TOOL] if tools is None else tools,
-        tool_choice=(
-            {"type": "tool", "name": VERIFY_TOOL["name"]} if tool_choice is None else tool_choice
-        ),
+        tools=tools,
+        tool_choice=tool_choice,
         max_tokens=max_tokens,
     )
     used = _tokens(response)
