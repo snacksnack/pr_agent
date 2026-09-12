@@ -69,7 +69,7 @@ class LocalRepository:
 
     # -- the contract ----------------------------------------------------
 
-    def read_text(self, path: str) -> str | None:
+    def read_text(self, path: str, *, max_bytes: int = MAX_READ_BYTES) -> str | None:
         try:
             p = self._resolve(path)
         except RepositoryError:
@@ -77,7 +77,7 @@ class LocalRepository:
         if is_withheld(p.name) or not p.is_file():
             return None
         try:
-            return p.read_bytes()[:MAX_READ_BYTES].decode("utf-8")
+            return p.read_bytes()[:max_bytes].decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 

@@ -4,6 +4,7 @@ reviewers)."""
 from __future__ import annotations
 
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -292,11 +293,156 @@ def test_an_explicit_plan_is_honoured(pr, repo):
     assert result.reviewers_run == ["diff_local"] and result.summary == "only me"
 
 
-def test_precomputed_findings_reach_the_shared_prefix(pr, repo):
-    async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    precomputed = [Finding("warning", "n8n", "hot cron")]
-    _run(pr, repo, _sync(), async_client, precomputed_findings=precomputed)
-    assert "hot cron" in async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+# --- the deterministic checks (RC1-425) ------------------------------------------
+
+HOT_CRON = json.dumps(
+    {
+        "nodes": [
+            {
+                "name": "Cron",
+                "type": "n8n-nodes-base.cron",
+                "parameters": {"triggerTimes": {"item": [{"mode": "everyMinute"}]}},
+            }
+        ],
+        "connections": {},
+    }
+)
+
+
+def _workflow_pr(pr):
+    pr.files.append(ChangedFile("flows/poll.json", "added", patch="@@ -0,0 +1 @@\n+{}"))
+    return pr
+
+
+def _quiet():
+    """Three reviewers with nothing to say; the sync fake has no scripted
+    response, so any verifier call fails the test."""
+    return _async(WARM, _submit("", []), _submit("", []), _submit("", []))
+
+
+def _prefix(async_client):
+    return async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
+
+
+def test_a_check_finding_is_in_the_prefix_and_in_the_result_once(pr, repo):
+    (repo.root / "flows").mkdir()
+    (repo.root / "flows" / "poll.json").write_text(HOT_CRON)
+    async_client = _quiet()
+    result = _run(_workflow_pr(pr), repo, _sync(), async_client)
+    assert [(f.category, f.file) for f in result.findings] == [("n8n", "flows/poll.json")]
+    assert "every minute" in result.findings[0].message
+    assert result.checks_run == ["n8n"] and result.checks_failed == []
+    assert result.deterministic_findings == 1
+    assert "checks" in result.stage_latency_ms
+    # The reviewers read it as already recorded: after the diff, before the context.
+    prefix = _prefix(async_client)
+    assert "already recorded by automated checks" in prefix
+    at = prefix.index("every minute")
+    assert prefix.index("--- flows/poll.json") < at
+    assert "Callers of what changed" not in prefix[:at]
+    # Nothing to verify: the verifier judges the model's claims, not the check's.
+    assert result.verified is False
+
+
+def test_the_verifier_judges_only_the_models_findings(pr, repo):
+    (repo.root / "flows").mkdir()
+    (repo.root / "flows" / "poll.json").write_text(HOT_CRON)
+    claim = _finding("warning", "security", "model claim")
+    async_client = _async(WARM, _submit("s", [claim]), _submit("", []), _submit("", []))
+    drop_first = [{"index": 0, "decision": "drop", "reason": "no"}]
+    sync = _sync([_use("verify_findings", verdicts=drop_first)])
+    result = _run(_workflow_pr(pr), repo, sync, async_client)
+    suffix = sync.messages.calls[0]["messages"][0]["content"][1]["text"]
+    assert "[0] warning / security" in suffix and "[1]" not in suffix
+    assert "every minute" not in suffix
+    assert [f.message for f in result.verifier_dropped] == ["model claim"]
+    assert [f.category for f in result.findings] == ["n8n"]
+    assert result.verified is True and result.deterministic_findings == 1
+
+
+def test_no_workflow_changed_means_the_check_ran_and_found_nothing(pr, repo):
+    async_client = _quiet()
+    result = _run(pr, repo, _sync(), async_client)
+    assert result.checks_run == ["n8n"] and result.deterministic_findings == 0
+    assert result.findings == []
+    assert "already recorded" not in _prefix(async_client)
+
+
+def test_no_checks_at_all_leaves_the_result_the_models_own(pr, repo):
+    async_client = _quiet()
+    result = _run(pr, repo, _sync(), async_client, checks=())
+    assert result.checks_run == [] and result.deterministic_findings == 0
+    assert "already recorded" not in _prefix(async_client)
+
+
+def test_several_checks_run_in_order_and_each_is_recorded(pr, repo):
+    from app.agent.checks import Check
+
+    def first(pull, read):
+        return [Finding("nit", "general", "from first", file="app/x.py")]
+
+    def second(pull, read):
+        return [Finding("warning", "general", "from second", file="app/x.py")]
+
+    claim = _finding("warning", "security", "model claim")
+    async_client = _async(WARM, _submit("s", [claim]), _submit("", []), _submit("", []))
+    sync = _sync([_use("verify_findings", verdicts=[])])
+    checks = (Check("first", first), Check("second", second))
+    result = _run(pr, repo, sync, async_client, checks=checks)
+    assert [f.message for f in result.findings] == ["model claim", "from first", "from second"]
+    assert result.checks_run == ["first", "second"]
+    assert result.deterministic_findings == 2
+
+
+def test_a_failing_check_is_recorded_and_the_review_goes_on(pr, repo, caplog):
+    from app.agent.checks import Check
+
+    def boom(pull, read):
+        raise RuntimeError("bad export")
+
+    def fine(pull, read):
+        return [Finding("nit", "general", "still here", file="app/x.py")]
+
+    caplog.set_level("INFO", logger="app.agent.checks")
+    result = _run(pr, repo, _sync(), _quiet(), checks=(Check("boom", boom), Check("fine", fine)))
+    assert result.checks_failed == ["boom"] and result.checks_run == ["fine"]
+    assert [f.message for f in result.findings] == ["still here"]
+    assert "check_failed name=boom" in caplog.text
+    assert "bad export" in caplog.text  # the traceback is logged, not swallowed
+
+
+def test_checks_read_a_changed_file_whole_not_clipped_for_the_prefix(pr, repo):
+    from app.agent.repository import MAX_READ_BYTES
+
+    data = json.loads(HOT_CRON)
+    data["meta"] = {"padding": "x" * (MAX_READ_BYTES + 1000)}  # a real export can top 90 KB
+    (repo.root / "flows").mkdir()
+    (repo.root / "flows" / "poll.json").write_text(json.dumps(data))
+    result = _run(_workflow_pr(pr), repo, _sync(), _quiet())
+    assert result.deterministic_findings == 1
+
+
+def test_checks_read_through_the_github_adapter_at_the_pr_head(pr):
+    from app.agent.github_repository import GitHubRepository
+
+    fetched = []
+
+    class FakeGitHub:
+        def get_file_text(self, ref, path, *, git_ref=None):
+            fetched.append((path, git_ref))
+            return HOT_CRON if path == "flows/poll.json" else None
+
+        def get_tree(self, ref, sha):
+            return [{"path": "flows/poll.json", "type": "blob", "size": len(HOT_CRON)}]
+
+    pr = _workflow_pr(pr)
+    pr.head_sha = "headsha"
+    repository = GitHubRepository(
+        FakeGitHub(), pr.ref, "headsha", changed_files=[f.filename for f in pr.files]
+    )
+    result = _run(pr, repository, _sync(), _quiet())
+    assert result.deterministic_findings == 1
+    assert ("flows/poll.json", "headsha") in fetched
 
 
 # --- the verifier ------------------------------------------------------------------
@@ -336,7 +482,7 @@ def test_empty_checkout_skips_the_context_and_the_reviewers_still_run(pr, tmp_pa
     result = _run(pr, LocalRepository(empty), _sync(), async_client)
     assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
     assert result.conventions_file is None and not result.context_complete
-    assert set(result.stage_latency_ms) == {"context", "fan_out"}
+    assert set(result.stage_latency_ms) == {"checks", "context", "fan_out"}
 
 
 def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
@@ -345,7 +491,7 @@ def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
         WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
     )
     result = _run(pr, repo, sync, async_client)
-    assert set(result.stage_latency_ms) == {"context", "fan_out", "verifier"}
+    assert set(result.stage_latency_ms) == {"checks", "context", "fan_out", "verifier"}
     assert all(v >= 0 for v in result.stage_latency_ms.values())
 
 

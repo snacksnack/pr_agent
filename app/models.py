@@ -195,6 +195,14 @@ class ReviewResult:
     # ``review_pull_request``.
     verifier_model: str = ""
     latency_ms: float = 0.0
+    # RC1-425: the deterministic checks the pipeline ran before any model
+    # call — which completed, which raised (logged, non-fatal), and how many
+    # of ``findings`` they contributed. Their findings sit after the
+    # model's, went into the prefix as already-recorded, and never through
+    # the verifier.
+    checks_run: list[str] = field(default_factory=list)
+    checks_failed: list[str] = field(default_factory=list)
+    deterministic_findings: int = 0
 
     @property
     def usage(self) -> TokenUsage:

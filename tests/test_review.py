@@ -1,13 +1,13 @@
 """Tests for the local dry-run CLI (RC1-113).
 
-Fully offline: ingestion and the review loop are injected as fakes, so no
+Fully offline: ingestion and the review pipeline are injected as fakes, so no
 network, git, or API keys are touched. We assert the orchestration, output
-formatting, exit codes, and the stub-tolerant n8n hook.
+formatting and exit codes; the deterministic checks run inside the pipeline
+(RC1-425) and are tested there.
 """
 from __future__ import annotations
 
 import io
-import json
 
 import pytest
 
@@ -44,7 +44,7 @@ def _run(argv, *, pr=None, result=None, captured=None):
     code = cli.main(
         argv,
         fetch=lambda ref: pr,
-        review=lambda p, tools, pre: result,
+        review=lambda p, repository: result,
         out=out,
     )
     return code, out.getvalue()
@@ -123,62 +123,19 @@ def test_nits_only_do_not_block():
     assert code == cli.EXIT_OK
 
 
-# --- n8n hook is stub-tolerant --------------------------------------------
+# --- the CLI loads and prints; the pipeline owns the result (RC1-425) --------
 
-def test_n8n_hook_skips_benign_workflow(tmp_path):
-    # A real but benign n8n workflow file on disk (no costly patterns) -> the
-    # hook runs the RC1-112 check and adds nothing, without crashing.
-    wf = {"nodes": [], "connections": {}}
-    (tmp_path / "flow.json").write_text(json.dumps(wf))
-    pr = _pr([ChangedFile(filename="flow.json", status="added")])
+def test_the_cli_hands_the_pipeline_the_checkout_and_prints_its_result_once(tmp_path):
+    # What the pipeline returns is what is printed — the CLI merges nothing.
+    from app.agent.local_repository import LocalRepository
 
-    out = io.StringIO()
-    code = cli.main(
-        ["--pr", "octocat/hello#42", "--repo-path", str(tmp_path)],
-        fetch=lambda ref: pr,
-        review=lambda p, tools, pre: _result(),
-        out=out,
-    )
-    assert code == cli.EXIT_OK
-    assert "No findings" in out.getvalue()
-
-
-def test_n8n_hook_merges_findings(monkeypatch, tmp_path):
-    # Simulate RC1-112 being implemented and returning a finding.
-    wf = {"nodes": [{"type": "n8n-nodes-base.cron"}], "connections": {}}
-    (tmp_path / "flow.json").write_text(json.dumps(wf))
     pr = _pr([ChangedFile(filename="flow.json", status="modified")])
-
-    monkeypatch.setattr(cli.n8n, "check_workflow", lambda data: [
-        {"severity": "warning", "category": "n8n", "message": "cron fires every minute"},
-    ])
-
-    out = io.StringIO()
-    code = cli.main(
-        ["--pr", "octocat/hello#42", "--repo-path", str(tmp_path)],
-        fetch=lambda ref: pr,
-        review=lambda p, tools, pre: _result(),
-        out=out,
-    )
-    text = out.getvalue()
-    assert "cron fires every minute" in text
-    # The n8n finding had no file -> the hook should anchor it to the workflow.
-    assert "flow.json" in text
-    assert code == cli.EXIT_OK
-
-
-def test_n8n_findings_passed_to_review_as_context(monkeypatch, tmp_path):
-    # The deterministic n8n findings must be handed to the review loop (so the
-    # model can avoid duplicating them) AND merged into the final result once.
-    n8n_finding = Finding("warning", "n8n", "cron fires every minute", file="flow.json")
-    monkeypatch.setattr(cli, "run_n8n_checks", lambda pr, root: [n8n_finding])
-    pr = _pr([ChangedFile(filename="flow.json", status="modified")])
-
+    result = _result([Finding("warning", "n8n", "cron fires every minute", file="flow.json")])
     seen = {}
 
-    def fake_review(p, tools, precomputed):
-        seen["precomputed"] = precomputed
-        return _result()
+    def fake_review(p, repository):
+        seen["repository"] = repository
+        return result
 
     out = io.StringIO()
     code = cli.main(
@@ -187,46 +144,33 @@ def test_n8n_findings_passed_to_review_as_context(monkeypatch, tmp_path):
         review=fake_review,
         out=out,
     )
-    # The loop received the deterministic finding as context...
-    assert seen["precomputed"] == [n8n_finding]
-    # ...and it appears exactly once in the final output (merged, not doubled).
+    assert isinstance(seen["repository"], LocalRepository)
+    assert seen["repository"].root == tmp_path
     assert out.getvalue().count("cron fires every minute") == 1
+    assert "flow.json" in out.getvalue()
     assert code == cli.EXIT_OK
 
 
-def test_repo_path_must_be_a_directory(capsys):
+def test_without_a_checkout_the_pipeline_gets_an_empty_repository():
+    seen = {}
+
+    def fake_review(p, repository):
+        seen["explorable"] = repository.explorable  # the temp dir is gone after main()
+        return _result()
+
     code = cli.main(
-        ["--pr", "octocat/hello#42", "--repo-path", "/no/such/dir"],
-        fetch=lambda ref: _pr(),
-        review=lambda p, tools, pre: _result(),
+        ["--pr", "octocat/hello#42"], fetch=lambda ref: _pr(), review=fake_review, out=io.StringIO()
     )
-    assert code == cli.EXIT_ERROR
-    assert "directory" in capsys.readouterr().err.lower()
+    assert code == cli.EXIT_OK
+    assert seen["explorable"] is False
 
 
-# --- pure formatter -------------------------------------------------------
-
-def test_format_review_without_pr_is_still_valid():
-    text = cli.format_review(_result([Finding("nit", "docs", "add docstring")]))
-    assert "Summary" in text and "looks good" in text
-    assert "[NIT]" in text
-
-
-def test_format_review_names_the_reviewers_and_the_merge(pr=None):
-    result = _result([Finding("nit", "docs", "add docstring")])
-    result.reviewers_run = ["diff_local", "repo_context", "change_intent"]
-    result.off_scope_findings = 1
-    text = cli.format_review(result)
-    assert "reviewers=diff_local,repo_context,change_intent" in text
-    assert "context(conventions=none, callers=0)" in text
-    assert "merged(off_scope=1, deduplicated=0)" in text
-    # The single loop's line is unchanged.
-    assert "mode=" not in cli.format_review(_result([]))
+def test_format_review_names_the_checks_the_pipeline_ran():
+    result = _result()
+    result.checks_run, result.deterministic_findings = ["n8n"], 1
+    assert "checks(run=n8n, findings=1)" in cli.format_review(result)
+    result.checks_failed = ["boom"]
+    assert "checks(run=n8n, findings=1, failed=boom)" in cli.format_review(result)
+    assert "checks(" not in cli.format_review(_result())
 
 
-def test_format_review_names_the_context_python_gathered():
-    result = ReviewResult(
-        summary="ok", mode="multi", reviewers_run=["diff_local"],
-        conventions_file="CLAUDE.md", callers_found=7,
-    )
-    assert "context(conventions=CLAUDE.md, callers=7)" in cli.format_review(result)

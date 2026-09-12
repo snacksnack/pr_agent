@@ -9,8 +9,9 @@ under three rules the model cannot override:
 * a downgrade only ever lowers severity — the verifier never raises one;
 * nothing is added — the verifier's output schema has no room for a finding.
 
-Deterministic findings (the n8n check) never pass through here; the caller
-merges them after the loop, and they are not the model's to second-guess.
+Deterministic findings (the n8n check) never pass through here: the
+pipeline appends them after this pass (RC1-425), and they are not the
+model's to second-guess.
 
 Why a separate pass rather than a better prompt: the corpus (RC1-253) shows
 recall at ceiling, and the number it cannot see is precision on live PRs. The
@@ -23,6 +24,7 @@ in the decision records (docs/rc1-387-verifier.md, docs/rc1-428-verifier-policy.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 from app.agent.prompts import SYSTEM_PROMPT
@@ -270,12 +272,9 @@ def verify_findings(
         used.output_tokens,
     )
     total = result.usage + used
-    return ReviewResult(
-        summary=result.summary,
+    return replace(
+        result,
         findings=kept,
-        model=result.model,
-        malformed_findings=result.malformed_findings,
-        coerced_findings=result.coerced_findings,
         input_tokens=total.input_tokens,
         output_tokens=total.output_tokens,
         cache_creation_input_tokens=total.cache_creation_input_tokens,
@@ -285,15 +284,5 @@ def verify_findings(
         verifier_downgraded=downgraded,
         verifier_usage=used,
         verifier_model=model,
-        mode=result.mode,
-        reviewers_run=result.reviewers_run,
         stage_usage={**result.stage_usage, "verifier": used} if result.stage_usage else {},
-        stage_latency_ms=result.stage_latency_ms,
-        off_scope_findings=result.off_scope_findings,
-        deduplicated_findings=result.deduplicated_findings,
-        unusable_reviewer_calls=result.unusable_reviewer_calls,
-        conventions_file=result.conventions_file,
-        callers_found=result.callers_found,
-        tests_found=result.tests_found,
-        context_complete=result.context_complete,
     )
