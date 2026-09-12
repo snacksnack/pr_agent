@@ -4,6 +4,7 @@ real ones. The billed modes stay out of pytest."""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -140,7 +141,7 @@ class _FakeMessages:
         self._verdicts = list(verdicts)
         self.calls = []
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.calls.append(kwargs)
         payload = {"verdicts": self._verdicts.pop(0)}
         return SimpleNamespace(
@@ -164,8 +165,8 @@ def test_probe_case_scores_the_survivor_and_keeps_the_reason():
     client = _FakeClient(
         [[{"index": 1, "decision": "drop", "reason": "same defect; general names it"}]]
     )
-    row = tiebreak.probe_case(
-        case, tiebreak.INTENDED_FIRST, client=client, model="claude-sonnet-4-6"
+    row = asyncio.run(
+        tiebreak.probe_case(case, tiebreak.INTENDED_FIRST, client=client, model="claude-sonnet-4-6")
     )
     assert row["kept"] == tiebreak.KEPT_INTENDED
     assert row["first_survived"] is True
@@ -185,7 +186,9 @@ def test_probe_case_scores_the_survivor_and_keeps_the_reason():
 def test_probe_case_in_rival_first_order_lists_the_rival_first():
     case = boundary.BY_ID["dead-code-after-return"]
     client = _FakeClient([[{"index": 0, "decision": "drop", "reason": "redundant"}]])
-    row = tiebreak.probe_case(case, tiebreak.RIVAL_FIRST, client=client, model="claude-sonnet-4-6")
+    row = asyncio.run(
+        tiebreak.probe_case(case, tiebreak.RIVAL_FIRST, client=client, model="claude-sonnet-4-6")
+    )
     assert row["first"] == "error_handling"
     assert row["kept"] == tiebreak.KEPT_INTENDED
     assert row["first_survived"] is False
@@ -223,7 +226,9 @@ def test_recording_client_reads_the_numbering_back_from_the_request():
     case = boundary.BY_ID["headers-in-error-log"]
     verdict = [{"index": 0, "decision": "drop", "reason": "r"}]
     client = _FakeClient([verdict, verdict])
-    tiebreak.probe_case(case, tiebreak.RIVAL_FIRST, client=client, model="claude-sonnet-4-6")
+    asyncio.run(
+        tiebreak.probe_case(case, tiebreak.RIVAL_FIRST, client=client, model="claude-sonnet-4-6")
+    )
     recorder = tiebreak.RecordingClient(client)
-    recorder.create(**client.messages.calls[0])
+    asyncio.run(recorder.create(**client.messages.calls[0]))
     assert recorder.numbered_categories() == {0: "error_handling", 1: "security"}

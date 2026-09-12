@@ -1,10 +1,16 @@
-"""Tests for the review pipeline (RC1-390, RC1-422, RC1-427). Offline: scripted
-fakes for the sync client (the verifier) and the async client (warm call,
-reviewers)."""
+"""Tests for the review pipeline (RC1-390, RC1-422, RC1-427, RC1-426). Offline:
+one scripted async client serves every call; its verifier responses are kept
+in a separate scripted list so a test can read the reviewers' calls and the
+verifier's apart. The pipeline is a coroutine; these sync tests drive it under
+``asyncio.run`` — the same bridge the CLI uses."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import sys
+import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +66,28 @@ def _async(*scripted):
     return SimpleNamespace(messages=AsyncMessages(scripted))
 
 
+class _Client:
+    """The one async client the pipeline takes (RC1-426). The verifier's
+    request is told apart by its suffix and answered from ``sync`` (a
+    ``SyncMessages`` script, kept for the tests that read it); everything
+    else — the warm call, the reviewers — is answered from ``async_client``."""
+
+    def __init__(self, sync, async_client):
+        self._sync = sync
+        self._async = async_client
+        self.messages = self
+        self.closed = 0
+
+    async def create(self, **kwargs):
+        content = kwargs["messages"][0]["content"]
+        if len(content) > 1 and content[1]["text"].startswith("First-pass findings:"):
+            return self._sync.messages.create(**kwargs)
+        return await self._async.messages.create(**kwargs)
+
+    async def close(self):
+        self.closed += 1
+
+
 def _use(name, **inp):
     return {"type": "tool_use", "id": "t", "name": name, "input": inp}
 
@@ -98,7 +126,8 @@ WARM = []
 def _run(pr, repo, sync, async_client, **kw):
     """The outcome (RC1-429): ``.review`` is what is posted, ``.metrics`` the run."""
     kw.setdefault("model", "m")
-    return pipeline.review_pull_request(pr, repo, client=sync, async_client=async_client, **kw)
+    client = _Client(sync, async_client)
+    return asyncio.run(pipeline.review_pull_request(pr, repo, client=client, **kw))
 
 
 # --- the happy path -----------------------------------------------------------
@@ -635,13 +664,16 @@ def test_the_verifier_gets_the_absence_rule_on_this_path_only(tmp_path):
     assert ABSENCE_RULE in suffix
 
 
+def _sdk(client_cls):
+    return types.SimpleNamespace(AsyncAnthropic=client_cls)
+
+
 def test_the_client_this_review_built_is_closed_on_its_own_loop(pr, repo, monkeypatch):
     """RC1-394: the corpus run logged "Event loop is closed" once per case —
-    an AsyncAnthropic built here and left to the garbage collector. It is
-    closed inside the loop that used it; an injected client is not."""
-    import sys
-    import types
-
+    an AsyncAnthropic built here and left to the garbage collector. Since
+    RC1-426 the pipeline owns no loop: the client it builds is closed inside
+    the caller's loop before the coroutine returns; an injected client is
+    the caller's and is left open."""
     closed = []
 
     class FakeAsync:
@@ -651,15 +683,76 @@ def test_the_client_this_review_built_is_closed_on_its_own_loop(pr, repo, monkey
         async def close(self):
             closed.append(True)
 
-    fake_sdk = types.SimpleNamespace(AsyncAnthropic=FakeAsync, Anthropic=lambda **kw: _sync())
-    monkeypatch.setitem(sys.modules, "anthropic", fake_sdk)
+    monkeypatch.setitem(sys.modules, "anthropic", _sdk(FakeAsync))
     plan = ReviewPlan(context=True, reviewers=(DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT))
-    pipeline.review_pull_request(pr, repo, client=_sync(), model="m", plan=plan)
+    asyncio.run(pipeline.review_pull_request(pr, repo, model="m", plan=plan))
     assert closed == [True]
 
-    injected = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
-    injected.close = lambda: (_ for _ in ()).throw(AssertionError("closed the caller's client"))
-    _run(pr, repo, _sync(), injected)
+    injected = _Client(_sync(), _async(WARM, _submit("", []), _submit("", []), _submit("", [])))
+    asyncio.run(pipeline.review_pull_request(pr, repo, client=injected, model="m"))
+    assert injected.closed == 0
+
+
+def test_a_model_error_fails_the_review_and_still_closes_the_owned_client(
+    pr, repo, monkeypatch
+):
+    """RC1-426: a reviewer that raises fails the whole review — the caller
+    sees the error (the webhook logs review_failed) — and the client the
+    pipeline built is closed on the way out."""
+    closed = []
+
+    class Boom:
+        def __init__(self, **kw):
+            self.messages = self
+
+        async def create(self, **kwargs):
+            raise RuntimeError("api down")
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "anthropic", _sdk(Boom))
+    with pytest.raises(RuntimeError, match="api down"):
+        asyncio.run(pipeline.review_pull_request(pr, repo, model="m"))
+    assert closed == [True]
+
+
+def test_a_cancelled_review_propagates_and_closes_the_owned_client(pr, repo, monkeypatch):
+    """RC1-426: a caller's timeout cancels the review mid-call; the
+    cancellation propagates and the owned client is still closed."""
+    closed = []
+
+    class Hangs:
+        def __init__(self, **kw):
+            self.messages = self
+
+        async def create(self, **kwargs):
+            await asyncio.Event().wait()  # never answers
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "anthropic", _sdk(Hangs))
+
+    async def bounded():
+        await asyncio.wait_for(pipeline.review_pull_request(pr, repo, model="m"), timeout=0.05)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(bounded())
+    assert closed == [True]
+
+
+def test_no_event_loop_is_created_below_the_entry_points():
+    """RC1-426: ``asyncio.run`` appears in the application at the CLI's
+    edge and nowhere else; the webhook awaits the pipeline, the pipeline
+    awaits its calls."""
+    app_dir = Path(pipeline.__file__).resolve().parents[1]
+    offenders = sorted(
+        str(path.relative_to(app_dir.parent))
+        for path in app_dir.rglob("*.py")
+        if "asyncio.run(" in path.read_text()
+    )
+    assert offenders == ["app/review.py"]
 
 
 def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(

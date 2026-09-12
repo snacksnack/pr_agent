@@ -21,6 +21,7 @@ Written down because it had been rebuilt from a memory note three times.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import shutil
@@ -55,7 +56,7 @@ def _origin(cwd: Path) -> tuple[str, str]:
     return owner, repo
 
 
-def measure(
+async def measure(
     number: int,
     *,
     repo_dir: Path = Path("."),
@@ -82,7 +83,9 @@ def measure(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
-            outcome = review_pull_request(pr, LocalRepository(worktree), repo_context=repo_context)
+            outcome = await review_pull_request(
+                pr, LocalRepository(worktree), repo_context=repo_context
+            )
             wall_s = time.perf_counter() - started
         finally:
             subprocess.run(
@@ -146,11 +149,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(name)s %(message)s")
     for number in args.numbers:
-        row = measure(
-            number,
-            repo_dir=args.repo_dir,
-            overlay=tuple(args.overlay),
-            repo_context=not args.no_repo_context,
+        # The script's edge (RC1-426): one loop per PR, the pipeline builds
+        # and closes its own client inside it.
+        row = asyncio.run(
+            measure(
+                number,
+                repo_dir=args.repo_dir,
+                overlay=tuple(args.overlay),
+                repo_context=not args.no_repo_context,
+            )
         )
         print(json.dumps(row), flush=True)
         print(

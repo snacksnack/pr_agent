@@ -17,6 +17,7 @@ The scoring lives in ``evals/tiebreak.py``; the cases in ``evals/boundary.py``.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from app.agent.reviewer import REQUEST_TIMEOUT_S
 from app.config import settings
@@ -104,32 +105,42 @@ def _cases(args: argparse.Namespace) -> list[boundary.BoundaryCase]:
     return list(boundary.CASES)
 
 
-def _client() -> Anthropic:
+def _client() -> AsyncAnthropic:
+    """Built inside the command's loop (RC1-426): an async client belongs to
+    the loop it first awaits on."""
     if not settings.anthropic_api_key:
         print("ANTHROPIC_API_KEY is not set", file=sys.stderr)
         sys.exit(2)
-    return Anthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
+    return AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
+
+
+async def _probe_rows(args: argparse.Namespace, out: Path) -> list[dict[str, Any]]:
+    client = _client()
+    rows: list[dict[str, Any]] = []
+    orders = tiebreak.ORDERS if args.order == "both" else (args.order,)
+    try:
+        for case in _cases(args):
+            for order in orders:
+                for i in range(args.runs):
+                    row = await tiebreak.probe_case(case, order, client=client)
+                    row["run"] = i
+                    rows.append(row)
+                    _write(out, row)
+                    print(
+                        f"{case.id:38} {order:14} run {i}: kept={row['kept']:8} "
+                        f"({', '.join(row['kept_categories']) or 'none'}) "
+                        f"${row['cost_usd']:.4f} {row['latency_ms']} ms",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+    finally:
+        await client.close()
+    return rows
 
 
 def cmd_probe(args: argparse.Namespace) -> int:
-    client = _client()
     out = _out_path("probe", args.out)
-    rows: list[dict[str, Any]] = []
-    orders = tiebreak.ORDERS if args.order == "both" else (args.order,)
-    for case in _cases(args):
-        for order in orders:
-            for i in range(args.runs):
-                row = tiebreak.probe_case(case, order, client=client)
-                row["run"] = i
-                rows.append(row)
-                _write(out, row)
-                print(
-                    f"{case.id:38} {order:14} run {i}: kept={row['kept']:8} "
-                    f"({', '.join(row['kept_categories']) or 'none'}) "
-                    f"${row['cost_usd']:.4f} {row['latency_ms']} ms",
-                    file=sys.stderr,
-                    flush=True,
-                )
+    rows = asyncio.run(_probe_rows(args, out))  # the script's edge (RC1-426)
     summary = tiebreak.summarize_probe(rows)
     print(
         f"# Probe: {summary['rows']} verifier calls over {summary['cases']} cases, "
@@ -169,23 +180,31 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_pipeline(args: argparse.Namespace) -> int:
+async def _pipeline_rows(args: argparse.Namespace, out: Path) -> list[dict[str, Any]]:
     client = _client()
-    out = _out_path("pipeline", args.out)
     rows: list[dict[str, Any]] = []
-    for case in _cases(args):
-        for i in range(args.runs):
-            row = tiebreak.pipeline_case(case, client=client)
-            row["run"] = i
-            rows.append(row)
-            _write(out, row)
-            print(
-                f"{case.id:38} run {i}: {row['outcome']:16} kept={row['kept_on_plant']} "
-                f"dropped={row['dropped_on_plant']} both_filed={row['pair_both_filed']} "
-                f"${row['cost_usd']:.4f} {row['wall_s']}s",
-                file=sys.stderr,
-                flush=True,
-            )
+    try:
+        for case in _cases(args):
+            for i in range(args.runs):
+                row = await tiebreak.pipeline_case(case, client=client)
+                row["run"] = i
+                rows.append(row)
+                _write(out, row)
+                print(
+                    f"{case.id:38} run {i}: {row['outcome']:16} kept={row['kept_on_plant']} "
+                    f"dropped={row['dropped_on_plant']} both_filed={row['pair_both_filed']} "
+                    f"${row['cost_usd']:.4f} {row['wall_s']}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    finally:
+        await client.close()
+    return rows
+
+
+def cmd_pipeline(args: argparse.Namespace) -> int:
+    out = _out_path("pipeline", args.out)
+    rows = asyncio.run(_pipeline_rows(args, out))  # the script's edge (RC1-426)
     summary = tiebreak.summarize_pipeline(rows)
     print(f"# Pipeline: {summary['rows']} multi-agent reviews, ${summary['cost_usd']:.2f}\n")
     print(

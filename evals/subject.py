@@ -35,6 +35,7 @@ quietly accepting whatever came back.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import shutil
 import tempfile
@@ -584,12 +585,15 @@ def _review(
     captured: list[ReviewOutcome] = []
 
     def _capture(pull, repository):
-        outcome = review_pull_request(
-            pull,
-            repository,
-            client=None,
-            model=settings.review_model,
-            repo_context=repo_context,
+        # The eval's sync bridge (RC1-426): the CLI's default review callable
+        # is replaced here, so this is where the pipeline's loop is owned.
+        outcome = asyncio.run(
+            review_pull_request(
+                pull,
+                repository,
+                model=settings.review_model,
+                repo_context=repo_context,
+            )
         )
         captured.append(outcome)
         return outcome

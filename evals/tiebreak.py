@@ -185,17 +185,17 @@ def kept_of_pair(case: boundary.BoundaryCase, kept: list[Finding]) -> str:
 
 
 class RecordingClient:
-    """A sync client wrapper that keeps every response, so the verifier's
-    verdicts — reasons included, which ``verify_findings`` logs but does not
-    return — can be read back after the call."""
+    """An async client wrapper (RC1-426) that keeps every response, so the
+    verifier's verdicts — reasons included, which ``verify_findings`` logs
+    but does not return — can be read back after the call."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.calls: list[tuple[dict[str, Any], Any]] = []
         self.messages = self
 
-    def create(self, **kwargs: Any) -> Any:
-        response = self._inner.messages.create(**kwargs)
+    async def create(self, **kwargs: Any) -> Any:
+        response = await self._inner.messages.create(**kwargs)
         self.calls.append((kwargs, response))
         return response
 
@@ -239,7 +239,7 @@ def probe_prefix(case: boundary.BoundaryCase) -> str:
     return build_shared_prefix(pr, None, context)
 
 
-def probe_case(
+async def probe_case(
     case: boundary.BoundaryCase,
     order: str,
     *,
@@ -254,7 +254,7 @@ def probe_case(
     model = model or settings.review_model
     recorder = RecordingClient(client)
     started = time.perf_counter()
-    verified = verifier.verify_findings(
+    verified = await verifier.verify_findings(
         findings,
         client=recorder,
         model=model,
@@ -334,7 +334,7 @@ def summarize_probe(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # --- pipeline: the whole multi-agent review -----------------------------------
 
 
-def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]:
+async def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]:
     """One multi-agent review with the verifier on, over a checkout holding
     only what the case lays down (the conventions page, when it needs one)."""
     pr = boundary.pull_request(case)
@@ -342,7 +342,7 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
     with tempfile.TemporaryDirectory(prefix=f"tiebreak-{case.id}-") as tmp:
         materialise_checkout(Path(tmp), None, boundary.repo_files(case))
         started = time.perf_counter()
-        outcome = review_pull_request(
+        outcome = await review_pull_request(
             pr, LocalRepository(tmp), client=recorder, repo_context=True
         )
         wall_s = time.perf_counter() - started

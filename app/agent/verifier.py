@@ -1,6 +1,7 @@
 """Verifier pass over the merged findings (RC1-387; a permanent stage since RC1-428).
 
-A second, tool-less model call that re-reads every finding the reviewers
+A second, tool-less model call — awaited on the review's loop, through the
+review's one async client (RC1-426) — that re-reads every finding the reviewers
 submitted against the same rendering of the diff, and returns a verdict per
 finding: **keep**, **drop**, or **downgrade**. Python applies the verdicts
 under three rules the model cannot override:
@@ -234,7 +235,7 @@ def apply_verdicts(
     return kept, dropped, downgraded
 
 
-def verify_findings(
+async def verify_findings(
     findings: list[Finding],
     *,
     client: Any,
@@ -248,7 +249,9 @@ def verify_findings(
 
     An empty list is returned unchanged with no model call: a clean review
     pays nothing here. ``model`` defaults to the review model in settings;
-    the pipeline passes the one the reviewers ran on.
+    the pipeline passes the one the reviewers ran on. ``client`` is the
+    review's async client (RC1-426) — the same one the reviewers used, or a
+    fake whose ``messages.create`` is a coroutine.
 
     ``prefix`` is the PR and the repository context exactly as the reviewers
     saw them, sent under the same cache breakpoint with their ``tools`` and
@@ -267,7 +270,7 @@ def verify_findings(
         {"type": "text", "text": prefix, "cache_control": CACHE_CONTROL},
         {"type": "text", "text": suffix},
     ]
-    response = client.messages.create(
+    response = await client.messages.create(
         model=model,
         system=SYSTEM_BLOCKS,
         messages=[{"role": "user", "content": content}],

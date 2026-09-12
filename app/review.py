@@ -19,11 +19,14 @@ omitted, the review still runs from the diff alone, but file exploration is
 disabled.
 
 Network calls (GitHub + Anthropic) happen only inside the default ingestion and
-review callables; both are injectable so the CLI can be tested offline.
+review callables; both are injectable so the CLI can be tested offline. The
+review callable is synchronous: the default one runs the async pipeline under
+one ``asyncio.run`` — the CLI's edge, and the application's only one (RC1-426).
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import sys
 import tempfile
@@ -244,9 +247,12 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 
 def _default_review(*, model: str | None) -> ReviewFn:
+    """The CLI's one synchronous bridge (RC1-426): the pipeline is a
+    coroutine, and this is the only ``asyncio.run`` in the application."""
+
     def _review(pr: PullRequest, repository: RepositoryAccess) -> ReviewOutcome:
-        # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
-        return review_pull_request(pr, repository, client=None, model=model)
+        # client=None -> the pipeline builds the async Anthropic SDK from settings.
+        return asyncio.run(review_pull_request(pr, repository, model=model))
 
     return _review
 
