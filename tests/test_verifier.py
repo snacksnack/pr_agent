@@ -240,3 +240,16 @@ def test_the_instructions_carry_the_absence_rule_and_the_duplicate_fold():
     assert "not a blocker" in verifier.ABSENCE_RULE
     assert "Their order in the list above means nothing" in verifier.VERIFIER_INSTRUCTIONS
     assert "do not keep both because their wording differs" in verifier.VERIFIER_INSTRUCTIONS
+
+
+def test_the_verifier_carries_every_other_field_of_the_result_through():
+    # RC1-425: the pipeline assembles the final result after this pass, so a
+    # field the verifier does not touch must survive it (dataclasses.replace).
+    result = _result(_finding())
+    result.conventions_file, result.callers_found, result.latency_ms = "CLAUDE.md", 3, 12.5
+    result.stage_latency_ms = {"context": 1.0}
+    client = FakeClient([_verdicts()])
+    out = _verify(result, client)
+    assert out.verified is True
+    assert (out.conventions_file, out.callers_found, out.latency_ms) == ("CLAUDE.md", 3, 12.5)
+    assert out.stage_latency_ms == {"context": 1.0}

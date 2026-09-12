@@ -1,8 +1,9 @@
 """The PR-agent subject: planted-defect recall, and what it costs (RC1-253).
 
 Driven through `app.review.main` — the real dry-run CLI — with only `fetch`
-injected. The reviewer loop, the prompts, the deterministic n8n check, the merge,
-the verdict policy and the exit codes are all the shipped ones. Stubbing more
+injected. The pipeline — the deterministic n8n check, the reviewers, the
+merge, the verifier — the prompts, the verdict policy and the exit codes are
+all the shipped ones. Stubbing more
 than the GitHub round-trip would mean scoring a pipeline nobody runs.
 
 ## Four things are scored, and they are never averaged
@@ -568,8 +569,9 @@ def _review(
     `main` prints a report and returns an exit code; the findings themselves are
     not returned. Wrapping the review function is how both are obtained without
     reimplementing the pipeline — and the wrapper is transparent, so the n8n
-    merge and the verdict still happen exactly as they ship. The captured
-    `ReviewResult` also carries the loop's token counts for pricing.
+    check, its merge (inside the pipeline since RC1-425) and the verdict still
+    happen exactly as they ship. The captured `ReviewResult` also carries the
+    loop's token counts for pricing.
 
     The review function is the shipped `review_pull_request` with the CLI's
     defaults (`client=None`, so the SDK is built from settings) plus the one
@@ -577,13 +579,12 @@ def _review(
     """
     captured: list[ReviewResult] = []
 
-    def _capture(pull, tools, precomputed):
+    def _capture(pull, repository):
         result = review_pull_request(
             pull,
-            tools,
+            repository,
             client=None,
             model=settings.review_model,
-            precomputed_findings=precomputed,
             repo_context=repo_context,
         )
         captured.append(result)

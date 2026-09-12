@@ -22,8 +22,10 @@ longer offer one.
 
 What every adapter guarantees:
 
-* **Bounded.** A read is clipped to ``MAX_READ_BYTES``; a grep stops at
-  ``max_results`` rows and skips files over ``MAX_GREP_FILE_BYTES``.
+* **Bounded.** A read is clipped to ``MAX_READ_BYTES`` unless the caller
+  names a larger ``max_bytes`` (a deterministic check parsing a whole
+  workflow export, RC1-425); a grep stops at ``max_results`` rows and skips
+  files over ``MAX_GREP_FILE_BYTES``.
 * **Guarded.** Paths cannot escape the repository; secret and credential
   files (``.env``, keys, ``credentials``) and generated lock files are never
   read, grepped or listed; noise directories (``.git``, ``node_modules``,
@@ -147,10 +149,12 @@ class RepositoryAccess(Protocol):
         router then skips the context and the reviewers work from the diff."""
         ...
 
-    def read_text(self, path: str) -> str | None:
-        """A file's raw text, clipped to ``MAX_READ_BYTES``, or ``None`` when
-        there is nothing to read: missing, a directory, binary, withheld
-        (secret or lock file), outside the root, or out of budget."""
+    def read_text(self, path: str, *, max_bytes: int = MAX_READ_BYTES) -> str | None:
+        """A file's raw text, clipped to ``max_bytes`` (the prefix-sized
+        ``MAX_READ_BYTES`` unless a caller that parses the whole file — a
+        deterministic check, RC1-425 — asks for more), or ``None`` when there
+        is nothing to read: missing, a directory, binary, withheld (secret or
+        lock file), outside the root, or out of budget."""
         ...
 
     def paths(self) -> list[str] | None:

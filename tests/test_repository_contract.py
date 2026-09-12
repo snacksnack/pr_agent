@@ -108,6 +108,12 @@ def test_read_text_clips_at_the_read_cap(repository):
     assert text is not None and len(text) == MAX_READ_BYTES
 
 
+def test_read_text_serves_the_whole_file_when_a_check_asks_for_it(repository):
+    # RC1-425: a deterministic check parses the file, so it reads past the
+    # prefix-sized clip.
+    assert repository.read_text("long.txt", max_bytes=MAX_READ_BYTES * 2) == FILES["long.txt"]
+
+
 @pytest.mark.parametrize(
     "path",
     [

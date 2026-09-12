@@ -275,10 +275,9 @@ def _wire_fakes(monkeypatch, pr, posted):
         def client_for_repo(self, owner, repo):
             return FakeClient()
 
-    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
+    def fake_review(pull_request, repository, client=None):
         posted["reviewed"] = posted.get("reviewed", 0) + 1
-        posted["precomputed"] = precomputed_findings
-        posted["tools"] = repo_tools
+        posted["repository"] = repository
         return ReviewResult(summary="ok", model="m")
 
     def fake_post(client, pull_request, result, *, block_on, commit_id=None):
@@ -308,8 +307,8 @@ def test_process_event_ingests_reviews_and_posts(monkeypatch):
     # RC1-364: the live agent explores the repo through the API at the PR head,
     # not an empty temp dir.
     from app.agent.github_repository import GitHubRepository
-    assert isinstance(posted["tools"], GitHubRepository)
-    assert posted["tools"].api_calls == 0  # nothing spent until the model asks
+    assert isinstance(posted["repository"], GitHubRepository)
+    assert posted["repository"].api_calls == 0  # nothing spent until the pipeline reads
 
 
 def test_process_event_skips_duplicate_delivery_and_reviewed_sha(monkeypatch):
@@ -349,48 +348,34 @@ def test_process_event_skips_stale_head(monkeypatch):
     assert "reviewed" not in posted  # never ran the review
 
 
-# --- live n8n check on the webhook path (RC1-121) -------------------------
+# --- the webhook loads and publishes; the pipeline owns the checks (RC1-425) --------
 
-def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
-    # A PR that changes an n8n workflow JSON with an aggressive cron trigger.
-    # The live path has no checkout, so it must fetch the file at the head via
-    # the Contents API, run the deterministic check, hand the finding to the
-    # loop as context, and merge it into the posted result exactly once.
+def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
+    # The deterministic n8n check runs inside the pipeline (RC1-425). The
+    # webhook hands it a repository served at the PR head and posts exactly
+    # the result it returns — nothing is added, merged or re-run here.
     import app.agent.pipeline
     import app.auth
     import app.posting
+    from app.agent.github_repository import GitHubRepository
     from app.dedup import DedupStore
-    from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
+    from app.models import ChangedFile, Finding, PRRef, PullRequest, ReviewResult
 
-    workflow = json.dumps(
-        {
-            "nodes": [
-                {
-                    "name": "Cron",
-                    "type": "n8n-nodes-base.cron",
-                    "parameters": {"triggerTimes": {"item": [{"mode": "everyMinute"}]}},
-                }
-            ],
-            "connections": {},
-        }
-    )
     pr = PullRequest(
         ref=PRRef("octo", "hello", 42),
         title="Add workflow",
         head_sha="abc123def4567890",
         files=[ChangedFile(filename="flows/poll.json", status="added")],
     )
-
-    fetched: dict = {}
+    fetched: list = []
 
     class FakeClient:
         def fetch_pull_request(self, ref):
             return pr
 
         def get_file_text(self, ref, path, *, git_ref=None):
-            fetched["path"] = path
-            fetched["git_ref"] = git_ref
-            return workflow
+            fetched.append((path, git_ref))
+            return "{}"
 
     class FakeAuth:
         def __enter__(self):
@@ -402,12 +387,15 @@ def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
         def client_for_repo(self, owner, repo):
             return FakeClient()
 
+    findings = [
+        Finding("warning", "security", "model claim", file="flows/poll.json", line=1),
+        Finding("warning", "n8n", "cron fires every minute", file="flows/poll.json"),
+    ]
     seen: dict = {}
 
-    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
-        seen["precomputed"] = precomputed_findings
-        # The loop must NOT re-emit the deterministic finding (it's context).
-        return ReviewResult(summary="ok", model="m")
+    def fake_review(pull_request, repository, client=None):
+        seen["repository"] = repository
+        return ReviewResult(summary="ok", model="m", findings=list(findings))
 
     posted: dict = {}
 
@@ -423,69 +411,13 @@ def test_process_event_runs_n8n_check_and_merges_once(monkeypatch):
     event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
     process_event(event, store=DedupStore())
 
-    # Sourced the file at the PR head, not the base.
-    assert fetched == {"path": "flows/poll.json", "git_ref": "abc123def4567890"}
-    # Fed to the loop as already-recorded context...
-    assert [f.category for f in seen["precomputed"]] == ["n8n"]
-    assert seen["precomputed"][0].file == "flows/poll.json"
-    # ...and merged into the posted result exactly once (no duplication).
-    n8n_findings = [f for f in posted["result"].findings if f.category == "n8n"]
-    assert len(n8n_findings) == 1
-
-
-def test_process_event_n8n_check_failure_does_not_abort_review(monkeypatch):
-    # If sourcing/parsing a workflow blows up, the n8n step degrades to nothing
-    # and the review still posts — an advisory side-check never sinks a review.
-    import app.agent.pipeline
-    import app.auth
-    import app.posting
-    from app.dedup import DedupStore
-    from app.models import ChangedFile, PRRef, PullRequest, ReviewResult
-
-    pr = PullRequest(
-        ref=PRRef("octo", "hello", 42),
-        title="T",
-        head_sha="abc123def4567890",
-        files=[ChangedFile(filename="flow.json", status="added")],
-    )
-
-    class FakeClient:
-        def fetch_pull_request(self, ref):
-            return pr
-
-        def get_file_text(self, ref, path, *, git_ref=None):
-            raise RuntimeError("boom")
-
-    class FakeAuth:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def client_for_repo(self, owner, repo):
-            return FakeClient()
-
-    posted: dict = {}
-
-    def fake_review(pull_request, repo_tools, client=None, precomputed_findings=None):
-        posted["precomputed"] = precomputed_findings
-        return ReviewResult(summary="ok", model="m")
-
-    def fake_post(client, pull_request, result, *, block_on, commit_id=None):
-        posted["posted"] = True
-        return {"summary_action": "created", "new_comments": 0, "dismissed": 0,
-                "review_id": 5, "event": "COMMENT"}
-
-    monkeypatch.setattr(app.auth, "GitHubAppAuth", FakeAuth)
-    monkeypatch.setattr(app.agent.pipeline, "review_pull_request", fake_review)
-    monkeypatch.setattr(app.posting, "post_review", fake_post)
-
-    event = WebhookEvent("d-1", "opened", "octo", "hello", 42, "abc123def4567890", 1)
-    process_event(event, store=DedupStore())
-
-    assert posted.get("posted") is True
-    assert posted["precomputed"] == []
+    assert posted["result"].findings == findings
+    # The webhook read nothing itself; the pipeline's repository reads at the head.
+    assert fetched == []
+    repository = seen["repository"]
+    assert isinstance(repository, GitHubRepository)
+    assert repository.read_text("flows/poll.json") == "{}"
+    assert fetched == [("flows/poll.json", "abc123def4567890")]
 
 
 # --- logging never leaks secrets ------------------------------------------

@@ -4,11 +4,10 @@ Runs the full review against a real PR and prints the would-be review to the
 terminal. Nothing is posted to GitHub — this is the tool used to tune review
 quality before the App and hosting exist.
 
-Pipeline: ingest the PR (RC1-108) -> agentic review loop + rubric (RC1-110 /
-RC1-111) -> deterministic n8n execution-cost check (RC1-112, wired behind a
-guard until its rules land) -> formatted terminal output. The process exit code
-reflects whether a ``block_on`` finding was present, so this is usable in CI
-later.
+Pipeline: ingest the PR (RC1-108) -> the review pipeline (checks, reviewers,
+verifier, one result; RC1-422, RC1-425) -> formatted terminal output. The
+process exit code reflects whether a ``block_on`` finding was present, so this
+is usable in CI later.
 
 Usage:
 
@@ -32,7 +31,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from app.agent.checks import n8n
 from app.agent.local_repository import LocalRepository
 from app.agent.pipeline import review_pull_request
 from app.agent.repository import RepositoryAccess, RepositoryError
@@ -47,9 +45,9 @@ EXIT_BLOCKED = 1     # review ran; a block_on finding was present
 EXIT_ERROR = 2       # the review could not be produced (ingestion/loop failure)
 
 FetchFn = Callable[[PRRef], PullRequest]
-# The review callable receives the PR, the repository, and any precomputed
-# findings from deterministic checks (shown to the model as already-recorded).
-ReviewFn = Callable[[PullRequest, RepositoryAccess, "list[Finding]"], ReviewResult]
+# The review callable receives the PR and the repository and returns the one
+# complete result; the deterministic checks run inside it (RC1-425).
+ReviewFn = Callable[[PullRequest, RepositoryAccess], ReviewResult]
 
 _SEVERITY_LABEL = {"blocker": "BLOCKER", "warning": "WARNING", "nit": "NIT"}
 
@@ -94,29 +92,6 @@ def blocking_findings(result: ReviewResult, block_on: list[str]) -> list[Finding
     advisory (see docs/rc1-114-tuning.md).
     """
     return gating_findings(result.findings, block_on)
-
-
-# --- n8n hook -------------------------------------------------------------
-
-def run_n8n_checks(pr: PullRequest, repo_root: Path | None) -> list[Finding]:
-    """Run the deterministic n8n execution-cost check over changed JSON files.
-
-    Sources file contents from the local ``--repo-path`` checkout and delegates
-    to the shared :func:`app.agent.checks.n8n.run_checks` runner, so the dry-run
-    CLI and the live webhook (which fetches contents via the GitHub Contents
-    API) stay on one code path. Does nothing without a local checkout; a file
-    missing on disk reads as ``None`` and is skipped.
-    """
-    if repo_root is None:
-        return []
-
-    def _read(filename: str) -> str | None:
-        try:
-            return (repo_root / filename).read_text(encoding="utf-8")
-        except OSError:
-            return None  # absent locally or unreadable — skip
-
-    return n8n.run_checks(pr, _read)
 
 
 # --- output ---------------------------------------------------------------
@@ -172,30 +147,32 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
             f"  merged(off_scope={result.off_scope_findings},"
             f" deduplicated={result.deduplicated_findings})"
         )
+    # RC1-425: the deterministic checks the pipeline ran, and any that failed.
+    if result.checks_run or result.checks_failed:
+        meta += f"  checks(run={','.join(result.checks_run) or 'none'}"
+        meta += f", findings={result.deterministic_findings}"
+        if result.checks_failed:
+            meta += f", failed={','.join(result.checks_failed)}"
+        meta += ")"
     lines.append(meta)
     return "\n".join(lines)
 
 
 # --- repo context ---------------------------------------------------------
 
-def _resolve_repository(
-    repo_path: str | None, tmpdirs: list[str]
-) -> tuple[LocalRepository, Path | None]:
-    """A LocalRepository over --repo-path, or over an empty temp dir as a fallback.
-
-    Returns the repository plus the real checkout root (``None`` when we fell back to
-    the empty temp dir, so the n8n hook knows there are no real files to read).
-    """
+def _resolve_repository(repo_path: str | None, tmpdirs: list[str]) -> LocalRepository:
+    """A LocalRepository over --repo-path, or over an empty temp dir as a fallback."""
     if repo_path:
         root = Path(repo_path).expanduser()
         if not root.is_dir():
             raise GitHubError(f"--repo-path is not a directory: {repo_path}")
-        return LocalRepository(root), root
+        return LocalRepository(root)
     # No checkout: an empty dir is not explorable, so the router skips the
-    # repository context and the reviewers work from the diff.
+    # repository context, the checks find nothing to read and the reviewers
+    # work from the diff.
     tmp = tempfile.mkdtemp(prefix="pr-review-empty-")
     tmpdirs.append(tmp)
-    return LocalRepository(tmp), None
+    return LocalRepository(tmp)
 
 
 # --- entry point ----------------------------------------------------------
@@ -222,19 +199,14 @@ def main(
     tmpdirs: list[str] = []
     try:
         pr = fetch(ref)
-        repository, repo_root = _resolve_repository(args.repo_path, tmpdirs)
+        repository = _resolve_repository(args.repo_path, tmpdirs)
         if args.repo_path is None:
             print(
                 "note: no --repo-path; reviewing from the diff only "
                 "(file exploration disabled).",
                 file=sys.stderr,
             )
-        # Deterministic checks run first; their findings are handed to the
-        # review loop as already-recorded context (so the model builds on them
-        # instead of duplicating them), then merged into the final result here.
-        precomputed = run_n8n_checks(pr, repo_root)
-        result = review(pr, repository, precomputed)
-        result.findings.extend(precomputed)
+        result = review(pr, repository)
     except (GitHubError, RepositoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -262,13 +234,9 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 
 def _default_review(*, model: str | None) -> ReviewFn:
-    def _review(
-        pr: PullRequest, repository: RepositoryAccess, precomputed: list[Finding]
-    ) -> ReviewResult:
+    def _review(pr: PullRequest, repository: RepositoryAccess) -> ReviewResult:
         # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
-        return review_pull_request(
-            pr, repository, client=None, model=model, precomputed_findings=precomputed
-        )
+        return review_pull_request(pr, repository, client=None, model=model)
 
     return _review
 

@@ -134,9 +134,10 @@ class GitHubRepository:
 
     # -- the contract ----------------------------------------------------
 
-    def read_text(self, path: str) -> str | None:
+    def read_text(self, path: str, *, max_bytes: int = MAX_READ_BYTES) -> str | None:
         """One API call when uncached, none when the budget is spent: the
-        context is optional, the review is not."""
+        context is optional, the review is not. The Contents API itself
+        stops at about 1 MB, so ``max_bytes`` above that changes nothing."""
         try:
             rel = self._normalize(path)
         except RepositoryError:
@@ -147,7 +148,7 @@ class GitHubRepository:
             text = self._fetch(rel)
         except RepositoryError:
             return None
-        return text[:MAX_READ_BYTES] if text is not None else None
+        return text[:max_bytes] if text is not None else None
 
     def paths(self) -> list[str] | None:
         """Every served blob path in the tree at the PR head; ``None`` when

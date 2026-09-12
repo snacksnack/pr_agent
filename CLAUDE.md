@@ -18,9 +18,12 @@ posts a single structured review (summary + inline comments, severity-tagged).
 
 Custom **GitHub App** (account-wide) → **Python / FastAPI** service on **Fly.io**
 → one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`): Python
-gathers the repository context (conventions file, callers, tests, by grep),
-three evidence-scoped reviewers fan out on one cached prefix, Python merges.
-No model explores: the scout that did was measured and retired (RC1-427). Reviews are **advisory by default**; they escalate to "Request
+runs the deterministic checks (n8n workflow cost) and gathers the repository
+context (conventions file, callers, tests, by grep), three evidence-scoped
+reviewers fan out on one cached prefix, Python merges, the verifier judges
+the model's findings, and the pipeline hands back the one complete result
+(RC1-425). No model explores: the scout that did was measured and retired
+(RC1-427). Reviews are **advisory by default**; they escalate to "Request
 changes" only on a committed secret (`block_on`).
 
 ## Build plan & status
@@ -43,11 +46,11 @@ Milestone 2 — App + webhook:
       resolves the RC1-114 verdict-policy carryover)
 - [x] RC1-118 re-push dedup (`app/dedup.py` + upsert/supersede in `app/posting.py`)
 - [x] RC1-121 run n8n cost check on the webhook path — shared source-agnostic
-      runner (`n8n.run_checks(pr, read_text)`); live path sources changed-file
-      contents at the PR head via the Contents API (`GitHubClient.get_file_text`)
-      and `process_event` runs it first → feeds findings to the loop as context →
-      merges once (mirrors the dry-run CLI). Recoverable: missing/non-JSON/
-      unparseable files skip, never fail the review.
+      runner (`n8n.run_checks(pr, read_text)`); the live path sourced changed
+      files at the PR head via the Contents API and `process_event` ran it,
+      fed the findings to the loop as context and merged once, mirroring the
+      CLI — until RC1-425 moved all of that into the pipeline. Recoverable:
+      missing/non-JSON/unparseable files skip, never fail the review.
 
 Milestone 3 — deploy:
 - [x] RC1-119 Dockerize + Fly.io (`Dockerfile`, `.dockerignore`, `fly.toml`;
@@ -125,6 +128,15 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       protocol; the model-facing `read_file` / `list_dir` are gone; a spent
       API budget is "not searched", never "no matches"
       (record in `docs/rc1-424-repository-access.md`)
+- [x] RC1-425 the pipeline owns the deterministic checks and the result:
+      `app/agent/checks` is the registry (`Check`, `CHECKS`) and the stage
+      (`run_deterministic_checks`, reading changed files whole through the
+      repository contract's new `max_bytes`); the pipeline runs it first,
+      puts the findings in the prefix as already-recorded, verifies only the
+      model's findings and appends the checks' once (`checks_run`,
+      `checks_failed`, `deterministic_findings` on the result); the webhook
+      loads and publishes, the CLI loads and prints, `precomputed_findings`
+      is gone (record in `docs/rc1-425-deterministic-checks.md`)
 
 ## Layout
 
@@ -151,8 +163,9 @@ app/
     local_repository.py   LocalRepository: the contract from a checkout on disk (RC1-109)
     github_repository.py  GitHubRepository: the contract from Trees + Contents at the PR
                 head, under the per-review API budget (RC1-364)
-    pipeline.py the review: review_pull_request(...) — context -> warm cache
-                -> reviewers (gather) -> merge -> verifier; opens the pr_review span (RC1-390/422/427/428)
+    pipeline.py the review: review_pull_request(...) — checks -> context -> warm cache
+                -> reviewers (gather) -> merge -> verifier -> assemble; opens the
+                pr_review span (RC1-390/422/427/428/425)
     reviewer.py model-facing primitives every stage shares: render_pr, the cache
                 marker + system block, _tokens, parse_findings (RC1-110/422/427)
     verifier.py second pass over the merged findings: drop, downgrade, fold one
@@ -162,7 +175,8 @@ app/
     context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
                 into the prefix; `complete` when all three are answered
     prompts.py  rubric/system prompt (RC1-111); reviewer specs (RC1-390)
-    checks/n8n.py  n8n static check (RC1-112)
+    checks/     RC1-425: Check + CHECKS registry and run_deterministic_checks, the
+                pipeline's first stage; checks/n8n.py is the n8n static check (RC1-112)
 tests/          pytest, offline
 ```
 
@@ -188,6 +202,11 @@ tests/          pytest, offline
   `tests/test_repository_contract.py` before anything else.
 - **Bounded everything.** Reads, grep results, diff size, and API calls per
   live review are all capped (cost/context guardrails).
+- **The pipeline assembles the result.** Deterministic checks run inside
+  `review_pull_request`, first; their findings are in the prefix as
+  already-recorded and in the result exactly once, after the verifier. A
+  caller never runs a check or merges a finding; a new check is one entry in
+  `app/agent/checks.CHECKS`.
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
   (`["leaked_secret"]`), `remote_api_budget`

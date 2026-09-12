@@ -4,9 +4,17 @@ One production pipeline (RC1-422 retired the single loop that explored and
 judged in one conversation; RC1-427 retired the scout that explored for the
 reviewers). The review's graph is explicit in plain Python:
 
-    plan (router) -> context (Python) -> warm cache -> reviewers (gather)
-        -> merge -> verifier
+    plan (router) -> checks (Python) -> context (Python) -> warm cache
+        -> reviewers (gather) -> merge -> verifier -> assemble
 
+* **Checks** (:mod:`app.agent.checks`, RC1-112, RC1-425) are the
+  deterministic, model-free checks — the n8n execution-cost check — run
+  first, over the changed files read through the same repository the
+  context uses. Their findings go into the shared prefix as
+  already-recorded, so the reviewers add to them rather than restate them,
+  and are appended to the result once, after the verifier, which judges
+  only what the model claimed. Until RC1-425 each caller ran the check and
+  merged it; the pipeline now owns the ordering and the assembly.
 * **Context** (:mod:`app.agent.context`, RC1-393, RC1-394) is the
   repository's own conventions file, a grep for callers of what the diff
   changed, and the tests touching the changed paths, put in the shared
@@ -58,9 +66,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.checks import CHECKS, Check, CheckRun, run_deterministic_checks
 from app.agent.context import RepoContext, build_repo_context
 from app.agent.prompts import SUBMIT_TOOL, SYSTEM_PROMPT, ReviewerSpec, reviewer_instructions
 from app.agent.repository import RepositoryAccess
@@ -111,16 +121,18 @@ class ReviewerOutput:
 
 def build_shared_prefix(
     pull_request: PullRequest,
-    precomputed_findings: list[Finding] | None,
+    deterministic_findings: list[Finding] | None,
     context: str = "",
 ) -> str:
-    """The PR as the reviewers and the verifier all see it, then the
-    repository context Python gathered (RC1-393; empty when there was none).
+    """The PR as the reviewers and the verifier all see it — with the
+    deterministic checks' findings listed as already-recorded (RC1-112) —
+    then the repository context Python gathered (RC1-393; empty when there
+    was none).
 
     One string, one cache breakpoint. Everything that differs per call comes
     after it.
     """
-    parts = [*render_pr(pull_request, precomputed_findings)]
+    parts = [*render_pr(pull_request, deterministic_findings)]
     if context:
         parts += ["", context]
     return "\n".join(parts)
@@ -303,19 +315,19 @@ def review_pull_request(
     async_client: Any | None = None,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-    precomputed_findings: list[Finding] | None = None,
+    checks: Sequence[Check] = CHECKS,
     plan: ReviewPlan | None = None,
     repo_context: bool = True,
 ) -> ReviewResult:
-    """Run the review and return one :class:`ReviewResult`.
+    """Run the review and return one complete :class:`ReviewResult`.
 
-    ``precomputed_findings`` are findings from deterministic static checks
-    that ran first; they are shown to the model as already-recorded (so it
-    doesn't duplicate them) but are NOT merged here — the caller owns
-    merging them into the final result, keeping this function's output the
-    model's own. ``repo_context`` (RC1-393) is whether Python puts the conventions file,
-    callers and tests in the shared prefix; the eval turns it off to measure
-    it, nothing else does.
+    The result carries the model's findings, verified, followed by the
+    deterministic ``checks``' findings (RC1-425): the caller merges nothing.
+    ``checks`` is the registry by default; tests inject their own. A check
+    that fails is named in ``checks_failed`` and costs the review nothing
+    else. ``repo_context`` (RC1-393) is whether Python puts the conventions
+    file, callers and tests in the shared prefix; the eval turns it off to
+    measure it, nothing else does.
 
     ``client`` serves the verifier (sync) and is built only when there is
     something to verify; ``async_client`` serves the warm call and the reviewers. Either
@@ -338,7 +350,7 @@ def review_pull_request(
             async_client=async_client,
             model=model,
             max_tokens=max_tokens,
-            precomputed_findings=precomputed_findings,
+            checks=checks,
             plan=plan,
             repo_context=repo_context,
         )
@@ -355,7 +367,7 @@ def _review(
     async_client: Any | None,
     model: str | None,
     max_tokens: int,
-    precomputed_findings: list[Finding] | None,
+    checks: Sequence[Check],
     plan: ReviewPlan | None,
     repo_context: bool,
 ) -> ReviewResult:
@@ -375,6 +387,22 @@ def _review(
     )
 
     latency: dict[str, float] = {}
+    # RC1-425: the deterministic checks run first, on the changed files as
+    # the repository serves them; the model reads their findings as
+    # already-recorded and never sees the files they parsed.
+    started = time.perf_counter()
+    check_run = CheckRun()
+    if checks:
+        with stage_span("task", "checks"):
+            check_run = run_deterministic_checks(pull_request, repository, checks)
+    latency["checks"] = _ms_since(started)
+    logger.info(
+        "checks ran=%s failed=%s findings=%d",
+        ",".join(check_run.ran) or "-",
+        ",".join(check_run.failed) or "-",
+        len(check_run.findings),
+    )
+
     # RC1-393: the deterministic context is the review's exploration; a
     # docs-only change or an empty checkout pays for none of it.
     started = time.perf_counter()
@@ -394,7 +422,7 @@ def _review(
         context.complete,
     )
 
-    prefix = build_shared_prefix(pull_request, precomputed_findings, context_text)
+    prefix = build_shared_prefix(pull_request, check_run.findings, context_text)
     started = time.perf_counter()
     warm, outputs = asyncio.run(
         _fan_out_then_close(
@@ -457,9 +485,14 @@ def _review(
             "off_scope": off_scope,
             "callers_found": len(context.callers),
             "tests_found": len(context.tests),
+            "deterministic_findings": len(check_run.findings),
+            "checks_failed": len(check_run.failed),
         },
     )
 
+    # The verifier judges the model's claims only (RC1-387): the checks'
+    # findings are not in ``result`` yet, so they cannot be dropped, folded
+    # or downgraded by it.
     if result.findings:
         if client is None:
             from anthropic import Anthropic  # imported lazily so tests don't need the SDK
@@ -479,6 +512,17 @@ def _review(
         "review_latency %s",
         " ".join(f"{stage}={ms / 1000:.1f}s" for stage, ms in latency.items()),
     )
+    return _assemble(result, check_run)
+
+
+def _assemble(result: ReviewResult, check_run: CheckRun) -> ReviewResult:
+    """The one place deterministic and model findings meet (RC1-425): the
+    verified model findings, then each check's findings exactly once, and
+    the record of which checks ran or failed."""
+    result.findings = [*result.findings, *check_run.findings]
+    result.checks_run = list(check_run.ran)
+    result.checks_failed = list(check_run.failed)
+    result.deterministic_findings = len(check_run.findings)
     return result
 
 
