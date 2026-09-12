@@ -136,10 +136,13 @@ run metadata. The exit code is CI-friendly:
 ## Webhook service (RC1-116)
 
 The live path is a FastAPI app that GitHub POSTs events to. It verifies the
-delivery's HMAC signature, acknowledges within GitHub's ~10s window, and runs the
-review on a background task. It handles `pull_request` `opened` / `synchronize` /
-`reopened`; everything else is acked and ignored. Needs `GITHUB_WEBHOOK_SECRET`
-(and, for the background review, the App credentials + `ANTHROPIC_API_KEY`).
+delivery's HMAC signature, persists the review job in SQLite (RC1-423) and
+acknowledges within GitHub's ~10s window; an in-process worker runs the job
+with bounded retries and re-queues anything a restart interrupted. It handles
+`pull_request` `opened` / `synchronize` / `reopened`; everything else is acked
+and ignored. Needs `GITHUB_WEBHOOK_SECRET` (and, for the review itself, the App
+credentials + `ANTHROPIC_API_KEY`); `JOBS_DB_PATH` names the store (default
+`jobs.db` in the working directory; `/data/jobs.db` on Fly's volume).
 
 ```bash
 uvicorn app.webhook:app --port 8000     # GET /healthz, POST /webhook
@@ -208,10 +211,13 @@ docker build -t pr-review-agent .
 docker run --rm -p 8080:8080 pr-review-agent   # then: curl localhost:8080/healthz
 ```
 
-The re-push/redelivery dedup store (RC1-118) is in-memory, so an idle auto-stop
-clears it; that's the documented tradeoff — at worst a stop costs one redundant
-review, never a wrong one. Persisting it is a later concern if the service scales
-out.
+Jobs, delivery ids and reviewed heads live in SQLite on the Fly volume
+`pr_review_jobs` (RC1-423), so an auto-stop or a deploy loses nothing: a job it
+interrupts is re-queued at the next start, and `.github/workflows/wake.yml`
+starts the machine every 15 minutes so a queued job never waits for the next
+delivery. Create the volume once before the first deploy that mounts it:
+`fly volumes create pr_review_jobs --region iad --size 1 -a pr-review-agent-snacksnack`.
+Recovery, retention and the failure modes are in `docs/rc1-423-durable-jobs.md`.
 
 ## Go live (RC1-120)
 
@@ -238,10 +244,11 @@ app/
   config.py            # typed settings via pydantic-settings (RC1-107)
   github.py            # PR ingestion: diff + metadata (RC1-108)
   auth.py              # GitHub App auth: JWT -> installation tokens (RC1-115)
-  webhook.py           # FastAPI webhook receiver: HMAC verify + async review (RC1-116)
+  webhook.py           # FastAPI webhook receiver: HMAC verify, persist the job, 202 (RC1-116/423)
+  jobs.py              # durable job store: SQLite jobs + reviewed tables (RC1-423)
+  worker.py            # the review worker: retries, recovery, process_job (RC1-423)
   posting.py           # post/refresh review: upsert summary comment + inline comments (RC1-117/118)
   verdict.py           # verdict policy: Comment, or Request changes on a block_on category (RC1-117)
-  dedup.py             # re-push / redelivery dedup store (RC1-118)
   review.py            # local dry-run CLI: `python -m app.review` (RC1-113)
   agent/
     repository.py      # RepositoryAccess: the one contract + shared guards (RC1-424)

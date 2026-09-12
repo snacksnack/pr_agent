@@ -17,7 +17,9 @@ posts a single structured review (summary + inline comments, severity-tagged).
 ## Architecture (target)
 
 Custom **GitHub App** (account-wide) → **Python / FastAPI** service on **Fly.io**
-→ one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`), a
+(the webhook persists each delivery as a job in SQLite on a volume before it
+answers 202; one in-process worker runs the jobs with bounded retries and
+recovers interrupted ones at startup, RC1-423) → one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`), a
 coroutine over one async client (RC1-426): Python runs the deterministic
 checks (n8n workflow cost) and gathers the repository context (conventions
 file, callers, tests, by grep), three evidence-scoped reviewers fan out on
@@ -45,7 +47,8 @@ Milestone 2 — App + webhook:
 - [x] RC1-116 webhook receiver (`app/webhook.py`)
 - [x] RC1-117 review posting + verdict (`app/posting.py`, `app/verdict.py`;
       resolves the RC1-114 verdict-policy carryover)
-- [x] RC1-118 re-push dedup (`app/dedup.py` + upsert/supersede in `app/posting.py`)
+- [x] RC1-118 re-push dedup (upsert/supersede in `app/posting.py`; the in-memory
+      `app/dedup.py` was replaced by the durable store in RC1-423)
 - [x] RC1-121 run n8n cost check on the webhook path — shared source-agnostic
       runner (`n8n.run_checks(pr, read_text)`); the live path sourced changed
       files at the PR head via the Contents API and `process_event` ran it,
@@ -155,6 +158,15 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `_default_review` is the application's only `asyncio.run` (a test
       asserts it); the eval subject and the scripts bridge at their own
       edges (record in `docs/rc1-426-async-pipeline.md`)
+- [x] RC1-423 durable review jobs: the webhook persists a delivery in
+      `app/jobs.py` (SQLite on the Fly volume `pr_review_jobs`, mounted at
+      `/data`) before the 202; `app/worker.py` runs jobs on the receiver's
+      loop with transient-vs-terminal retries (3 attempts, 60 s doubling),
+      re-queues jobs left running at startup, prunes history; delivery id
+      and reviewed head are durable; `.github/workflows/wake.yml` pings
+      `/healthz` every 15 min so a stopped machine drains its queue;
+      `app/dedup.py`, `BackgroundTasks` and `process_event` are gone
+      (record + runbook in `docs/rc1-423-durable-jobs.md`)
 
 ## Layout
 
@@ -167,11 +179,14 @@ app/
                 as ReviewOutcome (RC1-429)
   github.py     PR ingestion (httpx)
   auth.py       GitHub App auth: JWT -> installation tokens (RC1-115)
-  webhook.py    FastAPI receiver: HMAC verify, ack-fast, background review awaited on
-                the receiver's loop, GitHub calls in the executor (RC1-116/426)
+  webhook.py    FastAPI receiver: HMAC verify, parse, persist the job, 202; the lifespan
+                recovers + starts the worker; /healthz carries the queue counts (RC1-116/423)
+  jobs.py       RC1-423: JobStore — SQLite jobs + reviewed tables, claim/retry/fail,
+                recovery and retention; one connection behind a lock
+  worker.py     RC1-423: Worker loop (nudge, due-time sleep), is_transient, process_job
+                (mint → fetch → stale check → review → post → mark reviewed)
   posting.py    post/refresh review: upsert summary comment + inline comments (RC1-117/118)
   verdict.py    verdict policy: gate on block_on category only (RC1-117)
-  dedup.py      re-push/redelivery dedup store (RC1-118)
   retry.py      GitHub-API retry/backoff helper (RC1-120)
   review.py     dry-run CLI (RC1-113); its _default_review is the one asyncio.run (RC1-426)
   pricing.py    RC1-395: model prices + cache rates, a copy of the eval harness's
@@ -213,6 +228,11 @@ tests/          pytest, offline
 - **Injectable clients.** Network clients (GitHub, Anthropic) accept an injected
   client so tests run offline; the real SDK is imported lazily inside functions.
   The pipeline takes one *async* model client (`messages.create` is a coroutine).
+- **A job is on disk before the 202.** The endpoint never runs a review; it
+  persists and nudges. The worker owns lifecycle and retries; `is_transient`
+  is the one place errors are sorted. Deploying a mount change needs the
+  volume to exist first (`fly volumes create pr_review_jobs --region iad
+  --size 1 -a pr-review-agent-snacksnack`).
 - **The edges own the loop.** `review_pull_request` is a coroutine and creates
   no event loop; `asyncio.run` lives in `app/review.py` (the CLI), the eval
   subject's `_capture` and the scripts' `main`, nowhere else — the webhook
@@ -264,6 +284,8 @@ tests/          pytest, offline
 ```bash
 pip install -r requirements-dev.txt   # dev setup (the image installs runtime-only requirements.txt)
 python -m app                 # config sanity check (no creds needed)
+fly volumes create pr_review_jobs --region iad --size 1 -a pr-review-agent-snacksnack
+                               # once, before the first deploy that mounts /data (RC1-423)
 pytest -q                     # run tests
 pytest --cov                  # ...with the 88% floor CI enforces
 ruff check .                  # lint (line-length 100, rules E,F,I,UP,B,SIM)

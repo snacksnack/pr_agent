@@ -183,10 +183,12 @@ Code changes that landed for RC1-120 (the parts that aren't Reid's UI clicks):
   denial), `404`, and `422` are **not** retried — they're terminal.
 - **Error visibility in logs** — `configure_logging()` in `app/webhook.py`
   attaches a stdout handler to the `app.*` loggers at `LOG_LEVEL` so the INFO
-  lifecycle lines (`accepted`, `review_posted`, dedup skips) and retry WARNINGs
+  lifecycle lines (`job_queued`, `job_started`, `review_posted`, `job_succeeded`,
+  the skips; RC1-423) and retry WARNINGs
   actually surface under uvicorn instead of being swallowed at the root's
-  default WARNING level. The existing worker already logs `review_failed` with a
-  traceback on any failure, and signature/secret values are never logged.
+  default WARNING level. The worker logs `job_failed` with a traceback on a
+  terminal failure and `job_retry` on a transient one (RC1-423), and
+  signature/secret values are never logged.
 
 ## Troubleshooting
 
