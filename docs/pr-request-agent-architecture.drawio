@@ -1,0 +1,188 @@
+<mxfile host="Electron" modified="2026-09-11T00:00:00.000Z" agent="Codex" version="26.0.9" type="device">
+  <diagram id="pr-request-agent-architecture" name="Runtime Architecture">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0" background="#F8FAFC">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="PR Request Agent — Runtime Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontFamily=Helvetica;fontSize=30;fontStyle=1;fontColor=#0F172A;" vertex="1" parent="1">
+          <mxGeometry x="50" y="28" width="900" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="GitHub App + local CLI → source-agnostic PR model → bounded AI review → one structured GitHub review" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontFamily=Helvetica;fontSize=14;fontColor=#475569;" vertex="1" parent="1">
+          <mxGeometry x="52" y="72" width="1100" height="28" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="github" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#475569&quot;&gt;Pull requests · repos · reviews&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0F172A;strokeColor=#0F172A;fontColor=#FFFFFF;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="50" y="155" width="190" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="developer" value="&lt;b&gt;Developer / CI&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;python -m app.review&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#0F172A;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="50" y="276" width="190" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="anthropic" value="&lt;b&gt;Anthropic API&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;sync + async SDK clients&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="1005" width="250" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="datadog" value="&lt;b&gt;Datadog&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;LLM Obs · cost · latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=15;arcSize=12;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="1435" y="1005" width="250" height="76" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="fly-boundary" value="FLY.IO CONTAINER · FastAPI / Python 3" style="swimlane;html=1;horizontal=1;startSize=34;rounded=1;fillColor=#EEF2FF;swimlaneFillColor=#FFFFFF;strokeColor=#6366F1;strokeWidth=2;fontColor=#3730A3;fontFamily=Helvetica;fontSize=13;fontStyle=1;arcSize=8;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="285" y="120" width="1460" height="850" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="live-lane" value="LIVE GITHUB APP PATH" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#E0F2FE;swimlaneFillColor=#F8FCFF;strokeColor=#38BDF8;fontColor=#075985;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="25" y="55" width="285" height="340" as="geometry"/>
+        </mxCell>
+        <mxCell id="webhook" value="&lt;b&gt;POST /webhook&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;HMAC verify · parse event&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=14;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+          <mxGeometry x="25" y="50" width="235" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="ack" value="202 Accepted&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;background task&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFEFF;strokeColor=#06B6D4;fontColor=#155E75;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+          <mxGeometry x="25" y="135" width="110" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="dedup" value="&lt;b&gt;Dedup / staleness gates&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;delivery · head SHA · latest head&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+          <mxGeometry x="25" y="220" width="235" height="62" as="geometry"/>
+        </mxCell>
+        <mxCell id="appauth" value="GitHub App auth&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;JWT → installation token&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0EA5E9;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="live-lane">
+          <mxGeometry x="25" y="300" width="235" height="58" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cli-lane" value="LOCAL DRY-RUN PATH" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#ECFDF5;swimlaneFillColor=#FBFFFD;strokeColor=#34D399;fontColor=#065F46;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="25" y="420" width="285" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="cli" value="&lt;b&gt;CLI&lt;/b&gt; · PR spec + options&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;PAT · optional local checkout&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#10B981;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="cli-lane">
+          <mxGeometry x="25" y="52" width="235" height="62" as="geometry"/>
+        </mxCell>
+        <mxCell id="dryout" value="Formatted stdout&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;CI exit code 0 / 1 / 2&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontColor=#065F46;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="cli-lane">
+          <mxGeometry x="25" y="140" width="235" height="56" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ingestion" value="INGESTION + NORMALIZATION" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F1F5F9;swimlaneFillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="335" y="55" width="245" height="255" as="geometry"/>
+        </mxCell>
+        <mxCell id="github-client" value="&lt;b&gt;GitHubClient&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;metadata · diff · changed files&lt;br&gt;bounded retry/backoff&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#64748B;fontColor=#0F172A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ingestion">
+          <mxGeometry x="22" y="50" width="201" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="pr-model" value="&lt;b&gt;PullRequest model&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;PRRef · ChangedFile[] · head SHA&lt;br&gt;source/auth agnostic&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ingestion">
+          <mxGeometry x="22" y="152" width="201" height="74" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="checks" value="DETERMINISTIC CHECKS" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#FEF3C7;swimlaneFillColor=#FFFBEB;strokeColor=#F59E0B;fontColor=#92400E;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="335" y="335" width="245" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="n8n" value="&lt;b&gt;n8n workflow cost check&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;schedules · polling · loops&lt;br&gt;best-effort, non-blocking&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F59E0B;fontColor=#78350F;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="checks">
+          <mxGeometry x="22" y="52" width="201" height="82" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="repoaccess" value="REPOSITORY ACCESS · bounded read_file / list_dir / grep" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F1F5F9;swimlaneFillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="335" y="540" width="245" height="270" as="geometry"/>
+        </mxCell>
+        <mxCell id="remote-tools" value="&lt;b&gt;RemoteRepoTools&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;Git Trees + Contents API&lt;br&gt;PR head · API budget&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;fontColor=#075985;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
+          <mxGeometry x="22" y="52" width="201" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="local-tools" value="&lt;b&gt;RepoTools&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;local checkout / temp diff repo&lt;br&gt;path + secret guards&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontColor=#065F46;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
+          <mxGeometry x="22" y="158" width="201" height="76" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="engine" value="SHARED REVIEW ENGINE · review_pull_request()" style="swimlane;html=1;horizontal=1;startSize=32;rounded=1;fillColor=#EDE9FE;swimlaneFillColor=#FDFBFF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#5B21B6;fontFamily=Helvetica;fontSize=13;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="610" y="55" width="520" height="755" as="geometry"/>
+        </mxCell>
+        <mxCell id="router" value="&lt;b&gt;Feature-flag dispatcher&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;single vs multi · asyncio vs LangGraph&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B5CF6;fontColor=#3B0764;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+          <mxGeometry x="125" y="48" width="270" height="62" as="geometry"/>
+        </mxCell>
+        <mxCell id="single" value="&lt;b&gt;Single-agent loop&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;explore + judge in one conversation&lt;br&gt;tool/file/turn budgets · submit_review&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#8B5CF6;fontColor=#4C1D95;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+          <mxGeometry x="28" y="150" width="215" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="multi-boundary" value="MULTI-AGENT PIPELINE" style="swimlane;html=1;horizontal=1;startSize=26;rounded=1;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#6B21A8;fontFamily=Helvetica;fontSize=11;fontStyle=1;arcSize=5;collapsible=0;" vertex="1" parent="engine">
+          <mxGeometry x="265" y="138" width="230" height="445" as="geometry"/>
+        </mxCell>
+        <mxCell id="plan" value="Python router&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;choose reviewers + scout&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="43" width="190" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="context" value="Deterministic repo context&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;conventions · callers · tests&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="116" width="190" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="scout" value="Optional scout&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;exploration brief&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="194" width="190" height="52" as="geometry"/>
+        </mxCell>
+        <mxCell id="cache" value="Shared prefix + cache warm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="266" width="190" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="reviewers" value="&lt;b&gt;Parallel specialist reviewers&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;diff-local · repo-context · change-intent&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#9333EA;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="330" width="190" height="66" as="geometry"/>
+        </mxCell>
+        <mxCell id="merge" value="Python merge&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;scope guard + dedupe&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=12;arcSize=8;spacing=6;" vertex="1" parent="multi-boundary">
+          <mxGeometry x="20" y="416" width="190" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="verifier" value="&lt;b&gt;Optional verifier&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;drop/downgrade unsupported findings&lt;br&gt;category tie-break&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F59E0B;fontColor=#7C2D12;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;dashed=1;" vertex="1" parent="engine">
+          <mxGeometry x="28" y="622" width="467" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="result" value="&lt;b&gt;ReviewResult&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary · Finding[] · token usage · stage latency&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontColor=#312E81;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="engine">
+          <mxGeometry x="105" y="712" width="310" height="62" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="delivery" value="VERDICT + DELIVERY" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#DCFCE7;swimlaneFillColor=#FBFFFC;strokeColor=#22C55E;fontColor=#166534;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="1160" y="55" width="275" height="500" as="geometry"/>
+        </mxCell>
+        <mxCell id="combine" value="Merge deterministic findings&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;exactly once&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
+          <mxGeometry x="23" y="50" width="229" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="verdict" value="&lt;b&gt;Verdict policy&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;COMMENT by default&lt;br&gt;REQUEST_CHANGES only for block_on&lt;br&gt;(default: leaked_secret)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
+          <mxGeometry x="23" y="135" width="229" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="post" value="&lt;b&gt;post_review()&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;upsert marked summary&lt;br&gt;new inline comments only&lt;br&gt;dismiss superseded change requests&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
+          <mxGeometry x="23" y="255" width="229" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="posted" value="Single structured review&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;summary + severity-tagged inline comments&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontColor=#14532D;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="delivery">
+          <mxGeometry x="23" y="390" width="229" height="68" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ops" value="CROSS-CUTTING OPERATIONS" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#C084FC;fontColor=#6B21A8;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="1160" y="580" width="275" height="230" as="geometry"/>
+        </mxCell>
+        <mxCell id="obs" value="&lt;b&gt;Observability + pricing&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;pr_review workflow span&lt;br&gt;stage spans · token-based USD cost&lt;br&gt;per-review metrics&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ops">
+          <mxGeometry x="23" y="48" width="229" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="config" value="Typed settings&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;env / .env · all flags and budgets&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#A855F7;fontColor=#581C87;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="ops">
+          <mxGeometry x="23" y="165" width="229" height="52" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend-solid" value="solid = runtime data/control" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontFamily=Helvetica;fontSize=11;fontColor=#64748B;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="30" y="822" width="190" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend-dash" value="dashed = optional / feature-flagged" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontFamily=Helvetica;fontSize=11;fontColor=#64748B;" vertex="1" parent="fly-boundary">
+          <mxGeometry x="230" y="822" width="220" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-github-webhook" value="pull_request event" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#0EA5E9;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=11;fontColor=#0369A1;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="github" target="webhook"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-dev-cli" value="run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=11;fontColor=#047857;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="developer" target="cli"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-webhook-ack" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#06B6D4;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="webhook" target="ack"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-webhook-dedup" value="async" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=10;fontColor=#0369A1;" edge="1" parent="fly-boundary" source="webhook" target="dedup"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-dedup-auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0EA5E9;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="dedup" target="appauth"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-auth-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="appauth" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-cli-client" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="cli" target="github-client"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-client-model" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#3B82F6;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="github-client" target="pr-model"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-model-checks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="pr-model" target="n8n"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-model-router" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#8B5CF6;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="pr-model" target="router"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-router-single" value="default" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#8B5CF6;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=10;fontColor=#6D28D9;" edge="1" parent="engine" source="router" target="single"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-router-multi" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;dashed=1;endArrow=block;endFill=1;" edge="1" parent="engine" source="router" target="plan"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-plan-context" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="plan" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-context-scout" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;dashed=1;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="context" target="scout"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-scout-cache" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="scout" target="cache"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-cache-reviewers" value="fan out" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#9333EA;strokeWidth=2;endArrow=block;endFill=1;fontFamily=Helvetica;fontSize=9;fontColor=#7E22CE;" edge="1" parent="multi-boundary" source="cache" target="reviewers"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-reviewers-merge" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#9333EA;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="reviewers" target="merge"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-single-verifier" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;dashed=1;endArrow=block;endFill=1;" edge="1" parent="engine" source="single" target="verifier"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-merge-verifier" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;dashed=1;endArrow=block;endFill=1;" edge="1" parent="engine" source="merge" target="verifier"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-verifier-result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6366F1;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="engine" source="verifier" target="result"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-tools-single" value="tool calls" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;dashed=1;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=10;fontColor=#475569;labelBackgroundColor=#FFFFFF;" edge="1" parent="fly-boundary" source="repoaccess" target="single"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-tools-context" value="read / list / grep" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;dashed=1;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=10;fontColor=#475569;labelBackgroundColor=#FFFFFF;" edge="1" parent="fly-boundary" source="repoaccess" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-anthropic-engine" value="model calls" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=11;fontColor=#B45309;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="anthropic" target="engine"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-result-combine" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="combine"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-combine-verdict" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;endArrow=block;endFill=1;" edge="1" parent="delivery" source="combine" target="verdict"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-verdict-post" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;endArrow=block;endFill=1;" edge="1" parent="delivery" source="verdict" target="post"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-post-posted" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#16A34A;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="delivery" source="post" target="posted"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-result-cli" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10B981;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="dryout"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-result-obs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;dashed=1;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="obs"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-obs-datadog" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#A855F7;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="obs" target="datadog"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
