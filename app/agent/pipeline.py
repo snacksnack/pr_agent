@@ -62,8 +62,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.context import RepoContext, build_repo_context
-from app.agent.local_repository import LocalRepository
 from app.agent.prompts import SUBMIT_TOOL, SYSTEM_PROMPT, ReviewerSpec, reviewer_instructions
+from app.agent.repository import RepositoryAccess
 from app.agent.reviewer import (
     CACHE_CONTROL,
     DEFAULT_MAX_TOKENS,
@@ -297,7 +297,7 @@ def compose_summary(outputs: list[ReviewerOutput]) -> str:
 
 def review_pull_request(
     pull_request: PullRequest,
-    repo_tools: LocalRepository,
+    repository: RepositoryAccess,
     *,
     client: Any | None = None,
     async_client: Any | None = None,
@@ -333,7 +333,7 @@ def review_pull_request(
         annotate_review_identity(pull_request)
         result = _review(
             pull_request,
-            repo_tools,
+            repository,
             client=client,
             async_client=async_client,
             model=model,
@@ -349,7 +349,7 @@ def review_pull_request(
 
 def _review(
     pull_request: PullRequest,
-    repo_tools: LocalRepository,
+    repository: RepositoryAccess,
     *,
     client: Any | None,
     async_client: Any | None,
@@ -366,7 +366,7 @@ def _review(
 
         async_client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=REQUEST_TIMEOUT_S)
 
-    plan = plan or plan_review(pull_request, explorable=getattr(repo_tools, "explorable", True))
+    plan = plan or plan_review(pull_request, explorable=repository.explorable)
     logger.info(
         "plan context=%s reviewers=%s reasons=%s",
         plan.context,
@@ -381,7 +381,7 @@ def _review(
     context = RepoContext()
     if plan.context and repo_context:
         with stage_span("task", "repo_context"):
-            context = build_repo_context(pull_request, repo_tools)
+            context = build_repo_context(pull_request, repository)
     context_text = context.render()
     latency["context"] = _ms_since(started)
     logger.info(

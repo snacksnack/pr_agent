@@ -1,48 +1,46 @@
-"""Repo-exploration tools served from the GitHub API (RC1-364).
+"""Repository access through the GitHub API at the PR head (RC1-364, RC1-424).
 
-The live webhook has no checkout, and until RC1-364 the agent's file tools were
-pointed at an empty directory: every ``read_file`` and ``grep`` in a live review
-came back ``no such file``, the model spent turns learning it was blind, and the
-review was written from the diff alone. This backend serves the same three tools
-from the Contents API at the PR head, so the live path and the dry-run CLI see
-the same repository.
+The :class:`app.agent.repository.RepositoryAccess` adapter for the live
+webhook, which has no checkout. Until RC1-364 the live review's reads were
+pointed at an empty directory: every read and grep came back ``no such
+file`` and the review was written from the diff alone. This adapter serves
+the same contract from the Git Trees API (the file list, one call) and the
+Contents API (a file's text, one call each, cached), so the live path and the
+dry-run CLI see the same repository.
 
-Same contract as :class:`app.agent.local_repository.LocalRepository` — ``read_file``, ``list_dir``,
-``grep``, and ``dispatch`` — and the same formatting, caps, and secret-file
-rules, so the agent loop cannot tell the two apart. Two things are different and
-deliberate:
+Two things are different from the local adapter and deliberate:
 
-* **A per-review API budget.** Each uncached file read and the one tree fetch
-  cost a call; past ``api_budget`` the tools refuse and tell the model to
-  submit. Fetched files are cached, so re-reads are free.
-* **grep is bounded, not exhaustive.** A local grep walks the whole checkout for
-  nothing; here every candidate file is an API call. The search reads at most
-  ``MAX_GREP_REMOTE_FILES`` files, changed files first, and says how many
-  candidates it did not reach so the model can narrow with a path or glob.
+* **A per-review API budget.** Each uncached file read and the one tree
+  fetch cost a call; past ``api_budget`` the reads stop. Fetched files are
+  cached, so re-reads are free. A ``read_text`` or ``paths`` the budget
+  refuses is ``None``, like a missing file; a ``grep`` the budget refuses
+  before it can read a single file raises :class:`RepositoryError`, so
+  context gathering records it as not searched rather than as no matches.
+* **grep is bounded, not exhaustive.** A local grep walks the whole checkout
+  for nothing; here every candidate file is an API call. A search reads at
+  most ``MAX_GREP_REMOTE_FILES`` files, changed files first, then what is
+  already cached, then smallest first, and says how many candidates it did
+  not reach.
 
-Everything degrades rather than raises: an unreadable tree leaves ``read_file``
-working and confines ``grep`` to the PR's changed files; a missing or oversized
-file is a tool error string, never an exception out of the loop.
+Everything degrades rather than raises: an unreadable tree leaves
+``read_text`` working, makes ``paths`` ``None`` and confines ``grep`` to the
+PR's changed files, which are all this adapter can then know about.
 """
 from __future__ import annotations
 
-import fnmatch
 from pathlib import PurePosixPath
 from typing import Any
 
-from app.agent.local_repository import (
-    IGNORED_DIRS,
+from app.agent.repository import (
     MAX_GREP_FILE_BYTES,
     MAX_GREP_MATCHES,
-    MAX_LIST_ENTRIES,
     MAX_READ_BYTES,
     RepositoryError,
     compile_pattern,
-    format_file_text,
     grep_text,
-    is_lockfile,
-    is_secret_file,
-    lockfile_refusal,
+    is_noise_path,
+    is_withheld,
+    render_grep,
 )
 from app.models import PRRef
 
@@ -54,7 +52,8 @@ _UNSET = object()
 
 
 class GitHubRepository:
-    """The three exploration tools, read through ``gh`` at ``head_sha``."""
+    """The contract, read through ``gh`` (a :class:`app.github.GitHubClient`
+    or anything with its ``get_file_text`` and ``get_tree``) at ``head_sha``."""
 
     def __init__(
         self,
@@ -87,12 +86,12 @@ class GitHubRepository:
     def tree_available(self) -> bool:
         return self._tree is not _UNSET and self._tree is not None
 
+    def _exhausted(self) -> RepositoryError:
+        return RepositoryError(f"GitHub API budget exhausted ({self._budget} calls this review)")
+
     def _spend(self) -> None:
         if self._calls >= self._budget:
-            raise RepositoryError(
-                f"GitHub API budget exhausted ({self._budget} calls this review); "
-                "submit your review with what you have"
-            )
+            raise self._exhausted()
         self._calls += 1
 
     # -- path safety -----------------------------------------------------
@@ -124,120 +123,48 @@ class GitHubRepository:
         return not rel or path == rel or path.startswith(rel + "/")
 
     @staticmethod
-    def _noise(path: str) -> bool:
-        return any(part in IGNORED_DIRS for part in path.split("/"))
+    def _served(entry: dict) -> bool:
+        """A blob the review may see: not noise, not secret, not a lock file."""
+        path = entry["path"]
+        return (
+            entry.get("type") == "blob"
+            and not is_noise_path(path)
+            and not is_withheld(PurePosixPath(path).name)
+        )
 
-    # -- tools -----------------------------------------------------------
-
-    def read_file(
-        self,
-        path: str,
-        start_line: int | None = None,
-        end_line: int | None = None,
-    ) -> str:
-        rel = self._normalize(path)
-        if not rel:
-            raise RepositoryError("'.' is a directory; use list_dir")
-        if is_secret_file(PurePosixPath(rel).name):
-            raise RepositoryError(
-                f"refused: {path!r} looks like a secrets/credentials file; the "
-                "reviewer does not read these. Review committed changes from the diff."
-            )
-        if is_lockfile(PurePosixPath(rel).name):
-            raise lockfile_refusal(path)
-        text = self._fetch(rel)
-        if text is None:
-            raise RepositoryError(
-                f"no such file at the PR head: {path!r} (or it is a directory, "
-                "binary, or over the API's 1 MB limit)"
-            )
-        raw = text.encode("utf-8")
-        return format_file_text(rel, raw[:MAX_READ_BYTES], len(raw), start_line, end_line)
+    # -- the contract ----------------------------------------------------
 
     def read_text(self, path: str) -> str | None:
-        """Raw text for Python callers (RC1-393); ``None`` rather than an
-        error. One API call when uncached, none when the budget is spent."""
+        """One API call when uncached, none when the budget is spent: the
+        context is optional, the review is not."""
         try:
             rel = self._normalize(path)
         except RepositoryError:
             return None
-        if not rel or is_secret_file(PurePosixPath(rel).name):
-            return None
-        if is_lockfile(PurePosixPath(rel).name):
+        if not rel or is_withheld(PurePosixPath(rel).name):
             return None
         try:
             text = self._fetch(rel)
         except RepositoryError:
-            return None  # budget exhausted: the context is optional, the review is not
+            return None
         return text[:MAX_READ_BYTES] if text is not None else None
 
     def paths(self) -> list[str] | None:
-        """Every blob path in the tree at the PR head, for Python callers
-        (RC1-394); ``None`` when there is no tree to read — not readable, or
-        the budget is spent before the one call it costs. The same filter
-        as ``grep``'s candidates: noise, secret and lock files left out."""
+        """Every served blob path in the tree at the PR head; ``None`` when
+        there is no tree to read — not readable, or the budget is spent
+        before the one call it costs."""
         try:
             entries = self._entries()
         except RepositoryError:
             return None
         if entries is None:
             return None
-        return [
-            e["path"]
-            for e in entries
-            if e.get("type") == "blob"
-            and not self._noise(e["path"])
-            and not is_secret_file(PurePosixPath(e["path"]).name)
-            and not is_lockfile(PurePosixPath(e["path"]).name)
-        ]
+        return [e["path"] for e in entries if self._served(e)]
 
-    def list_dir(self, path: str = ".") -> str:
+    def grep(self, pattern: str, path: str = ".", *, max_results: int = MAX_GREP_MATCHES) -> str:
+        regex = compile_pattern(pattern)
         rel = self._normalize(path)
-        entries = self._entries()
-        if entries is None:
-            raise RepositoryError(
-                "the repository tree is not readable on this review; read_file "
-                "still works for paths you know from the diff"
-            )
-        prefix = rel + "/" if rel else ""
-        dirs: set[str] = set()
-        files: list[tuple[str, int]] = []
-        for e in entries:
-            p = e["path"]
-            if not p.startswith(prefix) or p == rel:
-                continue
-            rest = p[len(prefix):]
-            head = rest.split("/", 1)[0]
-            if head in IGNORED_DIRS:
-                continue
-            if "/" in rest or e.get("type") == "tree":
-                dirs.add(head)
-            elif not is_secret_file(rest) and not is_lockfile(rest):
-                files.append((rest, int(e.get("size", 0))))
-        if not dirs and not files:
-            raise RepositoryError(f"no such directory: {path!r}")
-
-        listed = [f"{d}/" for d in sorted(dirs, key=str.lower)]
-        listed += [f"{n} ({s} B)" for n, s in sorted(files, key=lambda f: f[0].lower())]
-        shown = listed[:MAX_LIST_ENTRIES]
-        out = f"{rel or '.'}/\n" + "\n".join(f"  {e}" for e in shown)
-        if len(listed) > MAX_LIST_ENTRIES:
-            out += f"\n  ... [{len(listed) - MAX_LIST_ENTRIES} more entries omitted]"
-        return out
-
-    def grep(
-        self,
-        pattern: str,
-        path: str = ".",
-        *,
-        ignore_case: bool = False,
-        fixed: bool = False,
-        glob: str | None = None,
-        max_results: int = MAX_GREP_MATCHES,
-    ) -> str:
-        regex = compile_pattern(pattern, ignore_case=ignore_case, fixed=fixed)
-        rel = self._normalize(path)
-        candidates = self._grep_candidates(rel, glob)
+        candidates = self._grep_candidates(rel)
 
         results: list[str] = []
         truncated = False
@@ -248,6 +175,8 @@ class GitHubRepository:
                 stopped_early = True
                 break
             if file not in self._cache and self._calls >= self._budget:
+                if scanned == 0:
+                    raise self._exhausted()  # nothing searched is not "no matches"
                 stopped_early = True
                 break
             content = self._fetch(file)
@@ -258,52 +187,37 @@ class GitHubRepository:
                 truncated = True
                 break
 
-        out = "\n".join(results) if results else "(no matches)"
-        if truncated:
-            out += f"\n... [stopped at {max_results} matches]"
+        out = render_grep(results, truncated=truncated, max_results=max_results)
         if stopped_early:
             out += (
                 f"\n... [searched {scanned} of {len(candidates)} candidate files "
-                "(live-review API budget); narrow with a path or glob]"
+                "under the live-review API budget]"
             )
         return out
 
-    def _grep_candidates(self, rel: str, glob: str | None) -> list[str]:
+    def _grep_candidates(self, rel: str) -> list[str]:
         """Files worth fetching for a grep under ``rel``, changed files first.
 
-        With a tree: every blob under ``rel`` that is not noise, secret, or over
-        the size cap, ordered changed -> already cached -> smallest first.
-        Without one: only the PR's changed files, which are all the loop can
-        know about.
+        With a tree: every served blob under ``rel`` that is not over the
+        size cap, ordered changed -> already cached -> smallest first.
+        Without one: only the PR's changed files, which are all the adapter
+        can know about.
         """
         entries = self._entries()
         changed = [
             f for f in self._changed
-            if self._under(f, rel) and not is_lockfile(PurePosixPath(f).name)
+            if self._under(f, rel) and not is_withheld(PurePosixPath(f).name)
         ]
         if entries is None:
-            pool = changed
-        else:
-            pool = [
-                e["path"]
-                for e in entries
-                if e.get("type") == "blob"
-                and self._under(e["path"], rel)
-                and not self._noise(e["path"])
-                and not is_secret_file(PurePosixPath(e["path"]).name)
-                and not is_lockfile(PurePosixPath(e["path"]).name)
-                and int(e.get("size", 0)) <= MAX_GREP_FILE_BYTES
-            ]
-            sizes = {e["path"]: int(e.get("size", 0)) for e in entries}
-            changed_set = set(changed)
-            pool.sort(
-                key=lambda f: (
-                    f not in changed_set,
-                    f not in self._cache,
-                    sizes.get(f, 0),
-                    f,
-                )
-            )
-        if glob:
-            pool = [f for f in pool if fnmatch.fnmatch(PurePosixPath(f).name, glob)]
+            return changed
+        pool = [
+            e["path"]
+            for e in entries
+            if self._served(e)
+            and self._under(e["path"], rel)
+            and int(e.get("size", 0)) <= MAX_GREP_FILE_BYTES
+        ]
+        sizes = {e["path"]: int(e.get("size", 0)) for e in entries}
+        changed_set = set(changed)
+        pool.sort(key=lambda f: (f not in changed_set, f not in self._cache, sizes.get(f, 0), f))
         return pool

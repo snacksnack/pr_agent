@@ -118,6 +118,13 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       are gone, the fold sentence and the absence rule are the one
       instruction text; a tests-list cap bug that produced false "no tests"
       warnings fixed in `context.py` (record in `docs/rc1-428-verifier-policy.md`)
+- [x] RC1-424 one repository contract: `RepositoryAccess` (`explorable`,
+      `read_text`, `grep`, `paths`) in `app/agent/repository.py` with the
+      shared guards; `LocalRepository` and `GitHubRepository` are its two
+      adapters and pass one contract test; the pipeline is typed against the
+      protocol; the model-facing `read_file` / `list_dir` are gone; a spent
+      API budget is "not searched", never "no matches"
+      (record in `docs/rc1-424-repository-access.md`)
 
 ## Layout
 
@@ -139,7 +146,11 @@ app/
   observability.py  LLM Obs enable + spans (RC1-322/390); cost per review onto the
                 workflow span and the per-review metric (RC1-395)
   agent/
-    tools.py    RepoTools: read_text/read_file/list_dir/grep/paths, bounded (RC1-109)
+    repository.py  RC1-424: RepositoryAccess (explorable/read_text/grep/paths), RepositoryError,
+                the shared guards (secret, lock, noise, caps) both adapters use
+    local_repository.py   LocalRepository: the contract from a checkout on disk (RC1-109)
+    github_repository.py  GitHubRepository: the contract from Trees + Contents at the PR
+                head, under the per-review API budget (RC1-364)
     pipeline.py the review: review_pull_request(...) — context -> warm cache
                 -> reviewers (gather) -> merge -> verifier; opens the pr_review span (RC1-390/422/427/428)
     reviewer.py model-facing primitives every stage shares: render_pr, the cache
@@ -166,11 +177,17 @@ tests/          pytest, offline
   *same* models so everything downstream is auth-agnostic.
 - **Injectable clients.** Network clients (GitHub, Anthropic) accept an injected
   client so tests run offline; the real SDK is imported lazily inside functions.
-- **Recoverable errors over crashes.** Tool/agent failures return error strings
-  the model can react to (see `RepoTools.dispatch`); raise typed exceptions
-  (`GitHubError`, `ToolError`, `ReviewError`) only at boundaries.
-- **Bounded everything.** Reads, dir listings, grep results, diff size, tool
-  turns, and files read are all capped (cost/context guardrails).
+- **Recoverable errors over crashes.** A repository read that cannot be
+  answered is `None`; a search that cannot run raises `RepositoryError`, which
+  context gathering records as "not searched" and tells the reviewers. Raise
+  typed exceptions (`GitHubError`, `RepositoryError`, `ReviewError`) only at
+  boundaries.
+- **One repository contract.** The pipeline and `context.py` are typed against
+  `RepositoryAccess`, never an adapter; the guards live in `repository.py`, so
+  what a review may see is decided once. A new backend passes
+  `tests/test_repository_contract.py` before anything else.
+- **Bounded everything.** Reads, grep results, diff size, and API calls per
+  live review are all capped (cost/context guardrails).
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
   (`["leaked_secret"]`), `remote_api_budget`

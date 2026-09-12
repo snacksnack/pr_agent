@@ -22,7 +22,8 @@ from app.agent.context import (
     select_sections,
 )
 from app.agent.github_repository import GitHubRepository
-from app.agent.local_repository import LocalRepository, RepositoryError
+from app.agent.local_repository import LocalRepository
+from app.agent.repository import RepositoryError
 from app.models import ChangedFile, PRRef, PullRequest
 
 

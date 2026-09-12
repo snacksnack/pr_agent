@@ -197,7 +197,7 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
             # findings are fed to the loop as already-recorded context so the
             # model builds on them instead of duplicating them, then merged once.
             precomputed = _run_n8n_checks(gh, pr, log)
-            tools = GitHubRepository(
+            repository = GitHubRepository(
                 gh,
                 pr.ref,
                 pr.head_sha,
@@ -205,10 +205,10 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
                 api_budget=settings.remote_api_budget,
             )
             result = review_pull_request(
-                pr, tools, client=None, precomputed_findings=precomputed
+                pr, repository, client=None, precomputed_findings=precomputed
             )
             log.info(
-                "repo_tools api_calls=%d tree=%s", tools.api_calls, tools.tree_available
+                "repository api_calls=%d tree=%s", repository.api_calls, repository.tree_available
             )
             # RC1-395: one cost point per review, from here only — the
             # dry-run CLI and the eval corpus run the same review function

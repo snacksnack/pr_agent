@@ -344,7 +344,7 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
         materialise_checkout(Path(tmp), None, boundary.repo_files(case))
         started = time.perf_counter()
         result = review_pull_request(
-            pr, LocalRepository(tmp), client=recorder, verify=True, repo_context=True
+            pr, LocalRepository(tmp), client=recorder, repo_context=True
         )
         wall_s = time.perf_counter() - started
     kept_on = [

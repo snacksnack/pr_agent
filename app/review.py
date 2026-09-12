@@ -33,8 +33,9 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.checks import n8n
-from app.agent.local_repository import LocalRepository, RepositoryError
+from app.agent.local_repository import LocalRepository
 from app.agent.pipeline import review_pull_request
+from app.agent.repository import RepositoryAccess, RepositoryError
 from app.config import settings
 from app.github import GitHubError, fetch_pull_request, parse_pr_spec
 from app.models import Finding, PRRef, PullRequest, ReviewResult
@@ -46,9 +47,9 @@ EXIT_BLOCKED = 1     # review ran; a block_on finding was present
 EXIT_ERROR = 2       # the review could not be produced (ingestion/loop failure)
 
 FetchFn = Callable[[PRRef], PullRequest]
-# The review callable receives the PR, repo tools, and any precomputed findings
-# from deterministic checks (shown to the model as already-recorded context).
-ReviewFn = Callable[[PullRequest, LocalRepository, "list[Finding]"], ReviewResult]
+# The review callable receives the PR, the repository, and any precomputed
+# findings from deterministic checks (shown to the model as already-recorded).
+ReviewFn = Callable[[PullRequest, RepositoryAccess, "list[Finding]"], ReviewResult]
 
 _SEVERITY_LABEL = {"blocker": "BLOCKER", "warning": "WARNING", "nit": "NIT"}
 
@@ -177,12 +178,12 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
 
 # --- repo context ---------------------------------------------------------
 
-def _resolve_repo_tools(
+def _resolve_repository(
     repo_path: str | None, tmpdirs: list[str]
 ) -> tuple[LocalRepository, Path | None]:
-    """Build LocalRepository from --repo-path, or an empty temp dir as a fallback.
+    """A LocalRepository over --repo-path, or over an empty temp dir as a fallback.
 
-    Returns the tools plus the real checkout root (``None`` when we fell back to
+    Returns the repository plus the real checkout root (``None`` when we fell back to
     the empty temp dir, so the n8n hook knows there are no real files to read).
     """
     if repo_path:
@@ -190,8 +191,8 @@ def _resolve_repo_tools(
         if not root.is_dir():
             raise GitHubError(f"--repo-path is not a directory: {repo_path}")
         return LocalRepository(root), root
-    # No checkout: give the agent an empty dir so its tools return graceful
-    # "no such file" errors and it reviews from the diff in the seed prompt.
+    # No checkout: an empty dir is not explorable, so the router skips the
+    # repository context and the reviewers work from the diff.
     tmp = tempfile.mkdtemp(prefix="pr-review-empty-")
     tmpdirs.append(tmp)
     return LocalRepository(tmp), None
@@ -221,7 +222,7 @@ def main(
     tmpdirs: list[str] = []
     try:
         pr = fetch(ref)
-        repo_tools, repo_root = _resolve_repo_tools(args.repo_path, tmpdirs)
+        repository, repo_root = _resolve_repository(args.repo_path, tmpdirs)
         if args.repo_path is None:
             print(
                 "note: no --repo-path; reviewing from the diff only "
@@ -232,7 +233,7 @@ def main(
         # review loop as already-recorded context (so the model builds on them
         # instead of duplicating them), then merged into the final result here.
         precomputed = run_n8n_checks(pr, repo_root)
-        result = review(pr, repo_tools, precomputed)
+        result = review(pr, repository, precomputed)
         result.findings.extend(precomputed)
     except (GitHubError, RepositoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -262,11 +263,11 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 def _default_review(*, model: str | None) -> ReviewFn:
     def _review(
-        pr: PullRequest, repo_tools: LocalRepository, precomputed: list[Finding]
+        pr: PullRequest, repository: RepositoryAccess, precomputed: list[Finding]
     ) -> ReviewResult:
         # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
         return review_pull_request(
-            pr, repo_tools, client=None, model=model, precomputed_findings=precomputed
+            pr, repository, client=None, model=model, precomputed_findings=precomputed
         )
 
     return _review

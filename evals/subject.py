@@ -47,8 +47,8 @@ from agent_evals.record import CaseResult, CharacteristicResult, SubjectVersion,
 
 from app import review as review_cli
 from app.agent import prompts
-from app.agent.local_repository import IGNORED_DIRS
 from app.agent.pipeline import review_pull_request
+from app.agent.repository import IGNORED_DIRS
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewResult, TokenUsage
 from evals import corpus
