@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from app.agent import prompts
 from app.agent.pipeline import REVIEW_TOOLS
-from app.agent.scout import SCOUT_TOOLS
 from app.models import SEVERITY_ORDER, Finding
 
 # --- finding schema contract ---------------------------------------------
@@ -106,10 +105,7 @@ def test_categories_have_no_duplicates():
 
 # --- pipeline wiring still intact ------------------------------------------
 
-def test_the_scout_gets_the_repo_tools_and_the_reviewers_get_submit_review():
-    scout = {t["name"] for t in SCOUT_TOOLS}
-    assert {"read_file", "list_dir", "grep", "submit_brief"} <= scout
-    assert "submit_review" not in scout
+def test_the_reviewers_get_submit_review_and_no_repo_tools():
     reviewers = {t["name"] for t in REVIEW_TOOLS}
     assert "submit_review" in reviewers and not ({"read_file", "list_dir", "grep"} & reviewers)
 
@@ -159,9 +155,8 @@ def test_every_reviewer_is_told_not_to_file_the_missing_evidence():
         assert prompts.MISSING_EVIDENCE_NOTE in spec.evidence, spec.name
         assert prompts.MISSING_EVIDENCE_NOTE in prompts.reviewer_instructions(spec)
     text = prompts.reviewer_instructions(prompts.DIFF_LOCAL)
-    assert "A scout has already explored" not in text, "the scout is optional now"
-    assert "a scout's brief follows it when one ran" in text
-    assert "tests touching the changed paths" in prompts.SCOUT_CONTEXT_NOTE
+    assert "scout" not in text.lower(), "RC1-427: no brief to read"
+    assert "gathered by grep before this pass" in text
 
 
 def test_narrowed_reviewer_keeps_its_name_and_drops_dimensions():
@@ -169,11 +164,3 @@ def test_narrowed_reviewer_keeps_its_name_and_drops_dimensions():
     assert narrowed.name == "change_intent" and narrowed.categories == ("pr_drift",)
     assert narrowed != prompts.CHANGE_INTENT
     assert "5. Dependency" not in narrowed.rubric()
-
-
-def test_scout_instructions_and_brief_tool():
-    assert "submit_brief" in prompts.SCOUT_INSTRUCTIONS
-    assert "Do not write findings" in prompts.SCOUT_INSTRUCTIONS
-    schema = prompts.SUBMIT_BRIEF_TOOL["input_schema"]
-    assert prompts.SUBMIT_BRIEF_TOOL["name"] == "submit_brief"
-    assert schema["required"] == ["brief"] and schema["additionalProperties"] is False

@@ -128,11 +128,7 @@ class ReviewResult:
     findings: list[Finding] = field(default_factory=list)
     # Run metadata.
     model: str = ""
-    tool_turns: int = 0
-    files_read: int = 0
-    # True if the run hit a guardrail (turn or file-read cap) before finishing.
-    truncated: bool = False
-    # Findings the model submitted that the loop could not read (missing
+    # Findings the model submitted that could not be read (missing
     # severity or message) and skipped. Counted rather than silently dropped
     # (RC1-387): three corpus misses in a row returned zero findings on a diff
     # with an obvious defect, and the record could not say whether the model
@@ -143,8 +139,8 @@ class ReviewResult:
     # with severity "breaking_change" — the tool schema's enum is advisory to
     # the model, not enforced — and the loop would have posted it as-is).
     coerced_findings: int = 0
-    # Token spend summed across every model call in the loop, forced
-    # submission included, so a caller can price the review (RC1-269). The
+    # Token spend summed across every model call in the review, so a caller
+    # can price it (RC1-269). The
     # verifier pass (RC1-387), when it ran, is included in these totals and
     # also broken out in ``verifier_usage`` so the two can be compared.
     # ``input_tokens`` is the uncached input only; see :class:`TokenUsage`.
@@ -159,18 +155,17 @@ class ReviewResult:
     verifier_downgraded: int = 0
     verifier_usage: TokenUsage = field(default_factory=TokenUsage)
     # RC1-390: which path produced the review. Since RC1-422 there is one —
-    # ``multi``: context + [scout] + routed reviewers + merge + verifier —
-    # and the rest of these fields describe it (``tool_turns`` and
-    # ``files_read`` above are the scout's). Eval-store history still carries
-    # ``single`` rows from the retired loop.
+    # ``multi``: context + routed reviewers + merge + verifier — and the rest
+    # of these fields describe it. Eval-store history still carries ``single``
+    # rows from the retired loop, and ``scout`` stages from the retired scout
+    # (RC1-427).
     mode: str = "multi"
     reviewers_run: list[str] = field(default_factory=list)
-    brief: str = ""
-    # Token spend per stage — ``scout``, ``warm_cache``, ``reviewer:<name>``,
+    # Token spend per stage — ``warm_cache``, ``reviewer:<name>``,
     # ``verifier`` — so the cache premise (reviewers read the prefix, they do
     # not write it) is checkable per call, not inferred from the total.
     stage_usage: dict[str, TokenUsage] = field(default_factory=dict)
-    # Wall clock per stage (``scout``, ``fan_out``, ``verifier``), so the
+    # Wall clock per stage (``context``, ``fan_out``, ``verifier``), so the
     # latency claim — three reviewers cost one reviewer's wall clock, not
     # three — is a number in the record.
     stage_latency_ms: dict[str, float] = field(default_factory=dict)
@@ -183,24 +178,20 @@ class ReviewResult:
     unusable_reviewer_calls: int = 0
     # RC1-393: what Python put in the shared prefix before any model ran —
     # the conventions file it found (``None`` when the repo has none) and
-    # how many caller rows the grep produced — so a run record can say
-    # whether the scout had the cheap context or re-derived it.
+    # how many caller rows the grep produced.
     conventions_file: str | None = None
     callers_found: int = 0
-    # RC1-394: test rows Python found for the changed paths, and whether the
-    # context was complete enough for the router to skip the scout.
+    # RC1-394: test rows Python found for the changed paths, and whether all
+    # three kinds of evidence were answered.
     tests_found: int = 0
     context_complete: bool = False
-    # RC1-395: the three facts pricing and the per-review metric need that
-    # the fields above do not carry. ``verifier_model`` is the model the
-    # verifier pass actually ran on (``review_verify_model`` may differ from
-    # the review model, and its tokens are priced at its own rate); empty
-    # when the pass did not run. ``scout_ran`` is whether the
-    # scout made model calls — a skipped scout and a scout that ran both
-    # leave a brief, and only the second cost anything. ``latency_ms`` is the
-    # wall clock of the whole review, both paths, set by the dispatcher.
+    # RC1-395: the two facts pricing and the per-review metric need that the
+    # fields above do not carry. ``verifier_model`` is the model the verifier
+    # pass actually ran on (``review_verify_model`` may differ from the
+    # review model, and its tokens are priced at its own rate); empty when
+    # the pass did not run. ``latency_ms`` is the wall clock of the whole
+    # review, set by ``review_pull_request``.
     verifier_model: str = ""
-    scout_ran: bool = False
     latency_ms: float = 0.0
 
     @property

@@ -63,7 +63,6 @@ def measure(
     repo_dir: Path = Path("."),
     overlay: tuple[str, ...] = (),
     repo_context: bool = True,
-    scout: bool = True,
 ) -> dict:
     repo_dir = repo_dir.resolve()
     owner, repo = _origin(repo_dir)
@@ -86,7 +85,7 @@ def measure(
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
             result = review_pull_request(
-                pr, RepoTools(worktree), verify=verify, repo_context=repo_context, scout=scout
+                pr, RepoTools(worktree), verify=verify, repo_context=repo_context
             )
             wall_s = time.perf_counter() - started
         finally:
@@ -101,7 +100,6 @@ def measure(
         "pr": number,
         "overlay": list(overlay),
         "repo_context": repo_context,
-        "scout": scout,
         "head": head[:7],
         "files": len(pr.files),
         "mode": result.mode,
@@ -115,7 +113,6 @@ def measure(
             for s in ("blocker", "warning", "nit")
         },
         "verifier_dropped": len(result.verifier_dropped),
-        "scout_ran": result.scout_ran,
         "context_complete": result.context_complete,
         "min_reviewer_cache_read": min(
             (
@@ -136,9 +133,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify", action="store_true")
     parser.add_argument(
         "--no-repo-context", action="store_true", help="RC1-393 control: no context in the prefix"
-    )
-    parser.add_argument(
-        "--no-scout", action="store_true", help="RC1-427 control: never run the scout"
     )
     parser.add_argument(
         "--repo-dir",
@@ -162,7 +156,6 @@ def main(argv: list[str] | None = None) -> int:
             repo_dir=args.repo_dir,
             overlay=tuple(args.overlay),
             repo_context=not args.no_repo_context,
-            scout=not args.no_scout,
         )
         print(json.dumps(row), flush=True)
         print(

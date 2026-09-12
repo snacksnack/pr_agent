@@ -5,9 +5,9 @@ file list — by Python, never by a model. The three reviewers are split by the
 evidence each needs (see :mod:`app.agent.prompts`), and the only real
 decisions are whether that evidence exists for this PR:
 
-* the **scout** and the **repo-context reviewer** need code to explore; a
-  change that touches only documentation gives them nothing, so they are
-  skipped;
+* the **repository context** (:mod:`app.agent.context`) and the
+  **repo-context reviewer** need code to explore; a change that touches only
+  documentation gives them nothing, so they are skipped;
 * the **change-intent reviewer** always reads the description against the
   diff and judges the scale of touched IO, and picks up dependency review
   only when a manifest changed and n8n review only when a workflow export
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.agent.context import RepoContext
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT, ReviewerSpec
 from app.agent.tools import is_lockfile
 from app.models import ChangedFile, PullRequest
@@ -54,9 +53,12 @@ _N8N = 10
 
 @dataclass(frozen=True)
 class ReviewPlan:
-    """What the multi-agent path will run for one PR, and why."""
+    """What the pipeline will run for one PR, and why. ``context`` is
+    whether Python gathers the repository context (conventions, callers,
+    tests) into the shared prefix — the gate the scout shared until RC1-427
+    retired it."""
 
-    scout: bool
+    context: bool
     reviewers: tuple[ReviewerSpec, ...]
     reasons: tuple[str, ...] = field(default=())
 
@@ -91,9 +93,8 @@ def looks_like_workflow(f: ChangedFile) -> bool:
 def plan_review(pr: PullRequest, *, explorable: bool = True) -> ReviewPlan:
     """The plan for ``pr``. ``explorable`` is whether the repo tools have a
     repository behind them; without one (the dry-run CLI with no
-    ``--repo-path``) the scout would spend its turns learning that every
-    tool call fails, so Python skips it and the reviewers work from the
-    diff, which is what they would have got anyway."""
+    ``--repo-path``) there is nothing to grep, so Python skips the context
+    and the reviewers work from the diff."""
     files = list(pr.files)
     docs_only = bool(files) and all(is_doc(f.filename) for f in files)
     manifests = [f.filename for f in files if is_manifest(f.filename)]
@@ -103,13 +104,13 @@ def plan_review(pr: PullRequest, *, explorable: bool = True) -> ReviewPlan:
     reviewers: list[ReviewerSpec] = [DIFF_LOCAL]
 
     if docs_only:
-        reasons.append("documentation-only change: scout and repo_context skipped")
+        reasons.append("documentation-only change: repository context and repo_context skipped")
     else:
         reviewers.append(REPO_CONTEXT)
-    scout = not docs_only
-    if scout and not explorable:
-        scout = False
-        reasons.append("no repository checkout to explore: scout skipped")
+    context = not docs_only
+    if context and not explorable:
+        context = False
+        reasons.append("no repository checkout to explore: repository context skipped")
 
     dimensions = list(CHANGE_INTENT.dimensions)
     if manifests:
@@ -122,37 +123,5 @@ def plan_review(pr: PullRequest, *, explorable: bool = True) -> ReviewPlan:
         dimensions.remove(_N8N)
     reviewers.append(CHANGE_INTENT.narrowed(tuple(dimensions)))
 
-    return ReviewPlan(scout=scout, reviewers=tuple(reviewers), reasons=tuple(reasons))
+    return ReviewPlan(context=context, reviewers=tuple(reviewers), reasons=tuple(reasons))
 
-
-def scout_turns(
-    context: RepoContext, *, full: int, with_context: int, when_complete: int = 0
-) -> int:
-    """The scout's turn cap for this review, decided after the context is built
-    (RC1-393, RC1-394).
-
-    Three cases, from a value:
-
-    * **Complete** — the conventions file was found, the callers search ran
-      to completion and the tests search reached an answer: every kind of
-      evidence the scout used to gather is in the prefix, and it gets
-      ``when_complete`` turns, zero by default, which skips it (RC1-394).
-    * **Answered but for the tests** — conventions and callers in hand, the
-      tests search cut off before it started (the live path's read budget):
-      the scout's remaining job is small and it gets the short
-      ``with_context`` cap (RC1-393).
-    * **Otherwise** — no conventions file, or the callers search was cut
-      off: the scout has the whole job and the full cap.
-
-    A diff that defines nothing Python could name still counts as answered:
-    no changed interface is an answer to the callers question, not a gap;
-    likewise a diff with no source file a test could reference. Measured in
-    the RC1-393 record: with the full cap the scout spends every turn
-    whatever it was handed, so the cap has to follow the context.
-    """
-    answered = bool(context.conventions) and not context.search_stopped
-    if not answered:
-        return full
-    if context.complete:
-        return min(full, when_complete)
-    return min(full, with_context)

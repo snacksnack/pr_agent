@@ -104,7 +104,7 @@ def stage_span(kind: str, name: str):
     """A context manager for one stage of a multi-agent review (RC1-390).
 
     ``kind`` is an LLM Observability span kind — ``workflow`` for the review
-    as a whole, ``agent`` for the scout, each reviewer and the verifier,
+    as a whole, ``agent`` for each reviewer and the verifier,
     ``task`` for a step with no model of its own. The auto-instrumented
     Anthropic calls made inside become its children, which is what turns a
     review from N unrelated root spans into one tree. A no-op when tracing
@@ -155,8 +155,8 @@ def annotate_review_identity(pull_request: PullRequest) -> None:
 def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
     """Price a finished review and write the price onto the active workflow
     span: ``cost_usd``, one ``stage_cost_usd_<stage>`` per stage, and
-    ``latency_s`` as metrics; the path, the scout and the conventions file
-    as metadata. Called by the dispatcher while the span is open, so the
+    ``latency_s`` as metrics; the path and the conventions file as metadata.
+    Called by ``review_pull_request`` while the span is open, so the
     numbers land on the trace's root rather than on any one call.
 
     Returns the cost, or ``None`` when the model has no price on file — the
@@ -182,8 +182,6 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
     annotate_span(
         metadata={
             "mode": result.mode,
-            "scout": _scout_tag(result),
-            "scout_turns": result.tool_turns,
             "verified": result.verified,
             "conventions_file": result.conventions_file,
             "context_complete": result.context_complete,
@@ -201,10 +199,6 @@ def stage_metric_key(stage: str) -> str:
     return "stage_cost_usd_" + re.sub(r"[^A-Za-z0-9_]", "_", stage)
 
 
-def _scout_tag(result: ReviewResult) -> str:
-    return "ran" if result.scout_ran else "skipped"
-
-
 def review_metric_tags(result: ReviewResult, *, repo: str) -> list[str]:
     """The tag set both metrics carry. Kept small on purpose — every distinct
     combination is a billable custom metric, five more once percentiles are
@@ -214,7 +208,6 @@ def review_metric_tags(result: ReviewResult, *, repo: str) -> list[str]:
         f"ml_app:{ML_APP}",
         f"repo:{repo}",
         f"mode:{result.mode}",
-        f"scout:{_scout_tag(result)}",
         f"verified:{str(result.verified).lower()}",
         f"model:{result.model}",
     ]

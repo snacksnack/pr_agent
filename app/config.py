@@ -39,8 +39,6 @@ class Settings(BaseSettings):
     # bursts once alerts are enabled and carry nothing for a reviewer to judge,
     # so they stay off the billed review path (RC1-359).
     review_skip_authors: str = "dependabot[bot]"
-    # File-read budget for the scout (RC1-390); its turn caps are below.
-    max_files_read: int = 40
     # RC1-387: second pass that re-reads each finding against the diff before
     # it is posted, and may drop or downgrade it. Off by default; the corpus
     # is run with it both ways and the ADR (docs/rc1-387-verifier.md) says
@@ -48,29 +46,6 @@ class Settings(BaseSettings):
     review_verify_findings: bool = False
     # Model for the verifier pass; unset means the same model as the review.
     review_verify_model: str | None = None
-    # Turn cap for the scout (RC1-390) when Python found no repository context
-    # to put in the prefix. It writes a brief, not findings; every turn
-    # re-sends the growing conversation, so the cap is the scout's cost
-    # ceiling. RC1-422 made this pipeline the only one (docs/rc1-422-single-
-    # pipeline.md); docs/rc1-390-multi-agent.md has the original numbers.
-    review_scout_max_turns: int = 8
-    # RC1-393: the scout's turn cap when Python has already put the
-    # conventions file and the callers list in front of it. Measured: with
-    # the full cap the scout spends every turn regardless of what it was
-    # handed, so the context only makes exploration cheaper if the budget
-    # shrinks with it. What is left for the scout is tests for the changed
-    # paths and whatever the callers list did not reach. Zero skips the scout
-    # altogether when the context is complete: exploration is then Python's
-    # alone, and the reviewers read the conventions file and the callers list
-    # with no brief.
-    review_scout_context_turns: int = 3
-    # RC1-394: the scout's turn cap when the context is complete — the
-    # conventions file found, the callers search finished and the tests for
-    # the changed paths found by Python too. Zero, the default, skips the
-    # scout: exploration is then Python's alone and the review is one prefix
-    # write plus four cached reads. Set it to the context cap to measure
-    # what a scout still adds on top of a complete context.
-    review_scout_complete_turns: int = 0
     # Live reviews read the repo through the GitHub API (RC1-364); this caps
     # the Contents/Trees calls one review may spend so a curious model cannot
     # page through a large repository.
@@ -104,23 +79,11 @@ class Settings(BaseSettings):
         """
         return [item.strip() for item in self.review_skip_authors.split(",") if item.strip()]
 
-    @field_validator(
-        "max_files_read",
-        "remote_api_budget",
-        "github_max_attempts",
-        "review_scout_max_turns",
-    )
+    @field_validator("remote_api_budget", "github_max_attempts")
     @classmethod
     def _must_be_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be a positive integer")
-        return v
-
-    @field_validator("review_scout_context_turns", "review_scout_complete_turns")
-    @classmethod
-    def _must_not_be_negative(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError("must be zero or a positive integer")
         return v
 
 

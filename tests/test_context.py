@@ -484,7 +484,7 @@ def test_remote_tests_search_stops_when_the_tree_is_out_of_budget():
     tools = RemoteRepoTools(gh, PRRef("o", "r", 1), "sha", api_budget=1)
     ctx = build_repo_context(_pr(("app/a.py", "+x = 2")), tools)
     assert ctx.conventions_path == "CLAUDE.md"
-    assert ctx.tests_stopped and not ctx.complete, "the scout keeps its turns"
+    assert ctx.tests_stopped and not ctx.complete
 
 
 def test_remote_read_text_is_none_once_the_budget_is_spent():

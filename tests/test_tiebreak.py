@@ -62,7 +62,6 @@ def test_probe_prefix_carries_the_conventions_only_when_the_case_needs_them():
     plain = next(c for c in boundary.CASES if not c.needs_conventions)
     assert "Repository conventions, from CLAUDE.md" in tiebreak.probe_prefix(needs)
     assert "Repository conventions" not in tiebreak.probe_prefix(plain)
-    assert "(scout skipped" in tiebreak.probe_prefix(plain)
 
 
 # --- history scoring ------------------------------------------------------------

@@ -4,8 +4,7 @@ This module is the canonical home for everything that *defines* a review: the
 system prompt (reviewer persona + severity calibration + the full rubric across
 every dimension), the closed set of finding ``CATEGORIES``, the strict
 ``submit_review`` tool schema each reviewer calls exactly once to emit
-``findings[] + summary``, the reviewer specs and the scout's instructions
-(RC1-390).
+``findings[] + summary``, and the reviewer specs (RC1-390).
 
 Keep this module import-light and side-effect-free: it holds *text and schema*
 only. The pipeline in :mod:`app.agent.pipeline` composes these into model
@@ -263,7 +262,7 @@ def format_precomputed_findings(findings: Iterable[Finding] | None) -> str:
     return "\n".join(lines)
 
 
-# --- multi-agent review: scout brief + evidence-scoped reviewers (RC1-390) --
+# --- evidence-scoped reviewers (RC1-390) -----------------------------------
 
 # The rubric above is one string — the system prompt every stage shares.
 # The reviewers need the same text cut by dimension, so the slices are
@@ -361,8 +360,8 @@ REPO_CONTEXT = ReviewerSpec(
     "Your evidence is the repository around the change: the conventions its "
     "neighbouring modules follow, the callers of what changed, and the tests "
     "that do or do not cover it. The repository conventions, the callers "
-    "list, the tests list and the scout's brief above are that evidence; "
-    "cite them. " + MISSING_EVIDENCE_NOTE,
+    "list and the tests list above are that evidence; cite them. "
+    + MISSING_EVIDENCE_NOTE,
 )
 CHANGE_INTENT = ReviewerSpec(
     "change_intent",
@@ -377,16 +376,15 @@ REVIEWERS: tuple[ReviewerSpec, ...] = (DIFF_LOCAL, REPO_CONTEXT, CHANGE_INTENT)
 
 def reviewer_instructions(spec: ReviewerSpec) -> str:
     """The per-reviewer suffix. It follows the shared, cached prefix (system
-    prompt, PR, scout brief) so the three reviewers differ only here."""
+    prompt, PR, repository context) so the three reviewers differ only here."""
     cats = ", ".join(spec.categories)
     return (
         f"You are the '{spec.name}' reviewer on a panel of three, each reading "
         "the same change with a different kind of evidence. The repository "
         "context above — its conventions file, the callers of what changed and "
-        "the tests touching it — was gathered by grep before this pass, and a "
-        "scout's brief follows it when one ran. You have no tools in this "
-        "pass: judge from the diff, the description, the context and the "
-        "brief, and do not ask to read more.\n"
+        "the tests touching it — was gathered by grep before this pass. You "
+        "have no tools in this pass: judge from the diff, the description and "
+        "the context, and do not ask to read more.\n"
         "\n"
         f"Your evidence: {spec.evidence}\n"
         "\n"
@@ -412,63 +410,3 @@ def reviewer_instructions(spec: ReviewerSpec) -> str:
         "Call submit_review exactly once."
     )
 
-
-SCOUT_INSTRUCTIONS = (
-    "You are the scout for a panel of three reviewers who will read this "
-    "change next. They have no tools; you do. Your job is to gather the "
-    "repository context they cannot see in the diff, then call submit_brief "
-    "exactly once. Do not write findings; that is their job.\n"
-    "\n"
-    "Use read_file, list_dir, and grep to establish, with file references:\n"
-    "1. The conventions the touched modules already follow — how they read "
-    "config, handle errors, type and name things, structure imports — and "
-    "whether the change matches them.\n"
-    "2. Callers of any function, class, config key, or contract the change "
-    "alters, and whether they still fit.\n"
-    "3. Existing tests for the changed paths, and whether the change adds or "
-    "updates any.\n"
-    "4. Anything else a reviewer would want that is not in the hunks: what a "
-    "changed manifest or workflow file feeds, the scale a touched query runs "
-    "at, a comment or docstring elsewhere that the change contradicts.\n"
-    "\n"
-    "Be brief and factual: at most about 250 words, facts before opinions, no "
-    "recommendations. If the tools return errors because no checkout is "
-    "available, say so in one line and submit."
-)
-
-# Appended to the scout's seed when Python already put the conventions file
-# and the callers list above it (RC1-393). The scout is told what is done so
-# it does not spend turns re-reading the conventions file or grepping for
-# callers the list already names.
-SCOUT_CONTEXT_NOTE = (
-    "Some of that work is already done: the repository's conventions file, "
-    "the callers of what changed and the tests touching the changed paths "
-    "are above, gathered by grep before you started. Do not re-read the "
-    "conventions file or search for those callers or tests again. Look only "
-    "for what is not already there: conventions the file does not state "
-    "that the touched modules follow, callers the list did not reach, and "
-    "tests the search did not reach. Your exploration budget is short for "
-    "that reason: a few tool calls, then submit."
-)
-
-SUBMIT_BRIEF_TOOL = {
-    "name": "submit_brief",
-    "description": (
-        "Submit the repository-context brief for the reviewers. Call this "
-        "exactly once, when you have finished exploring."
-    ),
-    "input_schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "brief": {
-                "type": "string",
-                "description": (
-                    "The brief: conventions, callers, tests, and anything else "
-                    "the reviewers cannot see in the diff. About 250 words at most."
-                ),
-            },
-        },
-        "required": ["brief"],
-    },
-}

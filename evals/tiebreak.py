@@ -36,7 +36,6 @@ from app.agent.pipeline import (
     build_shared_prefix,
     review_pull_request,
 )
-from app.agent.scout import skipped_brief
 from app.agent.tools import RepoTools
 from app.config import settings
 from app.models import Finding, ReviewResult
@@ -257,17 +256,16 @@ class RecordingClient:
 
 
 def probe_prefix(case: boundary.BoundaryCase) -> str:
-    """The shared prefix the multi-agent verifier reads: the PR, the
-    repository context Python would have built (the conventions page when
-    the case needs one), and a skipped-scout brief — the RC1-394 default."""
+    """The shared prefix the verifier reads: the PR and the repository
+    context Python would have built (the conventions page when the case
+    needs one)."""
     pr = boundary.pull_request(case)
     context = ""
     if case.needs_conventions:
         context = RepoContext(
             conventions=boundary.CONVENTIONS_PAGE.strip(), conventions_path="CLAUDE.md"
         ).render()
-    brief = skipped_brief("context complete: conventions, callers and tests are above")
-    return build_shared_prefix(pr, None, brief.text, context)
+    return build_shared_prefix(pr, None, context)
 
 
 def probe_case(
@@ -419,7 +417,6 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
         >= 2,
         "findings": len(result.findings),
         "reviewers": list(result.reviewers_run),
-        "scout_ran": result.scout_ran,
         "context_complete": result.context_complete,
         "drop_reasons": reasons,
         "cost_usd": float(review_cost(result).total),

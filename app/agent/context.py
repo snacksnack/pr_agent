@@ -1,9 +1,9 @@
 """Deterministic repository context for the multi-agent review (RC1-393).
 
-RC1-390 measured the scout as the cost of the multi-agent path: on the one
-corpus case with a repository to explore it spent more than the whole single
-loop, and most of what it spent was on questions whose answers are a
-property of the repository, not of the PR. Two of those questions have
+RC1-390 measured a model-driven scout as the cost of the multi-agent path:
+on the one corpus case with a repository to explore it spent more than the
+whole single loop, and most of what it spent was on questions whose answers
+are a property of the repository, not of the PR. Those questions have
 answers Python can fetch with no model turn at all:
 
 * **What conventions does this repository follow?** Every repo in the
@@ -22,21 +22,19 @@ answers Python can fetch with no model turn at all:
   (``tests/test_<module>.py``, ``<module>_test.py``, ``<module>.test.*``)
   in the repository's file list, then greps the test tree for the module's
   name; the hits the callers grep made inside test files are moved here
-  too. That was the scout's last job after RC1-393, and with it answered
-  the context is complete on all three kinds of evidence and the router
-  skips the scout (:func:`app.agent.router.scout_turns`).
+  too. With it answered the context is complete on all three kinds of
+  evidence (``complete`` is reported on the span and the metric).
 
 :func:`build_repo_context` runs all three and renders one block of text
-that :mod:`app.agent.pipeline` puts in the shared prefix and the scout's seed.
-The scout, when one still runs, is told to look only for what the block
-does not say. Nothing here raises: a repository with no conventions file
-and a diff with no symbols produce an empty context, and the review
-proceeds as it did before.
+that :mod:`app.agent.pipeline` puts in the shared prefix. Since RC1-427 this
+is the review's whole exploration: the scout that used to explore on top of
+it was measured and retired. Nothing here raises: a repository with no
+conventions file and a diff with no symbols produce an empty context, and
+the reviewers work from the diff.
 
 Both tool backends serve this module through the same three calls,
 ``read_text``, ``grep`` and ``paths``; the live path pays for them out of
-the per-review API budget (RC1-364), and the files the grep fetches stay
-cached for the scout.
+the per-review API budget (RC1-364).
 """
 from __future__ import annotations
 
@@ -142,13 +140,13 @@ class RepoContext:
 
     @property
     def complete(self) -> bool:
-        """Every evidence kind the scout used to gather is answered here:
+        """Every kind of evidence is answered here:
         the conventions file was found, and neither search was cut off.
-        The router skips the scout on a complete context (RC1-394)."""
+        Reported as ``context_complete`` on the result (RC1-394)."""
         return bool(self.conventions) and not self.search_stopped and self.tests_searched
 
     def render(self) -> str:
-        """The block the reviewers and the scout read. Empty when there is
+        """The block the reviewers read. Empty when there is
         nothing to say, so a review with no context has the RC1-390 prefix."""
         parts: list[str] = []
         if self.conventions:
@@ -421,9 +419,8 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
     name, bounded. Rows the callers grep already moved here stay.
 
     ``tests_searched`` is set when the search reached an answer. A search
-    the read budget cut off before it reached anything is not an answer,
-    and the scout keeps its turns; one the caps cut short is, because the
-    scout has the same grep and the same budget and would do no better.
+    the read budget cut off before it reached anything is not an answer
+    (``tests_stopped``); one the caps cut short is.
     """
     sources = changed_source_files(pr)
     ctx.source_files = sources[:MAX_SOURCE_FILES]
@@ -435,8 +432,7 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
     paths = tools.paths()
     if paths is None:
         # No file list to read (the remote tree is unreadable, or the
-        # budget is gone): the search cannot start, and the scout keeps
-        # its turns.
+        # budget is gone): the search cannot start.
         ctx.tests_stopped = True
         ctx.source_files_unsearched = ctx.source_files + ctx.source_files_unsearched
         ctx.source_files = []

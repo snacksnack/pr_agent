@@ -38,7 +38,6 @@ from app.agent.tools import (
     MAX_READ_BYTES,
     ToolError,
     compile_pattern,
-    dispatch_tool,
     format_file_text,
     grep_text,
     is_lockfile,
@@ -308,8 +307,3 @@ class RemoteRepoTools:
         if glob:
             pool = [f for f in pool if fnmatch.fnmatch(PurePosixPath(f).name, glob)]
         return pool
-
-    # -- dispatch --------------------------------------------------------
-
-    def dispatch(self, name: str, tool_input: dict) -> str:
-        return dispatch_tool(self, name, tool_input)

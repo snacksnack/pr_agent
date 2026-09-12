@@ -18,9 +18,9 @@ posts a single structured review (summary + inline comments, severity-tagged).
 
 Custom **GitHub App** (account-wide) → **Python / FastAPI** service on **Fly.io**
 → one **review pipeline** (Anthropic SDK; `app/agent/pipeline.py`): Python
-gathers the repository context, a scout explores only when that context is
-incomplete, three evidence-scoped reviewers fan out on one cached prefix,
-Python merges. Reviews are **advisory by default**; they escalate to "Request
+gathers the repository context (conventions file, callers, tests, by grep),
+three evidence-scoped reviewers fan out on one cached prefix, Python merges.
+No model explores: the scout that did was measured and retired (RC1-427). Reviews are **advisory by default**; they escalate to "Request
 changes" only on a committed secret (`block_on`).
 
 ## Build plan & status
@@ -100,6 +100,12 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `pipeline.py`, `review_pull_request` lives there and opens the
       `pr_review` span itself; corpus and live-PR numbers against the
       recorded band in `docs/rc1-422-single-pipeline.md`
+- [x] RC1-427 the scout measured on top of the Python context (corpus and
+      the reference PRs, four arms) and removed: no defect found that the
+      review otherwise missed, noise wherever it ran; `scout.py`, its prompt,
+      settings, router branch, result fields, pricing stage, metric tag and
+      the model-tool surface in `tools.py` are gone; the reviewers' prompt
+      no longer mentions a brief (record in `docs/rc1-427-scout-value.md`)
 - [x] RC1-398 the verifier's category tie-break, measured before any
       cross-category dedupe rule: boundary cases in `evals/boundary.py`
       (one defect, two categories, the pair of findings), scoring in
@@ -126,18 +132,17 @@ app/
   observability.py  LLM Obs enable + spans (RC1-322/390); cost per review onto the
                 workflow span and the per-review metric (RC1-395)
   agent/
-    tools.py    RepoTools: read_file/list_dir/grep + TOOL_SCHEMAS + dispatch()
-    pipeline.py the review: review_pull_request(...) — context -> [scout] -> warm cache
-                -> reviewers (gather) -> merge -> [verifier]; opens the pr_review span (RC1-390/422)
-    reviewer.py model-facing primitives every stage shares: render_pr, cache-marked
-                _create, response normalization, parse_findings (RC1-110/422)
+    tools.py    RepoTools: read_text/read_file/list_dir/grep/paths, bounded (RC1-109)
+    pipeline.py the review: review_pull_request(...) — context -> warm cache
+                -> reviewers (gather) -> merge -> [verifier]; opens the pr_review span (RC1-390/422/427)
+    reviewer.py model-facing primitives every stage shares: render_pr, the cache
+                marker + system block, _tokens, parse_findings (RC1-110/422/427)
     verifier.py second pass over the merged findings, flag-gated (RC1-387)
-    router.py   RC1-390: which reviewers run, decided from the file list;
-                RC1-393/394: the scout's turn cap, decided from the context
+    router.py   RC1-390: which reviewers run, decided from the file list, and
+                whether there is a repository to gather context from
     context.py  RC1-393/394: conventions file + callers + tests by grep, Python only,
                 into the prefix; `complete` when all three are answered
-    scout.py    RC1-390: explore once with tools, end in a brief
-    prompts.py  rubric/system prompt (RC1-111); reviewer specs + scout prompt (RC1-390)
+    prompts.py  rubric/system prompt (RC1-111); reviewer specs (RC1-390)
     checks/n8n.py  n8n static check (RC1-112)
 tests/          pytest, offline
 ```
@@ -159,15 +164,11 @@ tests/          pytest, offline
   turns, and files read are all capped (cost/context guardrails).
 - **Config via `app.config.settings`** (env / `.env`). Don't read `os.environ`
   directly. Key knobs: `review_model` (`claude-sonnet-4-6`), `block_on`
-  (`["leaked_secret"]`), `max_files_read`,
-  `review_verify_findings` (off; RC1-387 experiment, see
-  docs/rc1-387-verifier.md before turning it on), `review_scout_max_turns`,
-  `review_scout_context_turns` (RC1-393: the scout's cap once Python has put
-  the conventions file and callers in the prefix but the tests search was cut
-  off), `review_scout_complete_turns` (RC1-394: the cap once tests are in the
-  prefix too; 0 skips the scout, which is the default).
+  (`["leaked_secret"]`), `review_verify_findings` (off; RC1-387 experiment,
+  see docs/rc1-387-verifier.md before turning it on), `remote_api_budget`
+  (the Contents/Trees calls one live review may spend).
 - **One pipeline; the request shape is measured, not assumed.** Any change to
-  what the scout, the reviewers or the verifier send (prefix, tools,
+  what the reviewers or the verifier send (prefix, tools,
   `tool_choice`, cache markers) needs a corpus run (`python -m evals
   --repo-path .`) against the band in `docs/rc1-422-single-pipeline.md`, and
   a `scripts/measure_pr.py` run on the three reference PRs for cost.
@@ -191,8 +192,7 @@ pytest --cov                  # ...with the 88% floor CI enforces
 ruff check .                  # lint (line-length 100, rules E,F,I,UP,B,SIM)
 python -m evals --list        # the planted-defect corpus (free)
 python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
-python -m evals --repo-path .  # ...with a checkout every case explores (RC1-393; the
-                               # scout runs on every case, so ~2-3x the diff-only cost)
+python -m evals --repo-path .  # ...with a checkout every case greps for context (RC1-393)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
 python scripts/measure_pr.py 35 33 39 --verify
                                # price reviews of real PRs at their own head (BILLED; RC1-391)

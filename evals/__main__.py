@@ -40,15 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         help="RC1-393: leave the conventions file and callers list out of the "
         "multi-agent prefix — the control run for measuring them.",
     )
-    parser.add_argument(
-        "--no-scout",
-        action="store_true",
-        help="RC1-427: never run the scout, whatever the context — the control "
-        "run for measuring what it adds.",
-    )
     args = parser.parse_args(argv)
     repo_context = not args.no_repo_context
-    scout = not args.no_scout
 
     if args.list:
         for case in corpus.CASES:
@@ -70,8 +63,6 @@ def main(argv: list[str] | None = None) -> int:
     verify = "on" if settings.review_verify_findings else "off"
     checkout = f"checkout {args.repo_path}" if args.repo_path else "diff-only"
     context = "repo context on" if repo_context else "repo context OFF"
-    if not scout:
-        context += ", scout OFF"
     print(
         f"{len(cases)} case(s) against {settings.review_model}, verifier {verify}, "
         f"{checkout}, {context} — this spends money.\n"
@@ -82,9 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for case in cases:
         with llmobs.case(case.id) as traced:
-            result = subject.run(
-                case, repo_path=args.repo_path, repo_context=repo_context, scout=scout
-            )
+            result = subject.run(case, repo_path=args.repo_path, repo_context=repo_context)
             traced.record(result)
         results.append(result)
     for result in results:
@@ -139,12 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{off_scope} off-scope finding(s) discarded"
             + (f"; cold on {', '.join(cold)}" if cold else "")
         )
-        # RC1-393: what exploration cost, and what Python put in front of it.
-        scouted = [r for r in multi_ran if not r.observations["multi"]["scout_skipped"]]
-        scout_cost = sum(
-            float(r.observations["multi"]["stages"].get("scout", {}).get("cost_usd", 0))
-            for r in scouted
-        )
+        # RC1-393: what Python put in the prefix.
         with_conventions = sum(
             1 for r in multi_ran if r.observations["multi"]["context"]["conventions_file"]
         )
@@ -154,16 +138,13 @@ def main(argv: list[str] | None = None) -> int:
             1 for r in multi_ran if r.observations["multi"]["context"].get("complete")
         )
         print(
-            f"  scout ran on {len(scouted)} case(s) for ${scout_cost:.3f}; "
-            f"conventions file on {with_conventions}, {callers} caller row(s) and "
-            f"{tests} test row(s) by grep, context complete on {complete}"
+            f"  context: conventions file on {with_conventions}, {callers} caller row(s) "
+            f"and {tests} test row(s) by grep, complete on {complete}"
         )
     print("  (never averaged — see evals/subject.py)")
 
     record_run(
-        subject.version(
-            checkout=args.repo_path is not None, repo_context=repo_context, scout=scout
-        ),
+        subject.version(checkout=args.repo_path is not None, repo_context=repo_context),
         started,
         results,
     )

@@ -75,10 +75,9 @@ def test_read_file_is_cached_so_a_reread_costs_nothing(tools, gh):
     assert len(gh.calls) == 1
 
 
-def test_read_file_missing_is_a_tool_error_not_an_exception_out_of_dispatch(tools):
+def test_read_file_missing_is_a_tool_error(tools):
     with pytest.raises(ToolError, match="no such file at the PR head"):
         tools.read_file("gone.py")
-    assert tools.dispatch("read_file", {"path": "gone.py"}).startswith("Error: no such file")
 
 
 def test_read_file_refuses_secrets_without_spending_a_call(tools, gh):
@@ -165,29 +164,21 @@ def test_grep_file_cap_is_a_constant_the_budget_sits_on_top_of():
     assert f"searched {MAX_GREP_REMOTE_FILES} of {len(many)}" in out
 
 
-# --- budget + dispatch ----------------------------------------------------
+# --- budget ---------------------------------------------------------------
 
-def test_budget_exhaustion_tells_the_model_to_submit(gh):
+def test_budget_exhaustion_is_a_tool_error_and_cached_reads_stay_free(gh):
     tools = RemoteRepoTools(gh, REF, "h", api_budget=1)
     tools.read_file("README.md")
-    out = tools.dispatch("read_file", {"path": "src/app.py"})
-    assert out.startswith("Error: GitHub API budget exhausted")
-    assert "submit your review" in out
+    with pytest.raises(ToolError, match="GitHub API budget exhausted"):
+        tools.read_file("src/app.py")
     # A cached read is still free after the budget is spent.
     assert "# Demo" in tools.read_file("README.md")
 
 
-def test_dispatch_mirrors_the_local_backend(tools):
-    assert tools.dispatch("list_dir", {}).startswith("./")
-    assert tools.dispatch("grep", {"pattern": "["}).startswith("Error: invalid regex")
-    assert tools.dispatch("nope", {}) == "Error: unknown tool: 'nope'"
-    assert tools.dispatch("grep", {}) == "Error: missing required argument 'pattern'"
-
-
-def test_remote_dispatch_accepts_string_line_numbers(tools):
-    # The exact shape that killed the first live review under RC1-364.
-    out = tools.dispatch("read_file", {"path": "README.md", "start_line": "2", "end_line": "2"})
-    assert out == "2  line two"
+def test_string_line_numbers_are_the_callers_problem_now(tools):
+    # RC1-427: the model-tool dispatcher that coerced "2" to 2 went with the
+    # scout; the method takes integers.
+    assert tools.read_file("README.md", 2, 2) == "2  line two"
 
 
 # --- lock files (RC1-365) -------------------------------------------------
@@ -202,8 +193,8 @@ LOCK_FILES = {
 def test_remote_read_file_refuses_lock_files_without_spending_a_call():
     gh = FakeGitHub(dict(LOCK_FILES))
     tools = RemoteRepoTools(gh, REF, "h")
-    out = tools.dispatch("read_file", {"path": "package-lock.json"})
-    assert out.startswith("Error: refused: 'package-lock.json' is a generated lock file")
+    with pytest.raises(ToolError, match="generated lock file"):
+        tools.read_file("package-lock.json")
     assert gh.calls == []
 
 

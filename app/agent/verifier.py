@@ -65,19 +65,17 @@ VERIFIER_INSTRUCTIONS = (
     "exactly once."
 )
 
-# RC1-394: appended for the multi-agent path, whose reviewers have no tools
-# and read a bounded, grep-built context. RC1-393's run C showed them
-# escalating "the scout found nothing" into blockers on files that were
-# simply not in the checkout; with the scout gone the context block is the
-# thing that can be read that way.
+# RC1-394: appended for the pipeline, whose reviewers have no tools and read
+# a bounded, grep-built context. RC1-393's run C showed them escalating "the
+# scout found nothing" into blockers on files that were simply not in the
+# checkout; the context block is the thing that can be read that way.
 ABSENCE_RULE = (
-    "The repository context above was gathered by a bounded grep, and the "
-    "scout's brief, when there is one, by a few tool calls. Drop a finding "
-    "whose only evidence is that something was not found there — a file, "
-    "module, caller or symbol the context does not mention, or that the "
-    "brief could not reach: absence from a bounded search is not evidence "
-    "of absence. A changed path the tests list names as untested is a fair "
-    "'tests' finding at warning; it is not a blocker."
+    "The repository context above was gathered by a bounded grep. Drop a "
+    "finding whose only evidence is that something was not found there — a "
+    "file, module, caller or symbol the context does not mention: absence "
+    "from a bounded search is not evidence of absence. A changed path the "
+    "tests list names as untested is a fair 'tests' finding at warning; it "
+    "is not a blocker."
 )
 
 VERIFY_TOOL = {
@@ -235,8 +233,8 @@ def verify_findings(
 
     By default the pass renders the PR itself and sends its one tool, which
     is the RC1-387 request byte for byte (the tie-break probe still sends
-    it). The pipeline (RC1-390) passes ``shared_prefix`` — the PR and scout
-    brief exactly as the reviewers saw them — with the reviewers' ``tools``
+    it). The pipeline (RC1-390) passes ``shared_prefix`` — the PR and the
+    repository context exactly as the reviewers saw them — with their ``tools``
     and ``tool_choice``, so this call reads their cached prefix instead of
     writing its own. ``absence_rule`` (RC1-394) adds the rule that a claim
     resting only on what the bounded context did not find is dropped.
@@ -284,9 +282,6 @@ def verify_findings(
         summary=result.summary,
         findings=kept,
         model=result.model,
-        tool_turns=result.tool_turns,
-        files_read=result.files_read,
-        truncated=result.truncated,
         malformed_findings=result.malformed_findings,
         coerced_findings=result.coerced_findings,
         input_tokens=total.input_tokens,
@@ -300,7 +295,6 @@ def verify_findings(
         verifier_model=model,
         mode=result.mode,
         reviewers_run=result.reviewers_run,
-        brief=result.brief,
         stage_usage={**result.stage_usage, "verifier": used} if result.stage_usage else {},
         stage_latency_ms=result.stage_latency_ms,
         off_scope_findings=result.off_scope_findings,
@@ -310,5 +304,4 @@ def verify_findings(
         callers_found=result.callers_found,
         tests_found=result.tests_found,
         context_complete=result.context_complete,
-        scout_ran=result.scout_ran,
     )

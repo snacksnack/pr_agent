@@ -85,9 +85,7 @@ def preflight() -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is not set. This subject drives a real model.")
 
 
-def prompt_version(
-    *, checkout: bool = False, repo_context: bool = True, scout: bool = True
-) -> str:
+def prompt_version(*, checkout: bool = False, repo_context: bool = True) -> str:
     """Hash of the rubric and severity calibration together.
 
     Both, because they are edited independently and a change to either moves
@@ -99,8 +97,7 @@ def prompt_version(
     run against a checkout explores on every case where a diff-only run
     explores on one, and a run with the deterministic context off is the
     control for one with it on. Neither pair may be averaged, so each is
-    its own subject version. ``scout`` (RC1-427) is the same kind of
-    control: a run that never scouts, whatever the context.
+    its own subject version.
     """
     import hashlib
 
@@ -113,35 +110,25 @@ def prompt_version(
 
         material = (verifier.VERIFIER_INSTRUCTIONS).encode()
         version += f"+verify-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
-    # RC1-390: the scout's and reviewers' instructions are the pipeline's
-    # prompt. Since RC1-422 this is the only pipeline, so the segment is
-    # always present; the eval store's earlier rows without it are the
-    # retired single loop's.
-    material = (
-        prompts.SCOUT_INSTRUCTIONS
-        + prompts.SCOUT_CONTEXT_NOTE
-        + "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS)
-    ).encode()
+    # RC1-390: the reviewers' instructions are the pipeline's prompt. Since
+    # RC1-422 this is the only pipeline, so the segment is always present;
+    # the eval store's earlier rows without it are the retired single
+    # loop's, and rows before RC1-427 hashed the scout's prompt in too.
+    material = "".join(prompts.reviewer_instructions(spec) for spec in prompts.REVIEWERS).encode()
     version += f"+multi-sha256:{hashlib.sha256(material).hexdigest()[:12]}"
     if checkout:
         version += "+checkout"
     if not repo_context:
         version += "+no-context"
-    if not scout:
-        version += "+no-scout"
     return version
 
 
-def version(
-    *, checkout: bool = False, repo_context: bool = True, scout: bool = True
-) -> SubjectVersion:
+def version(*, checkout: bool = False, repo_context: bool = True) -> SubjectVersion:
     return SubjectVersion(
         subject=NAME,
         code_version=_code_version(),
         model=settings.review_model,
-        prompt_version=prompt_version(
-            checkout=checkout, repo_context=repo_context, scout=scout
-        ),
+        prompt_version=prompt_version(checkout=checkout, repo_context=repo_context),
     )
 
 
@@ -264,22 +251,21 @@ def run(
     *,
     repo_path: str | Path | None = None,
     repo_context: bool = True,
-    scout: bool = True,
 ) -> CaseResult:
     """Score one case.
 
     ``repo_path`` (RC1-393) gives every case a checkout to explore — the
-    corpus is diff-only, so without one the scout runs on the single case
-    that materialises files, and the cost of exploration is invisible.
-    ``repo_context`` is the deterministic context switch, off for the
-    control run; ``scout`` (RC1-427) is the scout's, off for its control.
+    corpus is diff-only, so without one the context is gathered on the
+    single case that materialises files, and the cost of exploration is
+    invisible. ``repo_context`` is the deterministic context switch, off
+    for the control run.
     """
     planted = corpus.BY_ID[case.input["case_id"]]
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
         exit_code, findings, result = _review(
-            planted, pr, repo_path=repo_path, repo_context=repo_context, scout=scout
+            planted, pr, repo_path=repo_path, repo_context=repo_context
         )
     except Exception as exc:
         return CaseResult(
@@ -339,13 +325,11 @@ def run(
             "messages": [f"[{f.severity}/{f.category}] {f.message[:120]}" for f in findings],
             # RC1-387: the four token counts, so cache behaviour is visible.
             "tokens": _token_breakdown(result.usage) if result else {},
-            # RC1-387: how the loop ended, so a zero-finding miss can be read
-            # as "the model submitted nothing" versus "it ran out of turns"
-            # versus "it submitted findings the loop could not parse".
+            # RC1-387: how the model calls ended, so a zero-finding miss can be
+            # read as "the model submitted nothing" versus "it submitted
+            # findings that could not be parsed". The key predates RC1-427,
+            # when a tool loop still ran.
             "loop": {
-                "tool_turns": result.tool_turns,
-                "files_read": result.files_read,
-                "truncated": result.truncated,
                 "malformed_findings": result.malformed_findings,
                 "coerced_findings": result.coerced_findings,
             }
@@ -382,8 +366,6 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
     return {
         "ran": True,
         "reviewers": list(result.reviewers_run),
-        "scout_skipped": result.brief.startswith("(scout skipped"),
-        "brief_chars": len(result.brief),
         "stages": {
             stage: {
                 **_token_breakdown(usage),
@@ -399,13 +381,12 @@ def _multi_observations(result: ReviewResult | None, *, checkout: bool = False) 
         "deduplicated": result.deduplicated_findings,
         "unusable_reviewer_calls": result.unusable_reviewer_calls,
         # RC1-393: whether the case had a repository to explore, and what
-        # Python put in the prefix before the scout ran.
+        # Python put in the prefix.
         "checkout": checkout,
         "context": {
             "conventions_file": result.conventions_file,
             "callers": result.callers_found,
-            # RC1-394: the tests rows, and whether the context was complete
-            # enough for the router to skip the scout.
+            # RC1-394: the tests rows, and whether the context was complete.
             "tests": result.tests_found,
             "complete": result.context_complete,
         },
@@ -581,7 +562,6 @@ def _review(
     *,
     repo_path: str | Path | None = None,
     repo_context: bool = True,
-    scout: bool = True,
 ) -> tuple[int, list[Finding], ReviewResult | None]:
     """Run the real CLI, capturing the merged result on the way past.
 
@@ -592,9 +572,8 @@ def _review(
     `ReviewResult` also carries the loop's token counts for pricing.
 
     The review function is the shipped `review_pull_request` with the CLI's
-    defaults (`client=None`, so the SDK is built from settings) plus the two
-    switches the CLI does not expose, `repo_context` (RC1-393) and `scout`
-    (RC1-427).
+    defaults (`client=None`, so the SDK is built from settings) plus the one
+    switch the CLI does not expose, `repo_context` (RC1-393).
     """
     captured: list[ReviewResult] = []
 
@@ -606,7 +585,6 @@ def _review(
             model=settings.review_model,
             precomputed_findings=precomputed,
             repo_context=repo_context,
-            scout=scout,
         )
         captured.append(result)
         return result

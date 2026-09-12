@@ -1,13 +1,12 @@
 """Tests for the model-facing primitives every stage shares (RC1-110, RC1-422).
 
-The single loop these once drove was retired in RC1-422; what is left is the
-PR rendering, the cache-marked request, the response normalization and the
-``submit_review`` parsing that the scout, the reviewers and the verifier all
-use. Offline: a scripted fake stands in for the Anthropic SDK.
+The single loop these once drove was retired in RC1-422 and the scout's tool
+loop in RC1-427; what is left is the PR rendering, the token counts read off
+a response and the ``submit_review`` parsing that the reviewers and the
+verifier use.
 """
 from __future__ import annotations
 
-import copy
 from types import SimpleNamespace
 
 import pytest
@@ -15,31 +14,6 @@ import pytest
 from app.agent import reviewer
 from app.agent.reviewer import parse_findings, render_pr
 from app.models import ChangedFile, Finding, PRRef, PullRequest
-
-# --- scripted fake Anthropic client --------------------------------------
-
-class FakeMessages:
-    def __init__(self, scripted):
-        self._scripted = list(scripted)
-        self.calls = []  # records kwargs of each create() call
-
-    def create(self, **kwargs):
-        self.calls.append(copy.deepcopy(kwargs))
-        if not self._scripted:
-            raise AssertionError("fake client ran out of scripted responses")
-        return SimpleNamespace(content=self._scripted.pop(0), stop_reason="tool_use", usage=None)
-
-
-class FakeClient:
-    def __init__(self, scripted):
-        self.messages = FakeMessages(scripted)
-
-
-def _use(tool_id, name, **inp):
-    return {"type": "tool_use", "id": tool_id, "name": name, "input": inp}
-
-
-TOOLS = [{"name": "grep", "input_schema": {"type": "object"}}]
 
 
 @pytest.fixture()
@@ -115,71 +89,7 @@ def test_rendered_diff_is_bounded(monkeypatch):
     assert "b" * 50 not in seed
 
 
-# --- the cache-marked request (RC1-350) --------------------------------------
-
-def test_create_carries_exactly_two_cache_breakpoints():
-    # One on the constant tools+system prefix, one riding the latest turn —
-    # and never more, or old markers would eat the API's four-breakpoint cap
-    # as the scout's conversation grows.
-    client = FakeClient([[_use("t1", "grep", pattern="x")]])
-    messages = [
-        reviewer._user_text("seed"),
-        {"role": "assistant", "content": [_use("t0", "grep", pattern="y")]},
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "hit"}],
-        },
-    ]
-    reviewer._create(client, model="m", messages=messages, max_tokens=10, tools=TOOLS)
-
-    [call] = client.messages.calls
-    assert call["system"][-1]["cache_control"] == {"type": "ephemeral"}
-    assert call["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
-    marked = [
-        block
-        for message in call["messages"]
-        if isinstance(message["content"], list)
-        for block in message["content"]
-        if isinstance(block, dict) and "cache_control" in block
-    ]
-    assert len(marked) == 1
-    assert call["tools"] == TOOLS and "tool_choice" not in call
-
-
-def test_the_moving_marker_is_applied_to_a_copy_not_the_history():
-    messages = [reviewer._user_text("seed")]
-    marked = reviewer._with_cache_marker(messages)
-    assert "cache_control" in marked[-1]["content"][-1]
-    assert "cache_control" not in messages[-1]["content"][-1]
-
-
-def test_a_string_content_message_is_left_unmarked():
-    messages = [{"role": "user", "content": "plain"}]
-    assert reviewer._with_cache_marker(messages) is messages
-
-
-def test_create_passes_tool_choice_through_when_given():
-    client = FakeClient([[]])
-    reviewer._create(
-        client, model="m", messages=[reviewer._user_text("s")], max_tokens=1, tools=TOOLS,
-        tool_choice={"type": "tool", "name": "grep"},
-    )
-    assert client.messages.calls[0]["tool_choice"] == {"type": "tool", "name": "grep"}
-
-
-# --- responses: normalization and token counts ---------------------------------
-
-def test_normalize_blocks_reads_dicts_and_sdk_objects_alike():
-    content = [
-        {"type": "text", "text": "hi"},
-        SimpleNamespace(type="tool_use", id="t1", name="grep", input=None),
-        SimpleNamespace(type="thinking", thinking="…"),  # dropped: not replayable
-    ]
-    assert reviewer._normalize_blocks(content) == [
-        {"type": "text", "text": "hi"},
-        {"type": "tool_use", "id": "t1", "name": "grep", "input": {}},
-    ]
-
+# --- responses: token counts --------------------------------------------------
 
 def test_tokens_reads_all_four_counts_and_zero_when_missing():
     """RC1-387: since RC1-350 most of the context is cache reads, which the

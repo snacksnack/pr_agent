@@ -20,7 +20,6 @@ import fnmatch
 import os
 import re
 from pathlib import Path
-from typing import Any
 
 # Output guardrails (cost / context-window protection).
 MAX_READ_BYTES = 64_000
@@ -297,13 +296,6 @@ class RepoTools:
             out += f"\n... [stopped at {max_results} matches]"
         return out
 
-    # -- dispatch --------------------------------------------------------
-
-    def dispatch(self, name: str, tool_input: dict) -> str:
-        """Invoke a tool by name; return its output or a recoverable error string."""
-        return dispatch_tool(self, name, tool_input)
-
-
 # --- shared by the local and remote backends --------------------------------
 
 def format_file_text(
@@ -367,135 +359,3 @@ def grep_text(
             if len(results) >= max_results:
                 return True
     return False
-
-
-def _line_arg(tool_input: dict, key: str) -> int | None:
-    """An optional 1-based line number, tolerating the model sending it as text.
-
-    The first live review under RC1-364 died on ``start_line="12"``: the schema
-    says integer, the model sent a string, and ``max(1, "12")`` raised out of
-    the loop. Coerce here; anything that is not a whole number is a tool error.
-    """
-    value = tool_input.get(key)
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ToolError(f"{key} must be an integer, got {value!r}") from exc
-
-
-def dispatch_tool(tools: Any, name: str, tool_input: dict) -> str:
-    """Route a tool call to ``tools`` (local or remote); errors become strings.
-
-    The dispatcher turns :class:`ToolError` into text so the model can adjust
-    and retry rather than crashing the review loop. It is also the loop's last
-    line of defense: any other exception a tool raises is reported the same way,
-    because a malformed argument must cost the model one turn, not the review.
-    """
-    try:
-        if name == "read_file":
-            return tools.read_file(
-                tool_input["path"],
-                _line_arg(tool_input, "start_line"),
-                _line_arg(tool_input, "end_line"),
-            )
-        if name == "list_dir":
-            return tools.list_dir(tool_input.get("path", "."))
-        if name == "grep":
-            return tools.grep(
-                tool_input["pattern"],
-                tool_input.get("path", "."),
-                ignore_case=bool(tool_input.get("ignore_case", False)),
-                fixed=bool(tool_input.get("fixed", False)),
-                glob=tool_input.get("glob"),
-            )
-        raise ToolError(f"unknown tool: {name!r}")
-    except ToolError as exc:
-        return f"Error: {exc}"
-    except KeyError as exc:
-        return f"Error: missing required argument {exc}"
-    except Exception as exc:  # noqa: BLE001 — the loop must survive any tool
-        return f"Error: {name} failed ({type(exc).__name__}: {exc}); adjust the call or move on"
-
-
-# Anthropic tool schemas (RC1-110 passes these as the loop's `tools`).
-TOOL_SCHEMAS = [
-    {
-        "name": "read_file",
-        "description": (
-            "Read a UTF-8 text file from the repository, returned with line "
-            "numbers. Paths are relative to the repo root. Optionally pass "
-            "start_line/end_line to read a slice. Output is truncated for very "
-            "large files. Secret/credential files (e.g. .env, private keys) and "
-            "generated lock files (package-lock.json, uv.lock, ...) are not "
-            "readable and won't appear in listings; review dependency changes "
-            "from the manifest and the diff."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path relative to the repo root."},
-                "start_line": {"type": "integer", "description": "First line to read (1-based)."},
-                "end_line": {"type": "integer", "description": "Last line to read (inclusive)."},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "list_dir",
-        "description": (
-            "List the entries of a directory (subdirectories first). Paths are "
-            "relative to the repo root; omit to list the root. Noise directories "
-            "like .git and node_modules are excluded."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to the repo root (default: root).",
-                },
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "grep",
-        "description": (
-            "Search the repository for a pattern and return matching "
-            "'path:line: text' rows. Pattern is a regular expression unless "
-            "fixed=true. Optionally scope with a path, restrict to filenames "
-            "matching a glob (e.g. '*.py'), or ignore case. Binary files and "
-            "noise directories are skipped; results are capped. On a live review "
-            "the search reads files through the GitHub API under a per-review "
-            "budget, so scope it with a path or glob rather than searching the "
-            "whole repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regex (or literal if fixed=true) to search for.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Directory or file to search under (default: repo root).",
-                },
-                "ignore_case": {"type": "boolean", "description": "Case-insensitive match."},
-                "fixed": {
-                    "type": "boolean",
-                    "description": "Treat pattern as a literal string, not a regex.",
-                },
-                "glob": {
-                    "type": "string",
-                    "description": (
-                        "Only search files whose name matches this glob, e.g. '*.py'."
-                    ),
-                },
-            },
-            "required": ["pattern"],
-        },
-    },
-]
