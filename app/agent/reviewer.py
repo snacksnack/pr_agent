@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agent.prompts import SYSTEM_PROMPT, format_precomputed_findings
-from app.agent.tools import is_lockfile
+from app.agent.repository import is_lockfile
 from app.models import SEVERITY_ORDER, Finding, PullRequest, TokenUsage
 
 # Max characters of inline diff to put in the prefix. The context block

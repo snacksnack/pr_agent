@@ -32,18 +32,18 @@ it was measured and retired. Nothing here raises: a repository with no
 conventions file and a diff with no symbols produce an empty context, and
 the reviewers work from the diff.
 
-Both tool backends serve this module through the same three calls,
-``read_text``, ``grep`` and ``paths``; the live path pays for them out of
-the per-review API budget (RC1-364).
+Both adapters serve this module through the same three calls,
+``read_text``, ``grep`` and ``paths`` — the :class:`RepositoryAccess`
+contract (RC1-424); the live path pays for them out of the per-review API
+budget (RC1-364).
 """
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
-from app.agent.tools import ToolError, is_lockfile
+from app.agent.repository import RepositoryAccess, RepositoryError, is_lockfile
 from app.models import PullRequest
 
 logger = logging.getLogger("app.agent.context")
@@ -120,7 +120,7 @@ class RepoContext:
     callers: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     callers_truncated: bool = False
-    # The tool backend refused (budget spent) part way through the search.
+    # The repository refused (budget spent) part way through the search.
     search_stopped: bool = False
     # RC1-394: the tests search. ``tests_searched`` is whether it reached an
     # answer — a list of test files and rows, or the fact that there are
@@ -270,10 +270,10 @@ def select_sections(text: str, limit: int = MAX_CONVENTIONS_CHARS) -> tuple[str,
     return "\n\n".join(kept), cut
 
 
-def conventions_file(tools: Any) -> tuple[str | None, str, bool]:
+def conventions_file(repository: RepositoryAccess) -> tuple[str | None, str, bool]:
     """``(path, text, truncated)`` for the first conventions file that reads."""
     for path in CONVENTIONS_FILES:
-        text = tools.read_text(path)
+        text = repository.read_text(path)
         if text and text.strip():
             body, cut = select_sections(text)
             return path, body, cut
@@ -309,7 +309,7 @@ def changed_symbols(pr: PullRequest) -> list[str]:
     return seen
 
 
-def callers(pr: PullRequest, tools: Any, symbols: list[str]) -> RepoContext:
+def callers(pr: PullRequest, repository: RepositoryAccess, symbols: list[str]) -> RepoContext:
     """Grep the repository for uses of each symbol, bounded, into a context.
 
     The grep is the same one the model gets, so the rows read the same:
@@ -325,8 +325,8 @@ def callers(pr: PullRequest, tools: Any, symbols: list[str]) -> RepoContext:
             continue
         definition = re.compile(_DEFINITION_HIT.pattern.format(name=re.escape(name)))
         try:
-            out = tools.grep(rf"\b{re.escape(name)}\b", max_results=MAX_CALLERS_PER_SYMBOL * 3)
-        except ToolError as exc:
+            out = repository.grep(rf"\b{re.escape(name)}\b", max_results=MAX_CALLERS_PER_SYMBOL * 3)
+        except RepositoryError as exc:
             logger.info("context_search_stopped symbol=%s reason=%s", name, exc)
             ctx.search_stopped = True
             ctx.symbols_unsearched.append(name)
@@ -423,7 +423,7 @@ def named_test_files(source: str, paths: list[str]) -> list[str]:
     return sorted(p for p in paths if is_test_path(p) and pattern.match(p.rsplit("/", 1)[-1]))
 
 
-def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
+def tests_for(pr: PullRequest, repository: RepositoryAccess, ctx: RepoContext) -> RepoContext:
     """Fill the tests section of ``ctx``: the test files named for each
     changed source file, then a grep of the test tree for the module's
     name, bounded. Rows the callers grep already moved here stay.
@@ -439,7 +439,7 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
         ctx.tests_searched = True  # nothing a test could reference: answered
         return ctx
 
-    paths = tools.paths()
+    paths = repository.paths()
     if paths is None:
         # No file list to read (the remote tree is unreadable, or the
         # budget is gone): the search cannot start.
@@ -462,7 +462,7 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
             listed += _add_test_row(ctx, row)
         stem = module_stem(source)
         if any_tests and len(stem) >= 3:
-            hits, rows = _grep_tests(tools, ctx, stem, source)
+            hits, rows = _grep_tests(repository, ctx, stem, source)
             found += hits
             listed += rows
         if ctx.tests_stopped:
@@ -483,7 +483,9 @@ def tests_for(pr: PullRequest, tools: Any, ctx: RepoContext) -> RepoContext:
     return ctx
 
 
-def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> tuple[int, int]:
+def _grep_tests(
+    repository: RepositoryAccess, ctx: RepoContext, stem: str, source: str
+) -> tuple[int, int]:
     """Grep each test root for ``stem`` as a whole word; rows into ``ctx``
     up to the per-file cap. Returns ``(hits, rows listed)``: a hit the row
     cap refused is still a test that exists (RC1-428), so the search keeps
@@ -491,10 +493,10 @@ def _grep_tests(tools: Any, ctx: RepoContext, stem: str, source: str) -> tuple[i
     hits = listed = 0
     for root in ctx.test_roots or ["."]:
         try:
-            out = tools.grep(
+            out = repository.grep(
                 rf"\b{re.escape(stem)}\b", path=root, max_results=MAX_TESTS_PER_FILE * 3
             )
-        except ToolError as exc:
+        except RepositoryError as exc:
             logger.info("tests_search_stopped file=%s reason=%s", source, exc)
             ctx.tests_stopped = True
             return hits, listed
@@ -523,13 +525,13 @@ def _add_test_row(ctx: RepoContext, row: str) -> bool:
 
 # --- the whole context ---------------------------------------------------------
 
-def build_repo_context(pr: PullRequest, tools: Any) -> RepoContext:
-    """Conventions file, callers and tests, for ``pr``, from ``tools``.
+def build_repo_context(pr: PullRequest, repository: RepositoryAccess) -> RepoContext:
+    """Conventions file, callers and tests, for ``pr``, from ``repository``.
     Never raises."""
     symbols = changed_symbols(pr)
-    ctx = callers(pr, tools, symbols) if symbols else RepoContext()
-    ctx.conventions_path, ctx.conventions, ctx.conventions_truncated = conventions_file(tools)
-    tests_for(pr, tools, ctx)
+    ctx = callers(pr, repository, symbols) if symbols else RepoContext()
+    ctx.conventions_path, ctx.conventions, ctx.conventions_truncated = conventions_file(repository)
+    tests_for(pr, repository, ctx)
     logger.info(
         "repo_context conventions=%s conventions_chars=%d symbols=%d callers=%d "
         "unresolved=%d stopped=%s tests=%d untested=%d tests_searched=%s complete=%s",

@@ -333,8 +333,8 @@ class GitHubClient:
     def get_tree(self, ref: PRRef, sha: str) -> list[dict] | None:
         """The recursive git tree at ``sha`` as ``[{path, type, size}]``.
 
-        One call per review (RC1-364): it is what lets the live agent's
-        ``list_dir`` and ``grep`` see the repository without a checkout. Returns
+        One call per review (RC1-364): it is what lets the live review's
+        ``paths`` and ``grep`` see the repository without a checkout. Returns
         ``None`` — never raises — when the tree can't be read (permissions,
         transport), and callers degrade to the diff's file list. GitHub truncates
         past ~100k entries; the entries it does return are still useful.

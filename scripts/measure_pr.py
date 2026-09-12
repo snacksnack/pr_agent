@@ -30,8 +30,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from app.agent.local_repository import LocalRepository
 from app.agent.pipeline import review_pull_request
-from app.agent.tools import RepoTools
 from app.github import fetch_pull_request
 from app.pricing import review_cost
 
@@ -82,7 +82,7 @@ def measure(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(repo_dir / rel, target)
             started = time.perf_counter()
-            result = review_pull_request(pr, RepoTools(worktree), repo_context=repo_context)
+            result = review_pull_request(pr, LocalRepository(worktree), repo_context=repo_context)
             wall_s = time.perf_counter() - started
         finally:
             subprocess.run(

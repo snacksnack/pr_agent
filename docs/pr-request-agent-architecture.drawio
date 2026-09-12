@@ -72,13 +72,13 @@
           <mxGeometry x="22" y="52" width="201" height="82" as="geometry"/>
         </mxCell>
 
-        <mxCell id="repoaccess" value="REPOSITORY ACCESS · bounded read_file / list_dir / grep" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F1F5F9;swimlaneFillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
+        <mxCell id="repoaccess" value="REPOSITORY ACCESS · read_text / grep / paths" style="swimlane;html=1;horizontal=1;startSize=28;rounded=1;fillColor=#F1F5F9;swimlaneFillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;fontFamily=Helvetica;fontSize=12;fontStyle=1;arcSize=6;collapsible=0;" vertex="1" parent="fly-boundary">
           <mxGeometry x="335" y="540" width="245" height="270" as="geometry"/>
         </mxCell>
-        <mxCell id="remote-tools" value="&lt;b&gt;RemoteRepoTools&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;Git Trees + Contents API&lt;br&gt;PR head · API budget&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;fontColor=#075985;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
+        <mxCell id="remote-tools" value="&lt;b&gt;GitHubRepository&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;Git Trees + Contents API&lt;br&gt;PR head · API budget&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;fontColor=#075985;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
           <mxGeometry x="22" y="52" width="201" height="76" as="geometry"/>
         </mxCell>
-        <mxCell id="local-tools" value="&lt;b&gt;RepoTools&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;local checkout / temp diff repo&lt;br&gt;path + secret guards&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontColor=#065F46;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
+        <mxCell id="local-tools" value="&lt;b&gt;LocalRepository&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#64748B&quot;&gt;local checkout / eval case / worktree&lt;br&gt;path + secret guards&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontColor=#065F46;fontFamily=Helvetica;fontSize=13;arcSize=10;spacing=8;" vertex="1" parent="repoaccess">
           <mxGeometry x="22" y="158" width="201" height="76" as="geometry"/>
         </mxCell>
 
@@ -163,7 +163,7 @@
         <mxCell id="e-reviewers-merge" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#9333EA;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="multi-boundary" source="reviewers" target="merge"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-merge-verifier" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;endArrow=block;endFill=1;" edge="1" parent="engine" source="merge" target="verifier"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-verifier-result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6366F1;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="engine" source="verifier" target="result"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e-tools-context" value="read / list / grep" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;dashed=1;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=10;fontColor=#475569;labelBackgroundColor=#FFFFFF;" edge="1" parent="fly-boundary" source="repoaccess" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e-tools-context" value="read_text / grep / paths" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;dashed=1;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=10;fontColor=#475569;labelBackgroundColor=#FFFFFF;" edge="1" parent="fly-boundary" source="repoaccess" target="context"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-anthropic-engine" value="model calls" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=open;endFill=0;startArrow=open;startFill=0;fontFamily=Helvetica;fontSize=11;fontColor=#B45309;labelBackgroundColor=#F8FAFC;" edge="1" parent="1" source="anthropic" target="engine"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-result-combine" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;strokeWidth=2;endArrow=block;endFill=1;" edge="1" parent="fly-boundary" source="result" target="combine"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e-combine-verdict" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#22C55E;endArrow=block;endFill=1;" edge="1" parent="delivery" source="combine" target="verdict"><mxGeometry relative="1" as="geometry"/></mxCell>

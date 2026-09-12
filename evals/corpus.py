@@ -9,7 +9,7 @@ fails if `CATEGORIES` grows and this corpus does not.
 The dry-run CLI reviews from the diff alone when no `--repo-path` is given, and
 that is the mode used here. It keeps a case to one readable literal, and it
 scores the reviewer on what a reviewer actually receives first. The cost is that
-the exploration tools are not exercised; `app/agent/tools.py` has its own tests,
+the repository adapters are not exercised; they have their own contract tests,
 and conflating the two would make a failure unattributable.
 
 ## Each defect is objective

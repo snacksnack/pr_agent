@@ -307,8 +307,8 @@ def test_process_event_ingests_reviews_and_posts(monkeypatch):
     assert "leaked_secret" in posted["block_on"]
     # RC1-364: the live agent explores the repo through the API at the PR head,
     # not an empty temp dir.
-    from app.agent.remote_tools import RemoteRepoTools
-    assert isinstance(posted["tools"], RemoteRepoTools)
+    from app.agent.github_repository import GitHubRepository
+    assert isinstance(posted["tools"], GitHubRepository)
     assert posted["tools"].api_calls == 0  # nothing spent until the model asks
 
 

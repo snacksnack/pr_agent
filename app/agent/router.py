@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.agent.prompts import CHANGE_INTENT, DIFF_LOCAL, REPO_CONTEXT, ReviewerSpec
-from app.agent.tools import is_lockfile
+from app.agent.repository import is_lockfile
 from app.models import ChangedFile, PullRequest
 
 # Dependency manifests, by basename. Lock files count too (``is_lockfile``):
