@@ -256,7 +256,7 @@ def _wire_fakes(monkeypatch, pr, posted):
     import app.agent.pipeline
     import app.auth
     import app.posting
-    from app.models import ReviewResult
+    from app.models import ReviewOutcome, ReviewResult, RunMetrics
 
     class FakeClient:
         def fetch_pull_request(self, ref):
@@ -278,7 +278,7 @@ def _wire_fakes(monkeypatch, pr, posted):
     def fake_review(pull_request, repository, client=None):
         posted["reviewed"] = posted.get("reviewed", 0) + 1
         posted["repository"] = repository
-        return ReviewResult(summary="ok", model="m")
+        return ReviewOutcome(ReviewResult(summary="ok"), RunMetrics(model="m"))
 
     def fake_post(client, pull_request, result, *, block_on, commit_id=None):
         posted.update(pr=pull_request, block_on=block_on, commit_id=commit_id)
@@ -359,7 +359,15 @@ def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
     import app.posting
     from app.agent.github_repository import GitHubRepository
     from app.dedup import DedupStore
-    from app.models import ChangedFile, Finding, PRRef, PullRequest, ReviewResult
+    from app.models import (
+        ChangedFile,
+        Finding,
+        PRRef,
+        PullRequest,
+        ReviewOutcome,
+        ReviewResult,
+        RunMetrics,
+    )
 
     pr = PullRequest(
         ref=PRRef("octo", "hello", 42),
@@ -395,7 +403,8 @@ def test_process_event_posts_the_pipelines_result_unchanged(monkeypatch):
 
     def fake_review(pull_request, repository, client=None):
         seen["repository"] = repository
-        return ReviewResult(summary="ok", model="m", findings=list(findings))
+        review = ReviewResult(summary="ok", findings=list(findings))
+        return ReviewOutcome(review, RunMetrics(model="m"))
 
     posted: dict = {}
 
@@ -474,5 +483,5 @@ def test_process_event_ships_one_cost_point_per_review(monkeypatch):
                   store=DedupStore())
 
     assert len(shipped) == 1
-    result, repo = shipped[0]
-    assert repo == "octo/hello" and result.summary == "ok"
+    metrics, repo = shipped[0]
+    assert repo == "octo/hello" and metrics.model == "m", "the run's metrics, not the review"

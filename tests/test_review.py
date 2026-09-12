@@ -12,7 +12,15 @@ import io
 import pytest
 
 from app import review as cli
-from app.models import ChangedFile, Finding, PRRef, PullRequest, ReviewResult
+from app.models import (
+    ChangedFile,
+    Finding,
+    PRRef,
+    PullRequest,
+    ReviewOutcome,
+    ReviewResult,
+    RunMetrics,
+)
 
 # --- helpers --------------------------------------------------------------
 
@@ -30,10 +38,14 @@ def _pr(files=None) -> PullRequest:
 
 
 def _result(findings=None, summary="looks good") -> ReviewResult:
-    return ReviewResult(
-        summary=summary,
-        findings=list(findings or []),
-        model="claude-sonnet-4-6",
+    return ReviewResult(summary=summary, findings=list(findings or []))
+
+
+def _outcome(result=None, metrics=None) -> ReviewOutcome:
+    """What the injected review returns (RC1-429): the review plus the run."""
+    return ReviewOutcome(
+        result if result is not None else _result(),
+        metrics if metrics is not None else RunMetrics(model="claude-sonnet-4-6"),
     )
 
 
@@ -44,7 +56,7 @@ def _run(argv, *, pr=None, result=None, captured=None):
     code = cli.main(
         argv,
         fetch=lambda ref: pr,
-        review=lambda p, repository: result,
+        review=lambda p, repository: _outcome(result),
         out=out,
     )
     return code, out.getvalue()
@@ -135,7 +147,7 @@ def test_the_cli_hands_the_pipeline_the_checkout_and_prints_its_result_once(tmp_
 
     def fake_review(p, repository):
         seen["repository"] = repository
-        return result
+        return _outcome(result)
 
     out = io.StringIO()
     code = cli.main(
@@ -156,7 +168,7 @@ def test_without_a_checkout_the_pipeline_gets_an_empty_repository():
 
     def fake_review(p, repository):
         seen["explorable"] = repository.explorable  # the temp dir is gone after main()
-        return _result()
+        return _outcome()
 
     code = cli.main(
         ["--pr", "octocat/hello#42"], fetch=lambda ref: _pr(), review=fake_review, out=io.StringIO()
@@ -166,11 +178,57 @@ def test_without_a_checkout_the_pipeline_gets_an_empty_repository():
 
 
 def test_format_review_names_the_checks_the_pipeline_ran():
-    result = _result()
-    result.checks_run, result.deterministic_findings = ["n8n"], 1
-    assert "checks(run=n8n, findings=1)" in cli.format_review(result)
-    result.checks_failed = ["boom"]
-    assert "checks(run=n8n, findings=1, failed=boom)" in cli.format_review(result)
-    assert "checks(" not in cli.format_review(_result())
+    ran = RunMetrics(checks_run=("n8n",), deterministic_findings=1)
+    assert "checks(run=n8n, findings=1)" in cli.format_review(_result(), metrics=ran)
+    failed = RunMetrics(checks_run=("n8n",), deterministic_findings=1, checks_failed=("boom",))
+    text = cli.format_review(_result(), metrics=failed)
+    assert "checks(run=n8n, findings=1, failed=boom)" in text
+    assert "checks(" not in cli.format_review(_result(), metrics=RunMetrics())
 
 
+def test_format_review_without_metrics_prints_the_review_alone():
+    # RC1-429: the review reads the same without the run's diagnostics; no
+    # fake defaults are printed in their place.
+    text = cli.format_review(_result([Finding("nit", "pythonic", "tidy", file="a.py", line=1)]))
+    assert "tidy" in text and "Totals:" in text
+    assert "model=" not in text and "reviewers=" not in text and "context(" not in text
+
+
+# --- repo path + pure formatter (restored in RC1-429: the RC1-425 cut dropped them) ---
+
+def test_repo_path_must_be_a_directory(capsys):
+    code = cli.main(
+        ["--pr", "octocat/hello#42", "--repo-path", "/no/such/dir"],
+        fetch=lambda ref: _pr(),
+        review=lambda p, repository: _outcome(),
+    )
+    assert code == cli.EXIT_ERROR
+    assert "directory" in capsys.readouterr().err.lower()
+
+
+def test_format_review_without_pr_is_still_valid():
+    text = cli.format_review(_result([Finding("nit", "docs", "add docstring")]))
+    assert "Summary" in text and "looks good" in text
+    assert "[NIT]" in text
+
+
+def test_format_review_names_the_reviewers_and_the_merge():
+    metrics = RunMetrics(
+        model="claude-sonnet-4-6",
+        reviewers_run=("diff_local", "repo_context", "change_intent"),
+        off_scope_findings=1,
+    )
+    text = cli.format_review(_result([Finding("nit", "docs", "add docstring")]), metrics=metrics)
+    assert "reviewers=diff_local,repo_context,change_intent" in text
+    assert "context(conventions=none, callers=0)" in text
+    assert "merged(off_scope=1, deduplicated=0)" in text
+    assert "mode=" not in text
+
+
+def test_format_review_names_the_context_python_gathered():
+    metrics = RunMetrics(
+        model="claude-sonnet-4-6", reviewers_run=("diff_local",),
+        conventions_file="CLAUDE.md", callers_found=7,
+    )
+    text = cli.format_review(_result(), metrics=metrics)
+    assert "context(conventions=CLAUDE.md, callers=7)" in text

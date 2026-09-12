@@ -80,13 +80,13 @@ def test_precision_cases_expect_the_decoy_characteristic():
 
 
 def test_verifier_observations_read_false_when_it_did_not_run():
-    from app.models import ReviewResult
+    from app.models import RunMetrics
 
     assert subject._verifier_observations(None) == {"ran": False}
-    off = subject._verifier_observations(ReviewResult())
+    off = subject._verifier_observations(RunMetrics())
     assert off["ran"] is False and off["dropped"] == 0
     on = subject._verifier_observations(
-        ReviewResult(
+        RunMetrics(
             model="claude-sonnet-4-6",
             verified=True,
             verifier_dropped=[_finding(message="gone")],
@@ -122,13 +122,16 @@ def test_cost_prices_cache_writes_and_reads_not_just_uncached_input():
     uncached_only = subject.pricing.cost_usd("claude-sonnet-4-6", 8, 1000)
     assert cost > uncached_only, "the cache tokens are not free"
 
-    from app.models import ReviewResult
+    from app.models import RunMetrics
 
     recorded = subject._usage(
         1.0,
-        ReviewResult(
-            model="claude-sonnet-4-6", input_tokens=8, output_tokens=1000,
-            cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+        RunMetrics(
+            model="claude-sonnet-4-6",
+            usage=TokenUsage(
+                input_tokens=8, output_tokens=1000,
+                cache_creation_input_tokens=4000, cache_read_input_tokens=6000,
+            ),
         ),
     )
     assert recorded.input_tokens == 8, "the API's counts go on the record verbatim (RC1-392)"
@@ -350,14 +353,14 @@ def test_prompt_version_always_carries_the_pipeline_prompts():
     assert version.index("+verify-sha256:") < version.index("+multi-sha256:")
 
 
-def test_multi_observations_read_false_when_there_is_no_result():
+def test_multi_observations_read_false_when_there_are_no_metrics():
     assert subject._multi_observations(None) == {"ran": False}
 
 
 def test_multi_observations_carry_stages_and_the_cache_premise():
-    from app.models import ReviewResult, TokenUsage
+    from app.models import RunMetrics, TokenUsage
 
-    result = ReviewResult(
+    result = RunMetrics(
         model="claude-sonnet-4-6",
         mode="multi",
         reviewers_run=["diff_local", "change_intent"],
@@ -395,9 +398,9 @@ def test_prompt_version_names_a_checkout_and_the_context_control(monkeypatch):
 
 
 def test_multi_observations_carry_the_context_and_the_checkout():
-    from app.models import ReviewResult
+    from app.models import RunMetrics
 
-    result = ReviewResult(
+    result = RunMetrics(
         model="claude-sonnet-4-6", mode="multi", conventions_file="CLAUDE.md", callers_found=5
     )
     obs = subject._multi_observations(result, checkout=True)

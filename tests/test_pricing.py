@@ -11,7 +11,7 @@ from agent_evals import pricing as harness_pricing
 
 from app import pricing
 from app.config import settings
-from app.models import ReviewResult, TokenUsage
+from app.models import RunMetrics, TokenUsage
 from evals import subject
 
 USAGE = TokenUsage(
@@ -63,10 +63,12 @@ def test_unknown_model_raises_rather_than_pricing_at_zero():
 # --- review_cost: the single loop ---------------------------------------------
 
 def _single(**kw):
-    return ReviewResult(
+    return RunMetrics(
         model="claude-sonnet-4-6",
-        input_tokens=100, output_tokens=2000,
-        cache_creation_input_tokens=5000, cache_read_input_tokens=20000,
+        usage=TokenUsage(
+            input_tokens=100, output_tokens=2000,
+            cache_creation_input_tokens=5000, cache_read_input_tokens=20000,
+        ),
         **kw,
     )
 
@@ -119,7 +121,7 @@ def test_multi_prices_every_stage_and_sums_them():
         "reviewer:diff_local": TokenUsage(output_tokens=400, cache_read_input_tokens=9000),
         "verifier": TokenUsage(output_tokens=100, cache_read_input_tokens=9000),
     }
-    result = ReviewResult(
+    result = RunMetrics(
         model="claude-sonnet-4-6", mode="multi", verified=True,
         verifier_model="claude-haiku-4-5", stage_usage=stages,
     )
@@ -132,4 +134,4 @@ def test_multi_prices_every_stage_and_sums_them():
 
 def test_review_cost_raises_on_an_unknown_model():
     with pytest.raises(pricing.UnknownModelPrice):
-        pricing.review_cost(ReviewResult(model="m", output_tokens=1))
+        pricing.review_cost(RunMetrics(model="m", usage=TokenUsage(output_tokens=1)))

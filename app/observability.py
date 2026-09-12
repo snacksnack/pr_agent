@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from app.models import PullRequest, ReviewResult
+from app.models import PullRequest, RunMetrics
 from app.pricing import ReviewCost, UnknownModelPrice, review_cost
 
 try:  # documented optional-dep exception: ddtrace is absent in minimal envs
@@ -152,9 +152,9 @@ def annotate_review_identity(pull_request: PullRequest) -> None:
 
 # --- cost per review (RC1-395) ------------------------------------------------
 
-def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
-    """Price a finished review and write the price onto the active workflow
-    span: ``cost_usd``, one ``stage_cost_usd_<stage>`` per stage, and
+def annotate_review_cost(run: RunMetrics) -> ReviewCost | None:
+    """Price a finished review from its run metrics (RC1-429) and write the
+    price onto the active workflow span: ``cost_usd``, one ``stage_cost_usd_<stage>`` per stage, and
     ``latency_s`` as metrics; the path and the conventions file as metadata.
     Called by ``review_pull_request`` while the span is open, so the
     numbers land on the trace's root rather than on any one call.
@@ -164,14 +164,14 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
     raises: decoration must not fail a review that has already been paid for.
     """
     try:
-        cost = review_cost(result)
+        cost = review_cost(run)
     except UnknownModelPrice as exc:
         logger.warning("review_unpriced %s", exc)
         return None
-    latency_s = result.latency_ms / 1000
+    latency_s = run.latency_ms / 1000
     logger.info(
         "review_cost mode=%s cost_usd=%.4f latency_s=%.1f %s",
-        result.mode,
+        run.mode,
         cost.total,
         latency_s,
         " ".join(f"{stage}={usd:.4f}" for stage, usd in cost.stages.items()),
@@ -181,10 +181,10 @@ def annotate_review_cost(result: ReviewResult) -> ReviewCost | None:
         metrics[stage_metric_key(stage)] = float(usd)
     annotate_span(
         metadata={
-            "mode": result.mode,
-            "verified": result.verified,
-            "conventions_file": result.conventions_file,
-            "context_complete": result.context_complete,
+            "mode": run.mode,
+            "verified": run.verified,
+            "conventions_file": run.conventions_file,
+            "context_complete": run.context_complete,
         },
         metrics=metrics,
     )
@@ -199,7 +199,7 @@ def stage_metric_key(stage: str) -> str:
     return "stage_cost_usd_" + re.sub(r"[^A-Za-z0-9_]", "_", stage)
 
 
-def review_metric_tags(result: ReviewResult, *, repo: str) -> list[str]:
+def review_metric_tags(run: RunMetrics, *, repo: str) -> list[str]:
     """The tag set both metrics carry. Kept small on purpose — every distinct
     combination is a billable custom metric, five more once percentiles are
     on — and chosen so the dashboard can split by path, by repo and by model,
@@ -207,31 +207,31 @@ def review_metric_tags(result: ReviewResult, *, repo: str) -> list[str]:
     return [
         f"ml_app:{ML_APP}",
         f"repo:{repo}",
-        f"mode:{result.mode}",
-        f"verified:{str(result.verified).lower()}",
-        f"model:{result.model}",
+        f"mode:{run.mode}",
+        f"verified:{str(run.verified).lower()}",
+        f"model:{run.model}",
     ]
 
 
 def review_metric_points(
-    result: ReviewResult, *, repo: str, at: int | None = None
+    run: RunMetrics, *, repo: str, at: int | None = None
 ) -> list[dict[str, Any]]:
     """The v1 distribution-points payload for one review. Pure — tests read
     this rather than a network. Empty when the model has no price: a gap
     means unmeasured, a zero would mean free."""
     try:
-        cost = review_cost(result)
+        cost = review_cost(run)
     except UnknownModelPrice:
         return []
     at = int(time.time()) if at is None else at
-    tags = review_metric_tags(result, repo=repo)
+    tags = review_metric_tags(run, repo=repo)
     return [
         {"metric": COST_METRIC, "points": [[at, [float(cost.total)]]], "tags": tags},
-        {"metric": LATENCY_METRIC, "points": [[at, [result.latency_ms / 1000]]], "tags": tags},
+        {"metric": LATENCY_METRIC, "points": [[at, [run.latency_ms / 1000]]], "tags": tags},
     ]
 
 
-def ship_review_metrics(result: ReviewResult, *, repo: str) -> bool:
+def ship_review_metrics(run: RunMetrics, *, repo: str) -> bool:
     """Submit the review's cost and latency to Datadog, agentless, from the
     webhook. A no-op without ``DD_API_KEY``; any failure is logged and
     swallowed, since the review is already posted or about to be and a
@@ -239,7 +239,7 @@ def ship_review_metrics(result: ReviewResult, *, repo: str) -> bool:
     api_key = os.environ.get("DD_API_KEY")
     if not api_key:
         return False
-    series = review_metric_points(result, repo=repo)
+    series = review_metric_points(run, repo=repo)
     if not series:
         return False
     site = os.environ.get("DD_SITE", "datadoghq.com")

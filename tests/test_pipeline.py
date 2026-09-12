@@ -96,6 +96,7 @@ WARM = []
 
 
 def _run(pr, repo, sync, async_client, **kw):
+    """The outcome (RC1-429): ``.review`` is what is posted, ``.metrics`` the run."""
     kw.setdefault("model", "m")
     return pipeline.review_pull_request(pr, repo, client=sync, async_client=async_client, **kw)
 
@@ -112,16 +113,16 @@ def test_three_reviewers_then_merge(pr, repo):
     )
     result = _run(pr, repo, sync, async_client)
 
-    assert result.mode == "multi"
-    assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
-    assert [(f.severity, f.category) for f in result.findings] == [
+    assert result.metrics.mode == "multi"
+    assert list(result.metrics.reviewers_run) == ["diff_local", "repo_context", "change_intent"]
+    assert [(f.severity, f.category) for f in result.review.findings] == [
         ("blocker", "leaked_secret"),
         ("warning", "tests"),
     ]
-    assert result.summary == "A secret is committed. No tests cover x."
+    assert result.review.summary == "A secret is committed. No tests cover x."
     # RC1-428: the verifier is a stage; the sync client serves it and nothing else.
-    assert result.verified is True and len(sync.messages.calls) == 1
-    assert set(result.stage_usage) == {
+    assert result.metrics.verified is True and len(sync.messages.calls) == 1
+    assert set(result.metrics.stage_usage) == {
         "warm_cache", "reviewer:diff_local", "reviewer:repo_context", "reviewer:change_intent",
         "verifier",
     }
@@ -177,10 +178,10 @@ def test_token_usage_is_summed_across_every_stage(pr, repo):
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(pr, repo, _sync(), async_client)
     # warm (0,1,900,0) + 3 reviewers (3,4,0,900); no scout since RC1-427
-    assert result.usage == TokenUsage(9, 13, 900, 2700)
-    assert result.stage_usage["warm_cache"].cache_creation_input_tokens == 900
+    assert result.metrics.usage == TokenUsage(9, 13, 900, 2700)
+    assert result.metrics.stage_usage["warm_cache"].cache_creation_input_tokens == 900
     assert all(
-        result.stage_usage[f"reviewer:{n}"].cache_read_input_tokens == 900
+        result.metrics.stage_usage[f"reviewer:{n}"].cache_read_input_tokens == 900
         for n in ("diff_local", "repo_context", "change_intent")
     )
 
@@ -252,9 +253,9 @@ def test_reviewer_calling_the_wrong_tool_is_counted_not_crashed(pr, repo):
         _submit("fine", [_finding("nit", "pr_drift", "d", file=None, line=None)]),
     )
     result = _run(pr, repo, _sync([_use("verify_findings", verdicts=[])]), async_client)
-    assert result.unusable_reviewer_calls == 2
-    assert [f.category for f in result.findings] == ["pr_drift"]
-    assert result.summary == "fine"
+    assert result.metrics.unusable_reviewer_calls == 2
+    assert [f.category for f in result.review.findings] == ["pr_drift"]
+    assert result.review.summary == "fine"
 
 
 def test_malformed_and_coerced_findings_are_counted_across_reviewers(pr, repo):
@@ -265,8 +266,8 @@ def test_malformed_and_coerced_findings_are_counted_across_reviewers(pr, repo):
         _submit("", []),
     )
     result = _run(pr, repo, _sync([_use("verify_findings", verdicts=[])]), async_client)
-    assert result.coerced_findings == 1 and result.malformed_findings == 1
-    assert result.findings[0].severity == "warning"
+    assert result.metrics.coerced_findings == 1 and result.metrics.malformed_findings == 1
+    assert result.review.findings[0].severity == "warning"
 
 
 # --- routing and the context --------------------------------------------------------
@@ -279,8 +280,8 @@ def test_documentation_only_change_skips_the_context_and_the_repo_context_review
     )
     async_client = _async(WARM, _submit("", []), _submit("", []))
     result = _run(pr, repo, _sync(), async_client)
-    assert result.reviewers_run == ["diff_local", "change_intent"]
-    assert result.conventions_file is None and result.callers_found == 0
+    assert list(result.metrics.reviewers_run) == ["diff_local", "change_intent"]
+    assert result.metrics.conventions_file is None and result.metrics.callers_found == 0
     assert "Repository conventions" not in (
         async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
     )
@@ -290,7 +291,8 @@ def test_an_explicit_plan_is_honoured(pr, repo):
     plan = ReviewPlan(context=False, reviewers=(DIFF_LOCAL,), reasons=("test",))
     async_client = _async(WARM, _submit("only me", []))
     result = _run(pr, repo, _sync(), async_client, plan=plan)
-    assert result.reviewers_run == ["diff_local"] and result.summary == "only me"
+    assert list(result.metrics.reviewers_run) == ["diff_local"]
+    assert result.review.summary == "only me"
 
 
 # --- the deterministic checks (RC1-425) ------------------------------------------
@@ -329,11 +331,11 @@ def test_a_check_finding_is_in_the_prefix_and_in_the_result_once(pr, repo):
     (repo.root / "flows" / "poll.json").write_text(HOT_CRON)
     async_client = _quiet()
     result = _run(_workflow_pr(pr), repo, _sync(), async_client)
-    assert [(f.category, f.file) for f in result.findings] == [("n8n", "flows/poll.json")]
-    assert "every minute" in result.findings[0].message
-    assert result.checks_run == ["n8n"] and result.checks_failed == []
-    assert result.deterministic_findings == 1
-    assert "checks" in result.stage_latency_ms
+    assert [(f.category, f.file) for f in result.review.findings] == [("n8n", "flows/poll.json")]
+    assert "every minute" in result.review.findings[0].message
+    assert list(result.metrics.checks_run) == ["n8n"] and list(result.metrics.checks_failed) == []
+    assert result.metrics.deterministic_findings == 1
+    assert "checks" in result.metrics.stage_latency_ms
     # The reviewers read it as already recorded: after the diff, before the context.
     prefix = _prefix(async_client)
     assert "already recorded by automated checks" in prefix
@@ -341,7 +343,7 @@ def test_a_check_finding_is_in_the_prefix_and_in_the_result_once(pr, repo):
     assert prefix.index("--- flows/poll.json") < at
     assert "Callers of what changed" not in prefix[:at]
     # Nothing to verify: the verifier judges the model's claims, not the check's.
-    assert result.verified is False
+    assert result.metrics.verified is False
 
 
 def test_the_verifier_judges_only_the_models_findings(pr, repo):
@@ -355,23 +357,23 @@ def test_the_verifier_judges_only_the_models_findings(pr, repo):
     suffix = sync.messages.calls[0]["messages"][0]["content"][1]["text"]
     assert "[0] warning / security" in suffix and "[1]" not in suffix
     assert "every minute" not in suffix
-    assert [f.message for f in result.verifier_dropped] == ["model claim"]
-    assert [f.category for f in result.findings] == ["n8n"]
-    assert result.verified is True and result.deterministic_findings == 1
+    assert [f.message for f in result.metrics.verifier_dropped] == ["model claim"]
+    assert [f.category for f in result.review.findings] == ["n8n"]
+    assert result.metrics.verified is True and result.metrics.deterministic_findings == 1
 
 
 def test_no_workflow_changed_means_the_check_ran_and_found_nothing(pr, repo):
     async_client = _quiet()
     result = _run(pr, repo, _sync(), async_client)
-    assert result.checks_run == ["n8n"] and result.deterministic_findings == 0
-    assert result.findings == []
+    assert list(result.metrics.checks_run) == ["n8n"] and result.metrics.deterministic_findings == 0
+    assert result.review.findings == []
     assert "already recorded" not in _prefix(async_client)
 
 
 def test_no_checks_at_all_leaves_the_result_the_models_own(pr, repo):
     async_client = _quiet()
     result = _run(pr, repo, _sync(), async_client, checks=())
-    assert result.checks_run == [] and result.deterministic_findings == 0
+    assert list(result.metrics.checks_run) == [] and result.metrics.deterministic_findings == 0
     assert "already recorded" not in _prefix(async_client)
 
 
@@ -389,9 +391,10 @@ def test_several_checks_run_in_order_and_each_is_recorded(pr, repo):
     sync = _sync([_use("verify_findings", verdicts=[])])
     checks = (Check("first", first), Check("second", second))
     result = _run(pr, repo, sync, async_client, checks=checks)
-    assert [f.message for f in result.findings] == ["model claim", "from first", "from second"]
-    assert result.checks_run == ["first", "second"]
-    assert result.deterministic_findings == 2
+    messages = [f.message for f in result.review.findings]
+    assert messages == ["model claim", "from first", "from second"]
+    assert list(result.metrics.checks_run) == ["first", "second"]
+    assert result.metrics.deterministic_findings == 2
 
 
 def test_a_failing_check_is_recorded_and_the_review_goes_on(pr, repo, caplog):
@@ -405,8 +408,9 @@ def test_a_failing_check_is_recorded_and_the_review_goes_on(pr, repo, caplog):
 
     caplog.set_level("INFO", logger="app.agent.checks")
     result = _run(pr, repo, _sync(), _quiet(), checks=(Check("boom", boom), Check("fine", fine)))
-    assert result.checks_failed == ["boom"] and result.checks_run == ["fine"]
-    assert [f.message for f in result.findings] == ["still here"]
+    assert list(result.metrics.checks_failed) == ["boom"]
+    assert list(result.metrics.checks_run) == ["fine"]
+    assert [f.message for f in result.review.findings] == ["still here"]
     assert "check_failed name=boom" in caplog.text
     assert "bad export" in caplog.text  # the traceback is logged, not swallowed
 
@@ -419,7 +423,7 @@ def test_checks_read_a_changed_file_whole_not_clipped_for_the_prefix(pr, repo):
     (repo.root / "flows").mkdir()
     (repo.root / "flows" / "poll.json").write_text(json.dumps(data))
     result = _run(_workflow_pr(pr), repo, _sync(), _quiet())
-    assert result.deterministic_findings == 1
+    assert result.metrics.deterministic_findings == 1
 
 
 def test_checks_read_through_the_github_adapter_at_the_pr_head(pr):
@@ -441,7 +445,7 @@ def test_checks_read_through_the_github_adapter_at_the_pr_head(pr):
         FakeGitHub(), pr.ref, "headsha", changed_files=[f.filename for f in pr.files]
     )
     result = _run(pr, repository, _sync(), _quiet())
-    assert result.deterministic_findings == 1
+    assert result.metrics.deterministic_findings == 1
     assert ("flows/poll.json", "headsha") in fetched
 
 
@@ -459,20 +463,20 @@ def test_verifier_runs_on_the_merged_findings_and_reads_the_shared_prefix(pr, re
     )
     result = _run(pr, repo, sync, async_client)
 
-    assert result.verified is True
-    assert [f.category for f in result.findings] == ["tests"]
-    assert [f.category for f in result.verifier_dropped] == ["leaked_secret"]
+    assert result.metrics.verified is True
+    assert [f.category for f in result.review.findings] == ["tests"]
+    assert [f.category for f in result.metrics.verifier_dropped] == ["leaked_secret"]
     # RC1-390 bookkeeping survives the verifier's copy, and its stage is added.
-    assert result.mode == "multi" and result.reviewers_run[0] == "diff_local"
-    assert "verifier" in result.stage_usage
-    assert result.usage.cache_creation_input_tokens == 1000  # warm 900 + verifier 100
+    assert result.metrics.mode == "multi" and result.metrics.reviewers_run[0] == "diff_local"
+    assert "verifier" in result.metrics.stage_usage
+    assert result.metrics.usage.cache_creation_input_tokens == 1000  # warm 900 + verifier 100
 
 
 def test_verifier_is_skipped_when_there_is_nothing_to_verify(pr, repo):
     sync = _sync()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(pr, repo, sync, async_client)
-    assert result.verified is False and sync.messages.calls == []
+    assert result.metrics.verified is False and sync.messages.calls == []
 
 
 def test_empty_checkout_skips_the_context_and_the_reviewers_still_run(pr, tmp_path):
@@ -480,9 +484,9 @@ def test_empty_checkout_skips_the_context_and_the_reviewers_still_run(pr, tmp_pa
     empty.mkdir()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(pr, LocalRepository(empty), _sync(), async_client)
-    assert result.reviewers_run == ["diff_local", "repo_context", "change_intent"]
-    assert result.conventions_file is None and not result.context_complete
-    assert set(result.stage_latency_ms) == {"checks", "context", "fan_out"}
+    assert list(result.metrics.reviewers_run) == ["diff_local", "repo_context", "change_intent"]
+    assert result.metrics.conventions_file is None and not result.metrics.context_complete
+    assert set(result.metrics.stage_latency_ms) == {"checks", "context", "fan_out"}
 
 
 def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
@@ -491,8 +495,8 @@ def test_stage_latency_is_recorded_for_the_verifier_too(pr, repo):
         WARM, _submit("", [_finding("nit", "docs", "d")]), _submit("", []), _submit("", [])
     )
     result = _run(pr, repo, sync, async_client)
-    assert set(result.stage_latency_ms) == {"checks", "context", "fan_out", "verifier"}
-    assert all(v >= 0 for v in result.stage_latency_ms.values())
+    assert set(result.metrics.stage_latency_ms) == {"checks", "context", "fan_out", "verifier"}
+    assert all(v >= 0 for v in result.metrics.stage_latency_ms.values())
 
 
 # --- RC1-393: deterministic repository context --------------------------------
@@ -536,10 +540,10 @@ def test_context_reaches_the_shared_prefix(tmp_path):
     assert prefix.index("Repository conventions") < prefix.index("Callers of what changed")
     assert "Scout's brief" not in prefix and "scout" not in prefix.lower()
 
-    assert result.conventions_file == "CLAUDE.md"
-    assert result.callers_found == 2
-    assert result.stage_latency_ms["context"] >= 0
-    assert result.context_complete
+    assert result.metrics.conventions_file == "CLAUDE.md"
+    assert result.metrics.callers_found == 2
+    assert result.metrics.stage_latency_ms["context"] >= 0
+    assert result.metrics.context_complete
     # Every reviewer's suffix carries the missing-evidence guard.
     for call in async_client.messages.calls[1:]:
         assert "raise nothing about the missing evidence itself" in (
@@ -562,7 +566,7 @@ def test_no_context_leaves_the_pr_plus_the_tests_line(pr, repo):
     )
     assert prefix == pipeline.build_shared_prefix(pr, None, tests_block)
     assert "Repository conventions" not in prefix and "Callers of what changed" not in prefix
-    assert not result.context_complete
+    assert not result.metrics.context_complete
 
 
 def test_context_can_be_switched_off_for_measurement(tmp_path):
@@ -576,7 +580,7 @@ def test_context_can_be_switched_off_for_measurement(tmp_path):
     )
     prefix = async_client.messages.calls[0]["messages"][0]["content"][0]["text"]
     assert "Repository conventions" not in prefix
-    assert result.conventions_file is None and result.callers_found == 0
+    assert result.metrics.conventions_file is None and result.metrics.callers_found == 0
 
 
 def test_context_is_not_gathered_when_there_is_nothing_to_explore(tmp_path):
@@ -584,7 +588,7 @@ def test_context_is_not_gathered_when_there_is_nothing_to_explore(tmp_path):
     empty.mkdir()
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(_pr_changing_helper(), LocalRepository(empty), _sync(), async_client)
-    assert result.conventions_file is None and result.callers_found == 0
+    assert result.metrics.conventions_file is None and result.metrics.callers_found == 0
 
 
 def test_context_survives_the_verifier(tmp_path):
@@ -595,8 +599,8 @@ def test_context_survives_the_verifier(tmp_path):
     result = _run(
         _pr_changing_helper(), _repo_with_conventions(tmp_path), sync, async_client
     )
-    assert result.verified
-    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
+    assert result.metrics.verified
+    assert result.metrics.conventions_file == "CLAUDE.md" and result.metrics.callers_found == 2
 
 
 class _NoFileList(LocalRepository):
@@ -612,8 +616,8 @@ def test_a_context_without_the_tests_answer_is_reported_incomplete(tmp_path):
     repo = _NoFileList(_repo_with_conventions(tmp_path).root)
     async_client = _async(WARM, _submit("", []), _submit("", []), _submit("", []))
     result = _run(_pr_changing_helper(), repo, _sync(), async_client)
-    assert result.conventions_file == "CLAUDE.md" and result.callers_found == 2
-    assert not result.context_complete
+    assert result.metrics.conventions_file == "CLAUDE.md" and result.metrics.callers_found == 2
+    assert not result.metrics.context_complete
 
 
 def test_the_verifier_gets_the_absence_rule_on_this_path_only(tmp_path):
@@ -626,7 +630,7 @@ def test_the_verifier_gets_the_absence_rule_on_this_path_only(tmp_path):
         WARM, _submit("s", [finding]), _submit("", []), _submit("", [])
     )
     result = _run(_pr_changing_helper(), repo, sync, async_client)
-    assert result.verified
+    assert result.metrics.verified
     suffix = sync.messages.calls[0]["messages"][0]["content"][1]["text"]
     assert ABSENCE_RULE in suffix
 
@@ -686,5 +690,5 @@ def test_the_review_runs_inside_one_workflow_span_and_is_priced_while_open(
     assert events[-1] == ("close", "workflow", "pr_review")
     assert events[-2] == ("priced",)
     assert ("open", "task", "repo_context") in events
-    assert result.latency_ms > 0
+    assert result.metrics.latency_ms > 0
 

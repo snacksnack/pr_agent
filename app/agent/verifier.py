@@ -24,16 +24,31 @@ in the decision records (docs/rc1-387-verifier.md, docs/rc1-428-verifier-policy.
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import dataclass
 from typing import Any
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.config import settings
-from app.models import Finding, ReviewResult, TokenUsage
+from app.models import Finding, TokenUsage
 
 logger = logging.getLogger("app.agent.verifier")
 
 DEFAULT_MAX_TOKENS = 2048
+
+
+@dataclass(frozen=True)
+class Verification:
+    """What the pass did with the merged findings (RC1-429): the ones it
+    kept (downgrades applied), the ones it dropped, and what the call cost.
+    ``ran`` is False when there was nothing to verify and no call was made;
+    ``kept`` is then the input unchanged and ``model`` is empty."""
+
+    kept: tuple[Finding, ...]
+    dropped: tuple[Finding, ...] = ()
+    downgraded: int = 0
+    usage: TokenUsage = TokenUsage()
+    model: str = ""
+    ran: bool = False
 
 _SEVERITY_RANK = {"nit": 0, "warning": 1, "blocker": 2}
 _ONE_STEP_DOWN = {"blocker": "warning", "warning": "nit"}
@@ -220,7 +235,7 @@ def apply_verdicts(
 
 
 def verify_findings(
-    result: ReviewResult,
+    findings: list[Finding],
     *,
     client: Any,
     prefix: str,
@@ -228,25 +243,25 @@ def verify_findings(
     tool_choice: dict,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-) -> ReviewResult:
-    """Run the verifier over ``result.findings`` and return a new result.
+) -> Verification:
+    """Run the verifier over ``findings`` and return a :class:`Verification`.
 
-    The returned result carries the kept findings, the dropped ones, the
-    downgrade count, and the pass's own token spend both folded into the
-    totals and broken out. A result with no findings is returned unchanged,
-    with no model call: a clean review pays nothing here.
+    An empty list is returned unchanged with no model call: a clean review
+    pays nothing here. ``model`` defaults to the review model in settings;
+    the pipeline passes the one the reviewers ran on.
 
     ``prefix`` is the PR and the repository context exactly as the reviewers
     saw them, sent under the same cache breakpoint with their ``tools`` and
     ``tool_choice``, so this call reads their cached prefix instead of
     writing its own (RC1-390). The RC1-387 shape that rendered the PR itself
-    went with the flag in RC1-428.
+    went with the flag in RC1-428. Folding the pass's tokens into the
+    review's totals is the pipeline's job (RC1-429), not this function's.
     """
-    if not result.findings:
-        return result
-    model = model or result.model or settings.review_model
+    if not findings:
+        return Verification(kept=tuple(findings))
+    model = model or settings.review_model
     suffix = "\n".join(
-        [format_findings_for_verification(result.findings), "", VERIFIER_INSTRUCTIONS]
+        [format_findings_for_verification(findings), "", VERIFIER_INSTRUCTIONS]
     )
     content = [
         {"type": "text", "text": prefix, "cache_control": CACHE_CONTROL},
@@ -261,28 +276,21 @@ def verify_findings(
         max_tokens=max_tokens,
     )
     used = _tokens(response)
-    kept, dropped, downgraded = apply_verdicts(result.findings, _verdicts(response))
+    kept, dropped, downgraded = apply_verdicts(findings, _verdicts(response))
     logger.info(
         "verifier_done findings=%d kept=%d dropped=%d downgraded=%d context=%d out=%d",
-        len(result.findings),
+        len(findings),
         len(kept),
         len(dropped),
         downgraded,
         used.context_tokens,
         used.output_tokens,
     )
-    total = result.usage + used
-    return replace(
-        result,
-        findings=kept,
-        input_tokens=total.input_tokens,
-        output_tokens=total.output_tokens,
-        cache_creation_input_tokens=total.cache_creation_input_tokens,
-        cache_read_input_tokens=total.cache_read_input_tokens,
-        verified=True,
-        verifier_dropped=dropped,
-        verifier_downgraded=downgraded,
-        verifier_usage=used,
-        verifier_model=model,
-        stage_usage={**result.stage_usage, "verifier": used} if result.stage_usage else {},
+    return Verification(
+        kept=tuple(kept),
+        dropped=tuple(dropped),
+        downgraded=downgraded,
+        usage=used,
+        model=model,
+        ran=True,
     )

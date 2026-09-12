@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.agent import verifier
 from app.config import Settings
-from app.models import Finding, ReviewResult
+from app.models import Finding
 
 
 class FakeMessages:
@@ -52,21 +52,15 @@ def _finding(severity="warning", category="security", message="thing", file="a.p
     return Finding(severity=severity, category=category, message=message, file=file, line=line)
 
 
-def _result(*findings):
-    return ReviewResult(
-        summary="s", findings=list(findings), model="m", input_tokens=100, output_tokens=10
-    )
-
-
 SHARED_TOOLS = [{"name": "submit_review"}, verifier.VERIFY_TOOL]
 TOOL_CHOICE_ANY = {"type": "any"}
 
 
-def _verify(result, client, **kwargs):
+def _verify(findings, client, **kwargs):
     """The call as the pipeline makes it: the reviewers' prefix, tools and
     tool choice (RC1-390); the one shape there is since RC1-428."""
     return verifier.verify_findings(
-        result,
+        list(findings),
         client=client,
         prefix=kwargs.pop("prefix", "THE PREFIX"),
         tools=SHARED_TOOLS,
@@ -138,26 +132,24 @@ def test_a_downgrade_does_not_mutate_the_original_finding():
 
 # --- the call ---------------------------------------------------------------
 
-def test_verify_findings_returns_a_new_result_with_the_pass_metered():
+def test_verify_findings_returns_the_kept_and_the_dropped_with_the_pass_metered():
     client = FakeClient(
         [_verdicts({"index": 1, "decision": "drop", "reason": "fixture"})], usages=[(500, 50)]
     )
-    before = _result(_finding(message="real"), _finding(message="decoy"))
+    findings = [_finding(message="real"), _finding(message="decoy")]
 
-    after = _verify(before, client, model="verify-model")
+    out = _verify(findings, client, model="verify-model")
 
-    assert [f.message for f in after.findings] == ["real"]
-    assert [f.message for f in after.verifier_dropped] == ["decoy"]
-    assert after.verified is True
-    assert (after.verifier_usage.input_tokens, after.verifier_usage.output_tokens) == (500, 50)
-    assert (after.input_tokens, after.output_tokens) == (600, 60), "folded into the totals"
-    assert before.findings[1].message == "decoy", "the input result is not mutated"
-    assert after.model == "m", "the review's model, not the verifier's, names the result"
+    assert [f.message for f in out.kept] == ["real"]
+    assert [f.message for f in out.dropped] == ["decoy"]
+    assert out.ran is True and out.model == "verify-model"
+    assert (out.usage.input_tokens, out.usage.output_tokens) == (500, 50)
+    assert [f.message for f in findings] == ["real", "decoy"], "the input is not mutated"
 
 
 def test_the_request_reads_the_reviewers_prefix_and_sends_their_tools():
     client = FakeClient([_verdicts()])
-    _verify(_result(_finding()), client, model="verify-model")
+    _verify([_finding()], client, model="verify-model")
 
     call = client.messages.calls[0]
     assert call["model"] == "verify-model"
@@ -172,30 +164,27 @@ def test_the_request_reads_the_reviewers_prefix_and_sends_their_tools():
     assert suffix["text"].rstrip().endswith("Call verify_findings exactly once.")
 
 
-def test_a_result_with_no_findings_is_returned_unchanged_without_a_call():
+def test_nothing_to_verify_makes_no_call_and_reads_as_not_run():
     client = FakeClient([])
-    result = _result()
-    assert _verify(result, client) is result
+    out = _verify([], client)
+    assert out.ran is False and out.kept == () and out.dropped == () and out.model == ""
     assert not client.messages.calls
 
 
 def test_a_response_without_the_tool_keeps_everything():
     client = FakeClient([[{"type": "text", "text": "I have nothing to say"}]])
-    after = _verify(_result(_finding(), _finding()), client)
-    assert len(after.findings) == 2 and after.verified
+    out = _verify([_finding(), _finding()], client)
+    assert len(out.kept) == 2 and out.ran
 
 
-def test_model_falls_back_to_the_review_model_then_settings(monkeypatch):
-    client = FakeClient([_verdicts()])
-    _verify(_result(_finding()), client)
-    assert client.messages.calls[0]["model"] == "m", "the review's model"
-
+def test_model_falls_back_to_settings(monkeypatch):
     monkeypatch.setattr(
         verifier, "settings", Settings(_env_file=None, review_model="from-settings")
     )
     client = FakeClient([_verdicts()])
-    _verify(ReviewResult(findings=[_finding()]), client)
+    out = _verify([_finding()], client)
     assert client.messages.calls[0]["model"] == "from-settings"
+    assert out.model == "from-settings", "the model the pass ran on is in the record"
 
 
 def test_cache_tokens_are_counted_on_the_verifier_call():
@@ -217,14 +206,11 @@ def test_cache_tokens_are_counted_on_the_verifier_call():
         )
 
     client.messages.create = create
-    after = _verify(_result(_finding()), client)
-    assert after.verifier_usage.cache_creation_input_tokens == 3000
-    assert after.verifier_usage.cache_read_input_tokens == 200
-    assert after.verifier_usage.context_tokens == 3210
-    assert after.cache_creation_input_tokens == 3000, "folded into the review's totals"
+    out = _verify([_finding()], client)
+    assert out.usage.cache_creation_input_tokens == 3000
+    assert out.usage.cache_read_input_tokens == 200
+    assert out.usage.context_tokens == 3210
 
-
-# --- wiring into the loop -----------------------------------------------------
 
 # --- the instructions -----------------------------------------------------
 
@@ -232,7 +218,7 @@ def test_the_instructions_carry_the_absence_rule_and_the_duplicate_fold():
     """RC1-394's absence rule and RC1-398's duplicate-fold sentence are part
     of the one instruction text since RC1-428; nothing is appended per call."""
     client = FakeClient([_verdicts()])
-    _verify(_result(_finding()), client)
+    _verify([_finding()], client)
     text = client.messages.calls[0]["messages"][0]["content"][1]["text"]
     assert text.endswith(verifier.VERIFIER_INSTRUCTIONS)
     assert verifier.ABSENCE_RULE in verifier.VERIFIER_INSTRUCTIONS
@@ -240,16 +226,3 @@ def test_the_instructions_carry_the_absence_rule_and_the_duplicate_fold():
     assert "not a blocker" in verifier.ABSENCE_RULE
     assert "Their order in the list above means nothing" in verifier.VERIFIER_INSTRUCTIONS
     assert "do not keep both because their wording differs" in verifier.VERIFIER_INSTRUCTIONS
-
-
-def test_the_verifier_carries_every_other_field_of_the_result_through():
-    # RC1-425: the pipeline assembles the final result after this pass, so a
-    # field the verifier does not touch must survive it (dataclasses.replace).
-    result = _result(_finding())
-    result.conventions_file, result.callers_found, result.latency_ms = "CLAUDE.md", 3, 12.5
-    result.stage_latency_ms = {"context": 1.0}
-    client = FakeClient([_verdicts()])
-    out = _verify(result, client)
-    assert out.verified is True
-    assert (out.conventions_file, out.callers_found, out.latency_ms) == ("CLAUDE.md", 3, 12.5)
-    assert out.stage_latency_ms == {"context": 1.0}

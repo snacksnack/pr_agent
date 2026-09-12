@@ -199,16 +199,16 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
                 changed_files=[f.filename for f in pr.files],
                 api_budget=settings.remote_api_budget,
             )
-            result = review_pull_request(pr, repository, client=None)
+            reviewed = review_pull_request(pr, repository, client=None)
             log.info(
                 "repository api_calls=%d tree=%s", repository.api_calls, repository.tree_available
             )
             # RC1-395: one cost point per review, from here only — the
             # dry-run CLI and the eval corpus run the same review function
             # and must not write into the production series.
-            ship_review_metrics(result, repo=f"{event.owner}/{event.repo}")
+            ship_review_metrics(reviewed.metrics, repo=f"{event.owner}/{event.repo}")
             outcome = post_review(
-                gh, pr, result, block_on=settings.block_on, commit_id=event.head_sha
+                gh, pr, reviewed.review, block_on=settings.block_on, commit_id=event.head_sha
             )
         store.mark_reviewed(event.slug, event.head_sha)
     except Exception:  # noqa: BLE001 — background worker is the last line of defense
@@ -217,7 +217,7 @@ def process_event(event: WebhookEvent, *, store: DedupStore | None = None) -> No
 
     log.info(
         "review_posted findings=%d event=%s summary=%s new_comments=%d dismissed=%d",
-        len(result.findings),
+        len(reviewed.review.findings),
         outcome["event"],
         outcome["summary_action"],
         outcome["new_comments"],

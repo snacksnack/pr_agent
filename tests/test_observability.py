@@ -9,7 +9,7 @@ from decimal import Decimal
 import httpx
 
 from app import observability
-from app.models import ReviewResult, TokenUsage
+from app.models import RunMetrics, TokenUsage
 
 
 class FakeLLMObs:
@@ -98,11 +98,11 @@ def _never_post(*args, **kwargs):
 
 
 def _result(**kw):
+    """Run metrics (RC1-429) with a priced model and a nonzero spend."""
     kw.setdefault("model", "claude-sonnet-4-6")
-    kw.setdefault("output_tokens", 1000)
-    kw.setdefault("cache_read_input_tokens", 20000)
+    kw.setdefault("usage", TokenUsage(output_tokens=1000, cache_read_input_tokens=20000))
     kw.setdefault("latency_ms", 12500.0)
-    return ReviewResult(**kw)
+    return RunMetrics(**kw)
 
 
 def test_annotate_puts_cost_stages_and_latency_on_the_span(monkeypatch):

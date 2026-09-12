@@ -36,7 +36,7 @@ from app.agent.pipeline import review_pull_request
 from app.agent.repository import RepositoryAccess, RepositoryError
 from app.config import settings
 from app.github import GitHubError, fetch_pull_request, parse_pr_spec
-from app.models import Finding, PRRef, PullRequest, ReviewResult
+from app.models import Finding, PRRef, PullRequest, ReviewOutcome, ReviewResult, RunMetrics
 from app.verdict import gating_findings
 
 # Exit codes (documented for later CI use).
@@ -45,9 +45,9 @@ EXIT_BLOCKED = 1     # review ran; a block_on finding was present
 EXIT_ERROR = 2       # the review could not be produced (ingestion/loop failure)
 
 FetchFn = Callable[[PRRef], PullRequest]
-# The review callable receives the PR and the repository and returns the one
-# complete result; the deterministic checks run inside it (RC1-425).
-ReviewFn = Callable[[PullRequest, RepositoryAccess], ReviewResult]
+# The review callable receives the PR and the repository and returns the
+# outcome: the review to print plus the run's metrics (RC1-425, RC1-429).
+ReviewFn = Callable[[PullRequest, RepositoryAccess], ReviewOutcome]
 
 _SEVERITY_LABEL = {"blocker": "BLOCKER", "warning": "WARNING", "nit": "NIT"}
 
@@ -102,8 +102,12 @@ def _location(f: Finding) -> str:
     return f"{f.file}:{f.line}" if f.line else f.file
 
 
-def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
-    """Render a :class:`ReviewResult` as readable terminal text."""
+def format_review(
+    result: ReviewResult, pr: PullRequest | None = None, metrics: RunMetrics | None = None
+) -> str:
+    """Render a :class:`ReviewResult` as readable terminal text, with one
+    diagnostics line when the run's ``metrics`` are given (RC1-429): the
+    review reads the same without them."""
     lines: list[str] = []
     if pr is not None:
         header = f"Review of {pr.slug} — {pr.title}".rstrip()
@@ -136,26 +140,32 @@ def format_review(result: ReviewResult, pr: PullRequest | None = None) -> str:
     nits = sum(1 for f in findings if f.severity == "nit")
     lines.append(f"Totals: {blockers} blocker(s), {warnings} warning(s), {nits} nit(s)")
 
-    meta = f"model={result.model or 'n/a'}  reviewers={','.join(result.reviewers_run)}"
-    # RC1-393: what Python put in the prefix before the reviewers ran.
-    meta += (
-        f"  context(conventions={result.conventions_file or 'none'},"
-        f" callers={result.callers_found})"
-    )
-    if result.off_scope_findings or result.deduplicated_findings:
-        meta += (
-            f"  merged(off_scope={result.off_scope_findings},"
-            f" deduplicated={result.deduplicated_findings})"
-        )
-    # RC1-425: the deterministic checks the pipeline ran, and any that failed.
-    if result.checks_run or result.checks_failed:
-        meta += f"  checks(run={','.join(result.checks_run) or 'none'}"
-        meta += f", findings={result.deterministic_findings}"
-        if result.checks_failed:
-            meta += f", failed={','.join(result.checks_failed)}"
-        meta += ")"
-    lines.append(meta)
+    if metrics is not None:
+        lines.append(format_metrics(metrics))
     return "\n".join(lines)
+
+
+def format_metrics(metrics: RunMetrics) -> str:
+    """The run's diagnostics on one line: model, reviewers, what Python put
+    in the prefix (RC1-393), what the merge discarded, what the checks did
+    (RC1-425)."""
+    meta = f"model={metrics.model or 'n/a'}  reviewers={','.join(metrics.reviewers_run)}"
+    meta += (
+        f"  context(conventions={metrics.conventions_file or 'none'},"
+        f" callers={metrics.callers_found})"
+    )
+    if metrics.off_scope_findings or metrics.deduplicated_findings:
+        meta += (
+            f"  merged(off_scope={metrics.off_scope_findings},"
+            f" deduplicated={metrics.deduplicated_findings})"
+        )
+    if metrics.checks_run or metrics.checks_failed:
+        meta += f"  checks(run={','.join(metrics.checks_run) or 'none'}"
+        meta += f", findings={metrics.deterministic_findings}"
+        if metrics.checks_failed:
+            meta += f", failed={','.join(metrics.checks_failed)}"
+        meta += ")"
+    return meta
 
 
 # --- repo context ---------------------------------------------------------
@@ -206,7 +216,7 @@ def main(
                 "(file exploration disabled).",
                 file=sys.stderr,
             )
-        result = review(pr, repository)
+        outcome = review(pr, repository)
     except (GitHubError, RepositoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -214,9 +224,9 @@ def main(
         for d in tmpdirs:
             shutil.rmtree(d, ignore_errors=True)
 
-    print(format_review(result, pr), file=out)
+    print(format_review(outcome.review, pr, outcome.metrics), file=out)
 
-    blocking = blocking_findings(result, settings.block_on)
+    blocking = blocking_findings(outcome.review, settings.block_on)
     if blocking:
         print(
             f"\nVerdict: BLOCK — {len(blocking)} blocking finding(s) "
@@ -234,7 +244,7 @@ def _default_fetch(ref: PRRef) -> PullRequest:
 
 
 def _default_review(*, model: str | None) -> ReviewFn:
-    def _review(pr: PullRequest, repository: RepositoryAccess) -> ReviewResult:
+    def _review(pr: PullRequest, repository: RepositoryAccess) -> ReviewOutcome:
         # client=None -> the pipeline lazily builds the Anthropic SDK from settings.
         return review_pull_request(pr, repository, client=None, model=model)
 

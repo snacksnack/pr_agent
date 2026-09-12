@@ -38,7 +38,7 @@ from app.agent.pipeline import (
     review_pull_request,
 )
 from app.config import settings
-from app.models import Finding, ReviewResult
+from app.models import Finding
 from app.pricing import cost_usd, review_cost
 from evals import boundary, corpus
 from evals.subject import materialise_checkout
@@ -252,11 +252,10 @@ def probe_case(
     intended, rival = case.pair
     findings = [intended, rival] if order == INTENDED_FIRST else [rival, intended]
     model = model or settings.review_model
-    first_pass = ReviewResult(findings=findings, model=model, mode="multi")
     recorder = RecordingClient(client)
     started = time.perf_counter()
     verified = verifier.verify_findings(
-        first_pass,
+        findings,
         client=recorder,
         model=model,
         prefix=probe_prefix(case),
@@ -270,9 +269,9 @@ def probe_case(
         "pair": list(case.categories),
         "order": order,
         "first": findings[0].category,
-        "kept": kept_of_pair(case, verified.findings),
-        "kept_categories": [f.category for f in verified.findings],
-        "first_survived": findings[0].category in {f.category for f in verified.findings},
+        "kept": kept_of_pair(case, verified.kept),
+        "kept_categories": [f.category for f in verified.kept],
+        "first_survived": findings[0].category in {f.category for f in verified.kept},
         "verdicts": [
             {
                 "category": findings[i].category,
@@ -281,7 +280,7 @@ def probe_case(
             }
             for i in range(len(findings))
         ],
-        "cost_usd": float(cost_usd(model, verified.verifier_usage)),
+        "cost_usd": float(cost_usd(model, verified.usage)),
         "latency_ms": round(latency_ms),
         "model": model,
     }
@@ -343,16 +342,17 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
     with tempfile.TemporaryDirectory(prefix=f"tiebreak-{case.id}-") as tmp:
         materialise_checkout(Path(tmp), None, boundary.repo_files(case))
         started = time.perf_counter()
-        result = review_pull_request(
+        outcome = review_pull_request(
             pr, LocalRepository(tmp), client=recorder, repo_context=True
         )
         wall_s = time.perf_counter() - started
+    review, metrics = outcome.review, outcome.metrics
     kept_on = [
-        f for f in result.findings if about(f"{f.message} {f.suggestion or ''}", case.evidence)
+        f for f in review.findings if about(f"{f.message} {f.suggestion or ''}", case.evidence)
     ]
     dropped_on = [
         f
-        for f in result.verifier_dropped
+        for f in metrics.verifier_dropped
         if about(f"{f.message} {f.suggestion or ''}", case.evidence)
     ]
     kept_cats = [f.category for f in kept_on]
@@ -376,11 +376,11 @@ def pipeline_case(case: boundary.BoundaryCase, *, client: Any) -> dict[str, Any]
             1 for f in [*kept_on, *dropped_on] if f.file == a.file and f.line == a.line
         )
         >= 2,
-        "findings": len(result.findings),
-        "reviewers": list(result.reviewers_run),
-        "context_complete": result.context_complete,
+        "findings": len(review.findings),
+        "reviewers": list(metrics.reviewers_run),
+        "context_complete": metrics.context_complete,
         "drop_reasons": reasons,
-        "cost_usd": float(review_cost(result).total),
+        "cost_usd": float(review_cost(metrics).total),
         "wall_s": round(wall_s, 1),
     }
 
