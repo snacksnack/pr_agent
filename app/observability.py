@@ -117,7 +117,7 @@ def stage_span(kind: str, name: str):
 
 
 def annotate_span(**fields: Any) -> None:
-    """Attach ``metadata``/``metrics``/``output_data`` to the active LLM
+    """Attach ``metadata``/``metrics``/``input_data``/``output_data`` to the active LLM
     Observability span; a no-op when tracing is off."""
     if LLMObs is None or not LLMObs.enabled:
         return

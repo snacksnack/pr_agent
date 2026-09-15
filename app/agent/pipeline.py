@@ -344,6 +344,12 @@ async def review_pull_request(
     try:
         with stage_span("workflow", "pr_review"):
             annotate_review_identity(pull_request)
+            # RC1-438: the untrusted content, rendered as the reviewers read
+            # it (the diff already capped), is the root span's input, so a
+            # root-span evaluation such as prompt injection has one input to
+            # judge per review. Annotated as the span opens, so a review that
+            # fails part-way is still judged.
+            annotate_span(input_data="\n".join(render_pr(pull_request)))
             review, metrics = await _review(
                 pull_request,
                 repository,
@@ -356,6 +362,7 @@ async def review_pull_request(
             )
             metrics = replace(metrics, latency_ms=(time.perf_counter() - started_review) * 1000)
             annotate_review_cost(metrics)
+            annotate_span(output_data=review.summary)
     finally:
         if owns_client:
             await client.close()
