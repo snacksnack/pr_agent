@@ -167,11 +167,12 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `/healthz` every 15 min so a stopped machine drains its queue;
       `app/dedup.py`, `BackgroundTasks` and `process_event` are gone
       (record + runbook in `docs/rc1-423-durable-jobs.md`)
-- [ ] RC1-438 the `pr_review` root span carries the PR as the reviewers read it
+- [x] RC1-438 the `pr_review` root span carries the PR as the reviewers read it
       (`render_pr`: title, body, capped diff) as `input_data`, annotated as the
       span opens, and the composed summary as `output_data`, so the
       prompt-injection evaluation judges once per review on root spans
-      (it skipped silently without an input, RC1-408)
+      (it skipped silently without an input, RC1-408); evaluation filter is
+      `service:webhook @parent_id:undefined` since 2026-09-14
 
 ## Layout
 
