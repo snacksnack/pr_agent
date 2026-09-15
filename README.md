@@ -292,3 +292,5 @@ receiver · RC1-117 review posting + verdict policy · RC1-118 re-push dedup.
 
 **Milestone 3 — deploy:** RC1-119 Dockerize + Fly.io · RC1-120 register/install
 the App + end-to-end live test.
+
+<!-- RC1-443 probe: throwaway change so the review agent runs. Closed unmerged. -->
