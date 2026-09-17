@@ -186,7 +186,12 @@ def create_app(
     configure_logging()
     # RC1-322: reviews triggered by webhooks become LLM Obs traces; a no-op
     # without DD_API_KEY.
-    enable_llm_obs("pr-review-agent", service="webhook")
+    # RC1-447: the service is the Software Catalog entity's name, which is also
+    # the service the Fly Deploy workflow reports to DORA. It used to be
+    # "webhook", which described the endpoint rather than the thing deployed and
+    # left the catalog entry with no telemetry to join. Nothing queried the old
+    # name — the account's only service: filters exclude "evals" and "dry-run".
+    enable_llm_obs("pr-review-agent", service="pr-review-agent-snacksnack")
     job_store = store if store is not None else JobStore(settings.jobs_db_path)
     worker = Worker(job_store, runner or process_job)
 
