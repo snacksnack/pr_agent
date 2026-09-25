@@ -7,6 +7,7 @@ on:
       - main
 permissions:
   contents: read
+  actions: read   # the close step lists this workflow's own runs (RC1-448)
 
 jobs:
   deploy:
@@ -33,6 +34,7 @@ jobs:
       # That is how the RC1-322 crash-loop shipped silently. Requesting the public
       # URL forces a cold start and exercises the same path a real request takes.
       - name: Gate on boot health
+        id: boot_gate
         env:
           HEALTH_URL: https://pr-review-agent-snacksnack.fly.dev/healthz
         run: |
@@ -63,6 +65,31 @@ jobs:
           done
           echo "boot health confirmed on $HEALTH_URL"
 
+      # A failed gate is the definition of a change failure (RC1-448): the
+      # deploy completed but the app does not serve. Open a DORA failure event
+      # keyed <service>.<sha> — the next deploy that passes the gate re-POSTs
+      # the same id with finished_at set, which is how the API marks it
+      # restored. Runs only when the gate itself fails: a flyctl failure ships
+      # nothing, so it is a failed deployment, not a change failure.
+      - name: Report change failure to Datadog DORA
+        if: failure() && steps.boot_gate.outcome == 'failure'
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          SERVICE: pr-review-agent-snacksnack
+          REPO_URL: https://github.com/snacksnack/pr_agent
+        run: |
+          set -euo pipefail
+          payload=$(printf '{"data":{"attributes":{"id":"%s.%s","services":["%s"],"env":"prod","severity":"High","name":"%s deploy %.8s failed the boot-health gate","started_at":%s000000000,"git":{"commit_sha":"%s","repository_url":"%s"}}}}' \
+            "$SERVICE" "$GITHUB_SHA" "$SERVICE" "$SERVICE" "$GITHUB_SHA" "$(date +%s)" "$GITHUB_SHA" "$REPO_URL")
+          code=$(curl -s -o resp.json -w '%{http_code}' -m 30 -X POST \
+            -H "DD-API-KEY: $DD_API_KEY" -H "Content-Type: application/json" \
+            -d "$payload" "https://api.datadoghq.com/api/v2/dora/failure")
+          cat resp.json; echo
+          case "$code" in
+            2*) echo "DORA change failure opened (HTTP $code); the next passing deploy closes it";;
+            *) echo "::error::DORA failure POST failed with HTTP $code — change failure rate will undercount"; exit 1;;
+          esac
+
       # Register the deploy with Datadog DORA (RC1-336). Runs only after the boot
       # health gate, so a DORA deployment event means the app actually serves — not
       # merely that flyctl exited 0. DORA deployments are a separate data source
@@ -88,3 +115,86 @@ jobs:
             2*) echo "DORA deployment recorded (HTTP $code)";;
             *) echo "::error::DORA deployment POST failed with HTTP $code — this deploy is live but unrecorded"; exit 1;;
           esac
+
+      # Close the change failures this deploy restores (RC1-448). A failure
+      # opened above is keyed <service>.<failing sha>; POSTing that id again
+      # with finished_at set replaces the record and stamps time to restore.
+      # The walk covers every failed run back to the previous success, and
+      # this run's own earlier attempts after a re-run to green. Each run is
+      # checked for a failed gate step first: the API upserts by id, so
+      # POSTing the id of a run that failed before the gate (checkout,
+      # flyctl) would fabricate a change failure that never happened.
+      - name: Close restored DORA change failures
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          SERVICE: pr-review-agent-snacksnack
+          REPO_URL: https://github.com/snacksnack/pr_agent
+          GATE_STEP: Gate on boot health
+        run: |
+          set -euo pipefail
+          finished=$(date +%s)
+
+          # When the gate failed in one run attempt, empty if it did not.
+          gate_failed_at() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1/attempts/$2/jobs" \
+              --jq '[.jobs[].steps[] | select(.name == env.GATE_STEP and .conclusion == "failure")][0].completed_at // empty'
+          }
+
+          close_failure() { # $1 = failing sha, $2 = gate-failure epoch seconds
+            payload=$(printf '{"data":{"attributes":{"id":"%s.%s","services":["%s"],"env":"prod","severity":"High","name":"%s deploy %.8s failed the boot-health gate — restored by %.8s","started_at":%s000000000,"finished_at":%s000000000,"git":{"commit_sha":"%s","repository_url":"%s"}}}}' \
+              "$SERVICE" "$1" "$SERVICE" "$SERVICE" "$1" "$GITHUB_SHA" "$2" "$finished" "$1" "$REPO_URL")
+            code=$(curl -s -o resp.json -w '%{http_code}' -m 30 -X POST \
+              -H "DD-API-KEY: $DD_API_KEY" -H "Content-Type: application/json" \
+              -d "$payload" "https://api.datadoghq.com/api/v2/dora/failure")
+            cat resp.json; echo
+            case "$code" in
+              2*) echo "closed DORA change failure $SERVICE.$1 — restored after $((finished - $2))s";;
+              *) echo "::error::close POST for $1 failed with HTTP $code. Do NOT re-run this workflow to retry — that double-counts the deployment event (DORA never dedups). Re-send the close by hand."; exit 1;;
+            esac
+          }
+
+          # This run's own earlier attempts (a re-run to green shares the sha).
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+            a=1
+            while [ "$a" -lt "$GITHUB_RUN_ATTEMPT" ]; do
+              t=$(gate_failed_at "$GITHUB_RUN_ID" "$a")
+              if [ -n "$t" ]; then
+                close_failure "$GITHUB_SHA" "$(date -d "$t" +%s)"
+                break
+              fi
+              a=$((a + 1))
+            done
+          fi
+
+          # Completed runs of this workflow, newest first; the streak of
+          # failures since the previous success is what this deploy restores.
+          # Stopping at the previous success matters: re-closing an already
+          # closed failure would overwrite its finished_at with today and
+          # inflate its time to restore.
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/fly-deploy.yml/runs?branch=main&status=completed&per_page=20" \
+            --jq '.workflow_runs | map(select(.id != (env.GITHUB_RUN_ID | tonumber)))
+                  | (map(.conclusion) | index("success")) as $cut
+                  | (if $cut == null then . else .[:$cut] end)
+                  | map(select(.conclusion == "failure") | [.id, .head_sha, .run_attempt] | @tsv)
+                  | .[]' > streak.tsv
+
+          if [ ! -s streak.tsv ]; then
+            echo "no failed runs since the previous success — nothing to close"
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r rid sha attempts; do
+            t=""
+            a=1
+            while [ "$a" -le "$attempts" ]; do
+              at=$(gate_failed_at "$rid" "$a")
+              if [ -n "$at" ] && [ -z "$t" ]; then t="$at"; fi
+              a=$((a + 1))
+            done
+            if [ -z "$t" ]; then
+              echo "run $rid ($sha) failed before the gate — no change failure to close"
+              continue
+            fi
+            close_failure "$sha" "$(date -d "$t" +%s)"
+          done < streak.tsv
