@@ -32,11 +32,19 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      # No credentials are configured for this job, deliberately. The suite is
-      # fixture- and mock-driven; a test that needs a live key is a finding to
-      # fix rather than a secret to add.
+      # The suite itself stays credential-free, deliberately: it is fixture-
+      # and mock-driven, and a test that needs a live key is a finding to fix
+      # rather than a secret to add. DD_API_KEY below is not a test
+      # credential — it is the Test Optimization reporter (RC1-452), and the
+      # suite passes identically without it.
       - name: Test (pytest, with coverage floor)
-        run: pytest --cov
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          DD_CIVISIBILITY_AGENTLESS_ENABLED: "true"
+          DD_SITE: datadoghq.com
+          DD_SERVICE: pr_agent
+          DD_ENV: ci
+        run: pytest --ddtrace --cov
 
       # Exercises app/__main__.py, which is omitted from the coverage figure
       # for exactly this reason. It prints which credentials are set without
