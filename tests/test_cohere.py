@@ -125,7 +125,7 @@ def test_request_is_translated_to_cohere_v2():
     assert tool["type"] == "function"
     assert tool["function"]["name"] == SUBMIT_TOOL["name"]
     assert tool["function"]["parameters"] == SUBMIT_TOOL["input_schema"]
-    assert body["tool_choice"] == "REQUIRED"
+    assert "tool_choice" not in body, "the flagship rejects tool_choice; never send it"
     assert body["max_tokens"] == 4096
 
 

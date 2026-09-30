@@ -275,10 +275,14 @@ class AsyncCohereReviewClient:
         }
         if tools:
             body["tools"] = _cohere_tools(tools)
-            # The pipeline always sends {"type": "any"} — a tool call is
-            # required, which reviewer is wanted is said in the prompt.
-            if tool_choice:
-                body["tool_choice"] = "REQUIRED"
+            # The pipeline's {"type": "any"} (a tool call is required) has no
+            # translation: the flagship rejects Cohere's own ``tool_choice``
+            # outright ("tool_choice is not supported for this model",
+            # measured 2026-09-29), so it is not sent and the prompt's "call
+            # submit_review exactly once" is the only forcing. The pipeline
+            # already treats a missing tool call as an unusable reviewer or a
+            # keep-everything verifier, so an answer in prose is counted, not
+            # crashed on — and how often that happens is part of the result.
         return _anthropic_shape(await self._post(body))
 
     async def _post(self, body: dict) -> dict:
