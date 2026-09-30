@@ -642,6 +642,7 @@ def _review(
                     api_latency_ms=[round(ms) for ms in client.api_latency_ms],
                     pacing_wait_ms=round(client.pacing_wait_ms),
                     warm_noops=client.warm_noops,
+                    invalid_tool_generations=client.invalid_tool_generations,
                 )
                 await client.close()
 
