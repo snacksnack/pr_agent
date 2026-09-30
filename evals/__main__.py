@@ -25,7 +25,13 @@ from evals import corpus, subject
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="evals", description=__doc__)
-    parser.add_argument("--case", help="run a single case by id")
+    select = parser.add_mutually_exclusive_group()
+    select.add_argument("--case", help="run a single case by id")
+    select.add_argument(
+        "--cases",
+        help="run a comma-separated list of case ids, corpus order — the "
+        "pinned-subset switch for an arm-vs-arm comparison (RC1-474)",
+    )
     parser.add_argument("--list", action="store_true", help="list the corpus and exit")
     parser.add_argument(
         "--repo-path",
@@ -55,7 +61,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        cases = select_cases(subject.CASES, args.case)
+        if args.cases:
+            # Every id is checked before anything runs: a mistyped id that
+            # silently shrank the pinned subset would compare unequal arms.
+            wanted = {piece.strip() for piece in args.cases.split(",") if piece.strip()}
+            known = {c.id for c in subject.CASES}
+            if wanted - known:
+                raise UnknownCase(f"no case(s) {', '.join(sorted(wanted - known))!r}")
+            cases = tuple(c for c in subject.CASES if c.id in wanted)
+        else:
+            cases = select_cases(subject.CASES, args.case)
     except UnknownCase as exc:
         print(exc, file=sys.stderr)
         return 2

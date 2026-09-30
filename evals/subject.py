@@ -53,7 +53,7 @@ from app.agent.pipeline import review_pull_request
 from app.agent.repository import IGNORED_DIRS
 from app.config import settings
 from app.models import Finding, PullRequest, ReviewOutcome, RunMetrics, TokenUsage
-from evals import corpus
+from evals import cohere, corpus
 
 NAME = "pr-review"
 
@@ -83,6 +83,15 @@ CASES: tuple[Case, ...] = tuple(
 
 
 def preflight() -> None:
+    # RC1-474: a Command review model runs on the Cohere trial key through
+    # the experiment adapter; everything else is the incumbent Anthropic path.
+    if cohere.is_cohere_model(settings.review_model):
+        if not cohere.api_key_from_env():
+            raise RuntimeError(
+                f"COHERE_API_KEY is not set and REVIEW_MODEL={settings.review_model!r} "
+                "is a Command model (RC1-474). This subject drives a real model."
+            )
+        return
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set. This subject drives a real model.")
 
@@ -266,7 +275,7 @@ def run(
     pr = corpus.pull_request(planted)
     started = time.perf_counter()
     try:
-        exit_code, findings, outcome = _review(
+        exit_code, findings, outcome, arm_stats = _review(
             planted, pr, repo_path=repo_path, repo_context=repo_context
         )
     except Exception as exc:
@@ -355,6 +364,11 @@ def run(
             # reviewer call here, not inferred from the case total. The key
             # predates RC1-422, when there was a single loop to tell apart.
             "multi": _multi_observations(metrics, checkout=repo_path is not None),
+            # RC1-474: the Command arm's real API round trips and the trial
+            # key's pacing, kept apart — a latency that includes a deliberate
+            # sleep is not a latency (the RC1-475 lesson). Empty on the
+            # incumbent arm.
+            **({"cohere": arm_stats} if arm_stats else {}),
         },
     )
 
@@ -373,7 +387,7 @@ def _multi_observations(metrics: RunMetrics | None, *, checkout: bool = False) -
         "stages": {
             stage: {
                 **_token_breakdown(usage),
-                "cost_usd": str(_cost_usd(metrics.model, usage)),
+                "cost_usd": _cost_repr(metrics.model, usage),
             }
             for stage, usage in metrics.stage_usage.items()
         },
@@ -406,7 +420,7 @@ def _verifier_observations(metrics: RunMetrics | None) -> dict:
         "downgraded": metrics.verifier_downgraded,
         "tokens": _token_breakdown(metrics.verifier_usage),
         "cost_usd": (
-            str(_cost_usd(metrics.model, metrics.verifier_usage)) if metrics.verified else "0"
+            _cost_repr(metrics.model, metrics.verifier_usage) if metrics.verified else "0"
         ),
         "dropped_messages": [
             f"[{f.severity}/{f.category}] {f.message[:120]}" for f in metrics.verifier_dropped
@@ -513,14 +527,22 @@ def materialise_checkout(
         path.write_text(contents, encoding="utf-8")
 
 
-def _cost_usd(model: str, usage: TokenUsage) -> Decimal:
+def _cost_usd(model: str, usage: TokenUsage) -> Decimal | None:
     """Price a review's four token counts at the harness's rates.
 
     The harness has known the two cache rates since v0.6.0 (RC1-392); this
     kept its RC1-387 stopgap's name so the observations that call it did not
     move. Raises on an unknown model — a review that looks free is worse
     than one that is not priced.
+
+    A Command model (RC1-474) is priced from the experiment's own table in
+    ``evals.cohere`` — the harness table is scoped to the published
+    first-party Anthropic list — and may come back ``None``: the flagship
+    Command has no published per-token price, and ``None`` says so where a
+    guessed number would lie.
     """
+    if cohere.is_cohere_model(model):
+        return cohere.cost_usd(model, usage)
     return pricing.cost_usd(
         model,
         usage.input_tokens,
@@ -528,6 +550,13 @@ def _cost_usd(model: str, usage: TokenUsage) -> Decimal:
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
     )
+
+
+def _cost_repr(model: str, usage: TokenUsage) -> str:
+    """A cost for the observations: the decimal string, or the honest
+    "unpriced" when the vendor publishes no per-token price (RC1-474)."""
+    cost = _cost_usd(model, usage)
+    return "unpriced" if cost is None else str(cost)
 
 
 def _token_breakdown(usage: TokenUsage) -> dict[str, int]:
@@ -552,12 +581,17 @@ def _usage(latency_ms: float, metrics: RunMetrics | None) -> Usage:
     if metrics is None:
         return Usage(latency_ms=latency_ms)
     usage = metrics.usage
+    # RC1-474: an unpriceable model (no vendor list price) records zero —
+    # the record's model field says which arm it is, the token counts carry
+    # the comparison, and the trend page renders zero as "—" rather than a
+    # dollar figure that was never real.
+    cost = _cost_usd(metrics.model, usage)
     return Usage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
-        cost_usd=_cost_usd(metrics.model, usage),
+        cost_usd=cost if cost is not None else Decimal("0"),
         latency_ms=latency_ms,
     )
 
@@ -568,7 +602,7 @@ def _review(
     *,
     repo_path: str | Path | None = None,
     repo_context: bool = True,
-) -> tuple[int, list[Finding], ReviewOutcome | None]:
+) -> tuple[int, list[Finding], ReviewOutcome | None, dict]:
     """Run the real CLI, capturing the merged result on the way past.
 
     `main` prints a report and returns an exit code; the findings themselves are
@@ -580,21 +614,41 @@ def _review(
 
     The review function is the shipped `review_pull_request` with the CLI's
     defaults (`client=None`, so the SDK is built from settings) plus the one
-    switch the CLI does not expose, `repo_context` (RC1-393).
+    switch the CLI does not expose, `repo_context` (RC1-393). A Command
+    review model (RC1-474) swaps the client at this seam — the experiment
+    adapter is built here, injected, and closed here, and its pacing/latency
+    counters come back in the third element so the observations can separate
+    the trial key's deliberate waits from the model's own latency.
     """
     captured: list[ReviewOutcome] = []
+    arm_stats: dict = {}
+
+    async def _reviewed(pull, repository) -> ReviewOutcome:
+        client = None
+        if cohere.is_cohere_model(settings.review_model):
+            client = cohere.AsyncCohereReviewClient(cohere.api_key_from_env())
+        try:
+            return await review_pull_request(
+                pull,
+                repository,
+                client=client,
+                model=settings.review_model,
+                repo_context=repo_context,
+            )
+        finally:
+            if client is not None:
+                arm_stats.update(
+                    api_calls=len(client.api_latency_ms),
+                    api_latency_ms=[round(ms) for ms in client.api_latency_ms],
+                    pacing_wait_ms=round(client.pacing_wait_ms),
+                    warm_noops=client.warm_noops,
+                )
+                await client.close()
 
     def _capture(pull, repository):
         # The eval's sync bridge (RC1-426): the CLI's default review callable
         # is replaced here, so this is where the pipeline's loop is owned.
-        outcome = asyncio.run(
-            review_pull_request(
-                pull,
-                repository,
-                model=settings.review_model,
-                repo_context=repo_context,
-            )
-        )
+        outcome = asyncio.run(_reviewed(pull, repository))
         captured.append(outcome)
         return outcome
 
@@ -608,4 +662,4 @@ def _review(
         )
     outcome = captured[0] if captured else None
     findings = list(outcome.review.findings) if outcome else []
-    return exit_code, findings, outcome
+    return exit_code, findings, outcome, arm_stats
