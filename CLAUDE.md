@@ -167,6 +167,13 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `/healthz` every 15 min so a stopped machine drains its queue;
       `app/dedup.py`, `BackgroundTasks` and `process_event` are gone
       (record + runbook in `docs/rc1-423-durable-jobs.md`)
+- [x] RC1-474 Command-as-reviewer bake-off: `evals/cohere.py` is an
+      experiment-only client for the reviewer seat (the pipeline's
+      injectable-client contract over Cohere v2 chat; warm-cache no-op,
+      trial-key pacing kept out of latency, no `tool_choice` — the flagship
+      rejects it); a `command-*` `REVIEW_MODEL` routes the eval subject to
+      it, `--cases` pins an arm-vs-arm subset. Claude kept the seat
+      (record + comparison in `docs/rc1-474-command-reviewer.md`)
 - [x] RC1-438 the `pr_review` root span carries the PR as the reviewers read it
       (`render_pr`: title, body, capped diff) as `input_data`, annotated as the
       span opens, and the composed summary as `output_data`, so the
@@ -298,6 +305,8 @@ ruff check .                  # lint (line-length 100, rules E,F,I,UP,B,SIM)
 python -m evals --list        # the planted-defect corpus (free)
 python -m evals               # run it (BILLED — needs ANTHROPIC_API_KEY)
 python -m evals --repo-path .  # ...with a checkout every case greps for context (RC1-393)
+REVIEW_MODEL=command-a-plus-05-2026 python -m evals --repo-path . --cases a,b,c
+                               # RC1-474: an arm on a pinned subset (COHERE_API_KEY for command-*)
 python -m app.review --pr owner/repo#N   # dry-run (RC1-113, once built)
 python scripts/measure_pr.py 35 33 39
                                # price reviews of real PRs at their own head (BILLED; RC1-391)
