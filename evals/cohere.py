@@ -248,6 +248,10 @@ class AsyncCohereReviewClient:
         #: Total time spent waiting on the trial-key pacing, not the API.
         self.pacing_wait_ms: float = 0.0
         self.warm_noops = 0
+        #: 422 INVALID_TOOL_GENERATION responses — the platform refusing its
+        #: own model's malformed tool call. Retried, and counted so the
+        #: flakiness is part of the result rather than hidden by the retry.
+        self.invalid_tool_generations = 0
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -273,6 +277,11 @@ class AsyncCohereReviewClient:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        empty = {
+            "content": [],
+            "stop_reason": "invalid_tool_generation",
+            "usage": dict(_WARM_RESPONSE["usage"]),
+        }
         if tools:
             body["tools"] = _cohere_tools(tools)
             # The pipeline's {"type": "any"} (a tool call is required) has no
@@ -283,9 +292,10 @@ class AsyncCohereReviewClient:
             # already treats a missing tool call as an unusable reviewer or a
             # keep-everything verifier, so an answer in prose is counted, not
             # crashed on — and how often that happens is part of the result.
-        return _anthropic_shape(await self._post(body))
+        payload = await self._post(body)
+        return empty if payload is None else _anthropic_shape(payload)
 
-    async def _post(self, body: dict) -> dict:
+    async def _post(self, body: dict) -> dict | None:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             async with self._pace_lock:
                 wait = self._last_start + self._min_interval_s - time.monotonic()
@@ -309,7 +319,25 @@ class AsyncCohereReviewClient:
                 self.pacing_wait_ms += delay * 1000
                 await asyncio.sleep(delay)
                 continue
-            response.raise_for_status()
+            if response.status_code == 422 and "INVALID_TOOL_GENERATION" in response.text:
+                # The model generated a tool call the API refuses to return —
+                # nondeterministic, observed on different cases across runs.
+                # Retried because one bad generation must not kill a case
+                # (AC4's principle); counted because how often it happens is
+                # a result. Out of attempts, it degrades to the pipeline's
+                # own "no tool call" paths (unusable reviewer, keep-all
+                # verifier) instead of erroring the case.
+                self.invalid_tool_generations += 1
+                logger.warning("cohere_invalid_tool_generation attempt=%d", attempt)
+                if attempt < MAX_ATTEMPTS:
+                    continue
+                return None
+            if response.is_error:
+                # The status alone is unactionable ("422 unknown"); Cohere
+                # puts the reason in the body, so the error must carry it.
+                raise RuntimeError(
+                    f"Cohere chat returned {response.status_code}: {response.text[:500]}"
+                )
             self.api_latency_ms.append(elapsed_ms)
             return response.json()
         raise RuntimeError("unreachable: the loop returns or raises")

@@ -192,6 +192,50 @@ def test_429_is_retried_and_never_counted_as_latency():
     assert len(client.api_latency_ms) == 1, "the 429 round trip is pacing, not model latency"
 
 
+def test_invalid_tool_generation_is_retried_then_degrades():
+    """A 422 INVALID_TOOL_GENERATION is the model failing, not the case: one
+    retry that succeeds keeps the review; exhausted attempts come back as an
+    empty response the pipeline counts (unusable reviewer), never an error."""
+    calls = {"n": 0}
+
+    def flaky_once(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                422, json={"error_type": "INVALID_TOOL_GENERATION", "message": "invalid"}
+            )
+        return httpx.Response(200, json=_chat_response())
+
+    client = _client(flaky_once)
+
+    async def go():
+        response = await client.messages.create(**_pipeline_request())
+        await client.close()
+        return response
+
+    response = asyncio.run(go())
+    assert _submission(response) is not None
+    assert client.invalid_tool_generations == 1
+
+    def always_invalid(request):
+        return httpx.Response(
+            422, json={"error_type": "INVALID_TOOL_GENERATION", "message": "invalid"}
+        )
+
+    client = _client(always_invalid)
+
+    async def exhaust():
+        response = await client.messages.create(**_pipeline_request())
+        await client.close()
+        return response
+
+    response = asyncio.run(exhaust())
+    assert response["content"] == []
+    assert response["stop_reason"] == "invalid_tool_generation"
+    assert response["usage"]["input_tokens"] == 0
+    assert client.invalid_tool_generations == cohere.MAX_ATTEMPTS
+
+
 def test_pacing_wait_is_recorded_apart_from_latency():
     def handler(request):
         return httpx.Response(200, json=_chat_response())
