@@ -198,3 +198,20 @@ jobs:
             fi
             close_failure "$sha" "$(date -d "$t" +%s)"
           done < streak.tsv
+
+  # Announce the deploy in #releases (RC1-497). Runs only after everything
+  # above passed, and never fails the run: the logic and that guarantee live
+  # in tpm-automation-platform's release-notify.yml.
+  release-notify:
+    name: Announce release
+    needs: deploy
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: snacksnack/tpm-automation-platform/.github/workflows/release-notify.yml@main
+    with:
+      service: pr-review-agent-snacksnack
+      workflow: fly-deploy.yml
+    secrets:
+      SLACK_RELEASES_WEBHOOK_URL: ${{ secrets.SLACK_RELEASES_WEBHOOK_URL }}
