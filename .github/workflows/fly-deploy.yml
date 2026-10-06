@@ -215,3 +215,8 @@ jobs:
       workflow: fly-deploy.yml
     secrets:
       SLACK_RELEASES_WEBHOOK_URL: ${{ secrets.SLACK_RELEASES_WEBHOOK_URL }}
+      # The page write and its summary (RC1-502); each is optional.
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
