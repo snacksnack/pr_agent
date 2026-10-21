@@ -163,9 +163,10 @@ Multi-agent review (RC1-387 → RC1-390 → RC1-391; see the Jira tickets):
       `/data`) before the 202; `app/worker.py` runs jobs on the receiver's
       loop with transient-vs-terminal retries (3 attempts, 60 s doubling),
       re-queues jobs left running at startup, prunes history; delivery id
-      and reviewed head are durable; `.github/workflows/wake.yml` pings
-      `/healthz` every 15 min so a stopped machine drains its queue;
-      `app/dedup.py`, `BackgroundTasks` and `process_event` are gone
+      and reviewed head are durable; a Datadog synthetic (`69w-d3w-zv2`,
+      RC1-535; was `.github/workflows/wake.yml` until GitHub throttled the
+      cron) pings `/healthz` every 15 min so a stopped machine drains its
+      queue; `app/dedup.py`, `BackgroundTasks` and `process_event` are gone
       (record + runbook in `docs/rc1-423-durable-jobs.md`)
 - [x] RC1-474 Command-as-reviewer bake-off: `evals/cohere.py` is an
       experiment-only client for the reviewer seat (the pipeline's
