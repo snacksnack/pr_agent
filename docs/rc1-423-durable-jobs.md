@@ -16,6 +16,13 @@ single Fly machine, and writes down how it recovers.
   queued job never waits for the next delivery. Not B (a machine always
   running, a few dollars a month for one review a day) and not C (an
   external queue, more infrastructure than one machine warrants).
+- **Update (RC1-535, 2026-10-21):** the scheduled wake moved off GitHub
+  Actions. GitHub throttles high-frequency `schedule` events, so the
+  `*/15` `wake.yml` cron actually ran ~6×/day (every ~4h, not every 15
+  min). It is now a Datadog synthetic (`69w-d3w-zv2`, defined as code in
+  `tpm-automation-platform/datadog/`) that pings `/healthz` every 15 min
+  reliably and doubles as the uptime check the agent lacked. Still option
+  A — same scale-to-zero, a more reliable scheduler.
 
 ## The mechanism
 
@@ -26,7 +33,7 @@ single Fly machine, and writes down how it recovers.
 | `Worker` | `app/worker.py` | one asyncio task on the receiver's loop. Claims due jobs oldest first, runs `process_job`, records `succeeded` / `skipped` / `queued`-for-retry / `failed`. Sleeps until a nudge or the next retry is due. |
 | `process_job` | `app/worker.py` | the old worker body: skip if the head is already reviewed, mint, fetch, skip if GitHub's head moved, review, ship the cost point, post, then mark the head reviewed. |
 | the lifespan | `app/webhook.py` | at startup re-queues jobs left `running`, prunes history, starts the worker; at shutdown cancels the worker and closes the store. |
-| the wake cron | `.github/workflows/wake.yml` | `GET /healthz` every 15 minutes: starts a stopped machine, whose startup drains the queue; the queue counts land in the Actions log. |
+| the keep-warm | Datadog synthetic `69w-d3w-zv2` (in `tpm-automation-platform/datadog/`) | `GET /healthz` every 15 minutes from Datadog: starts a stopped machine, whose startup drains the queue. Replaced the GitHub `wake.yml` cron, which GitHub throttled to ~6 runs/day (RC1-535). |
 
 States: `queued → running → succeeded | skipped | failed`, and `running →
 queued` on a transient error (with a delay) or on recovery. `attempts`
@@ -46,7 +53,7 @@ taking the machine down stops at the cap.
 | Failure | What happens |
 |---|---|
 | before the 202 | GitHub gets no 2xx and redelivers; the endpoint persists it then. Nothing to recover. |
-| after the 202, before the worker claims | the job is `queued` on disk; the next startup (a delivery or the wake cron) runs it. |
+| after the 202, before the worker claims | the job is `queued` on disk; the next startup (a delivery or the keep-warm synthetic) runs it. |
 | mid-review (crash, deploy, auto-stop) | the job is `running` on disk; startup re-queues it (`job_recovered` in the log) and it runs again from the top. The pipeline's owned client is closed by its `finally` on cancellation. |
 | after posting, before `mark_reviewed` | the re-run posts the same review again, and posting is idempotent (RC1-118): the summary comment is edited in place by its marker, inline comments already present are not repeated, our superseded change requests are dismissed. Then the head is marked. |
 | a newer push arrived while queued | `process_job` fetches the PR, sees a newer head and records `skipped: stale_head`; the newer push has its own job. |
@@ -75,9 +82,10 @@ deleted (`jobs_pruned`). Queued and running jobs are never pruned.
 **Auto-stop and cold starts.** The machine still scales to zero. Fly
 stops it a few minutes after the last request, with no regard for a
 background review — a long review can be interrupted, which is the
-mid-review case above. The wake cron guarantees the interrupted job runs
-within 15 minutes; a delivery wakes it sooner. A cold start costs about 5
-seconds before the endpoint answers, as before.
+mid-review case above. The keep-warm synthetic runs the interrupted job
+within ~15 minutes (RC1-535, now that the wake fires reliably); a delivery
+wakes it sooner. A cold start costs about 5 seconds before the endpoint
+answers, as before.
 
 **Watching it.** `GET /healthz` returns `{"status": "ok", "jobs":
 {"queued": n, "running": n, "succeeded": n, "skipped": n, "failed": n}}`.
@@ -119,9 +127,10 @@ No model call changed, so no corpus run was owed.
 
 - **Live check after deploy.** Create the volume, merge, then: the first
   delivery logs `job_queued` → `job_started` → the usual pipeline lines →
-  `job_succeeded`; `/healthz` shows the counts; the Wake workflow's first
-  run prints them. A deliberate interruption test (stop the machine during
-  a review, then wake it) is worth one run.
+  `job_succeeded`; `/healthz` shows the counts; the keep-warm synthetic
+  wakes a stopped machine on its 15-min schedule. A deliberate interruption
+  test (stop the machine during a review, then let the synthetic wake it)
+  is worth one run.
 - The counts are on `/healthz` and in the log, not in Datadog. A
-  `pr_agent.jobs.*` gauge from the wake cron or the worker is a small
-  follow-up if the dashboard wants it.
+  `pr_agent.jobs.*` gauge from the worker is a small follow-up if the
+  dashboard wants it.

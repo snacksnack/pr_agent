@@ -214,7 +214,7 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         # RC1-423: the queue's state rides on the health check, which is also
-        # what the wake cron reads.
+        # what the keep-warm synthetic hits every 15 min (RC1-535).
         return {"status": "ok", "jobs": job_store.counts()}
 
     @app.post("/webhook")

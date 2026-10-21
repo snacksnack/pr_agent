@@ -213,9 +213,10 @@ docker run --rm -p 8080:8080 pr-review-agent   # then: curl localhost:8080/healt
 
 Jobs, delivery ids and reviewed heads live in SQLite on the Fly volume
 `pr_review_jobs` (RC1-423), so an auto-stop or a deploy loses nothing: a job it
-interrupts is re-queued at the next start, and `.github/workflows/wake.yml`
-starts the machine every 15 minutes so a queued job never waits for the next
-delivery. Create the volume once before the first deploy that mounts it:
+interrupts is re-queued at the next start, and a Datadog synthetic
+(`69w-d3w-zv2`, defined as code in the platform repo, RC1-535) pings `/healthz`
+every 15 minutes so a queued job never waits for the next delivery. Create the
+volume once before the first deploy that mounts it:
 `fly volumes create pr_review_jobs --region iad --size 1 -a pr-review-agent-snacksnack`.
 Recovery, retention and the failure modes are in `docs/rc1-423-durable-jobs.md`.
 

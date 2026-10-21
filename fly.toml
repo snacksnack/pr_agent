@@ -39,8 +39,8 @@ primary_region = "iad"
   # Idle cost control: scale to zero when there's no traffic and cold-start a
   # machine on the next webhook delivery. GitHub retries failed deliveries, so a
   # brief wake-up latency is safe. A job the stop interrupts is re-queued at the
-  # next start (RC1-423); .github/workflows/wake.yml pings /healthz every 15
-  # minutes so a queued job never waits for the next delivery to be run.
+  # next start (RC1-423); a Datadog synthetic (69w-d3w-zv2, RC1-535) pings
+  # /healthz every 15 minutes so a queued job never waits for the next delivery.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
